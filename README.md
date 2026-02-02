@@ -16,11 +16,11 @@ A CLI tool for migrating SonarQube Server configurations to SonarQube Cloud. Ext
    via API           CSV files           CSV files          Cloud              (optional)
 ```
 
-**Phase 1 - Extract**: Pull all configuration data from your SonarQube Server instance(s)
-**Phase 2 - Structure**: Generate organization and project mappings based on DevOps bindings
-**Phase 3 - Mappings**: Create detailed mapping files for gates, profiles, groups, and templates
-**Phase 4 - Migrate**: Push all configurations to SonarQube Cloud
-**Phase 5 - Pipelines**: Automatically update CI/CD pipeline files to use SonarQube Cloud (optional)
+**Phase 1 - Extract**: Pull all configuration data from your SonarQube Server instance(s)\
+**Phase 2 - Structure**: Generate organization and project mappings based on DevOps bindings\
+**Phase 3 - Mappings**: Create detailed mapping files for gates, profiles, groups, and templates\
+**Phase 4 - Migrate**: Push all configurations to SonarQube Cloud\
+**Phase 5 - Pipelines**: Automatically update CI/CD pipeline files to use SonarQube Cloud (optional)\
 
 ---
 
