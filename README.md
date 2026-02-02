@@ -20,7 +20,7 @@ A CLI tool for migrating SonarQube Server configurations to SonarQube Cloud. Ext
 **Phase 2 - Structure**: Generate organization and project mappings based on DevOps bindings\
 **Phase 3 - Mappings**: Create detailed mapping files for gates, profiles, groups, and templates\
 **Phase 4 - Migrate**: Push all configurations to SonarQube Cloud\
-**Phase 5 - Pipelines**: Automatically update CI/CD pipeline files to use SonarQube Cloud (optional)\
+**Phase 5 - Pipelines**: Automatically update CI/CD pipeline files to use SonarQube Cloud (optional)
 
 ---
 
@@ -41,15 +41,15 @@ A CLI tool for migrating SonarQube Server configurations to SonarQube Cloud. Ext
 ### SonarQube Cloud Requirements
 
 - Enterprise license with organizations already created
-- Admin user token with permissions at the enterprise level and all target organizations
 - Organizations added to the enterprise
+- Admin user token with permissions at the enterprise level and all target organizations
 
 ### Token Permissions Summary
 
 | Environment | Token Type | Required Permissions |
 |-------------|------------|---------------------|
 | SonarQube Server | Admin Token | System admin, Quality Gates admin, Quality Profiles admin |
-| SonarQube Cloud | Enterprise Token | Enterprise admin + Organization admin for all target orgs |
+| SonarQube Cloud | User Token | Enterprise admin + Organization admin for all target orgs |
 
 ---
 
@@ -383,9 +383,16 @@ docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
 
 | Argument | Description |
 |----------|-------------|
-| `SECRETS_FILE` | Path to file containing repository secrets |
-| `SONAR_TOKEN` | SonarQube Cloud token to set as repository secret |
-| `SONAR_URL` | SonarQube Cloud URL to set as repository secret |
+| `SECRETS_FILE` | Path to JSON file containing org-key to DevOps-token mappings (relative to `--input_directory`) |
+| `SONAR_TOKEN` | SonarQube Cloud token to set as organization secret |
+| `SONAR_URL` | SonarQube Cloud URL to set as organization secret |
+
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--input_directory` | Directory containing migration files (must include `generateOrganizationMappings` task output) | `/app/files/` |
+| `--output_directory` | Directory to place pipeline update output files | Same as `--input_directory` |
 
 #### What It Does
 
@@ -422,9 +429,13 @@ docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
   report [OPTIONS]
 ```
 
+#### Options
+
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--export_directory` | Directory containing extracted data | `/app/files/` |
+| `--report_type` | Type of report to generate (`migration` or `maturity`) | `migration` |
+| `--filename` | Custom filename for the generated report (without extension) | Same as `--report_type` |
 
 Report types include migration readiness and maturity assessments.
 
@@ -439,11 +450,20 @@ docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
 
 **Warning**: This deletes everything in every organization within the enterprise.
 
+#### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `TOKEN` | SonarQube Cloud token with enterprise and organization admin permissions |
+| `ENTERPRISE_KEY` | Key of the SonarQube Cloud enterprise that will be reset |
+
+#### Options
+
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--url` | SonarQube Cloud URL | `https://sonarcloud.io/` |
-| `--edition` | SonarQube Cloud license edition | - |
-| `--concurrency` | Maximum concurrent API requests | 25 |
+| `--edition` | SonarQube Cloud license edition | `enterprise` |
+| `--concurrency` | Maximum concurrent API requests | `25` |
 | `--export_directory` | Directory for interim files | `/app/files/` |
 
 ---
