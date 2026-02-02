@@ -124,3 +124,6 @@ files
 config.json
 *-config.json
 my-*.json
+
+# Project notes (internal documentation)
+project-notes/

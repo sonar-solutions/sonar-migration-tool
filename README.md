@@ -1,735 +1,663 @@
-# SonarQube to SonarCloud Migration Tool
+# SonarQube Migration Tool
 
-Migrate your SonarQube Server projects to SonarCloud with a single command. No Python or Docker installation required.
+A CLI tool for migrating SonarQube Server configurations to SonarQube Cloud. Extract data from one or more SonarQube Server instances, map organizations, and migrate quality profiles, quality gates, groups, permissions, and projects to your cloud environment.
 
-## Table of Contents
+## Migration Workflow
 
-- [Quick Start](#quick-start)
-- [What Gets Migrated](#what-gets-migrated)
-- [Alternative Methods](#alternative-methods)
-- [Run Commands Manually](#run-commands-manually)
-- [Post-Migration Steps](#post-migration-steps)
-- [Troubleshooting](#troubleshooting)
-- [Advanced Usage](#advanced-usage)
-- [Security](#security)
+```
+┌─────────────┐    ┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌─────────────┐
+│   EXTRACT   │───►│  STRUCTURE  │───►│   MAPPINGS   │───►│   MIGRATE   │───►│  PIPELINES  │
+│   Phase 1   │    │   Phase 2   │    │   Phase 3    │    │   Phase 4   │    │   Phase 5   │
+└─────────────┘    └─────────────┘    └──────────────┘    └─────────────┘    └─────────────┘
+      │                  │                   │                  │                  │
+      ▼                  ▼                   ▼                  ▼                  ▼
+   Pull data         Generate            Create             Push configs       Update CI/CD
+   from SQS          org/project         mapping            to SonarQube       pipelines
+   via API           CSV files           CSV files          Cloud              (optional)
+```
+
+**Phase 1 - Extract**: Pull all configuration data from your SonarQube Server instance(s)
+**Phase 2 - Structure**: Generate organization and project mappings based on DevOps bindings
+**Phase 3 - Mappings**: Create detailed mapping files for gates, profiles, groups, and templates
+**Phase 4 - Migrate**: Push all configurations to SonarQube Cloud
+**Phase 5 - Pipelines**: Automatically update CI/CD pipeline files to use SonarQube Cloud (optional)
+
+---
+
+## Prerequisites
+
+### Required Software
+
+- **Docker** installed and running on your machine
+
+### SonarQube Server Requirements
+
+- Admin user token with the following permissions:
+  - Administer System
+  - Administer Quality Gates
+  - Administer Quality Profiles
+  - Browse all projects
+
+### SonarQube Cloud Requirements
+
+- Enterprise license with organizations already created
+- Admin user token with permissions at the enterprise level and all target organizations
+- Organizations added to the enterprise
+
+### Token Permissions Summary
+
+| Environment | Token Type | Required Permissions |
+|-------------|------------|---------------------|
+| SonarQube Server | Admin Token | System admin, Quality Gates admin, Quality Profiles admin |
+| SonarQube Cloud | Enterprise Token | Enterprise admin + Organization admin for all target orgs |
 
 ---
 
 ## Quick Start
 
-The simplest way to migrate - download the executable, create a config file, and run one command.
+This example walks through a complete migration from a single SonarQube Server instance to SonarQube Cloud.
 
-### Prerequisites
-
-- **SonarQube Server** with admin token
-- **SonarCloud** account with:
-  - Enterprise subscription
-  - Admin token (enterprise-level permissions)
-  - Target organization created and added to your enterprise
-
-### Step 1: Download the Executable
-
-Download the pre-built executable for your platform from the [Releases page](https://github.com/sonar-solutions/sonar-reports/releases):
-
-- **macOS (Apple Silicon)**: `sonar-reports-macos-arm64`
-- **macOS (Intel)**: `sonar-reports-macos-x86_64`
-- **Linux (x86_64)**: `sonar-reports-linux-x86_64`
-- **Windows (x86_64)**: `sonar-reports-windows-x86_64.exe`
-
-Make the executable runnable (macOS/Linux):
-```bash
-chmod +x sonar-reports-*
-```
-
-### Step 2: Create Configuration File
+### Step 1: Create a working directory
 
 ```bash
-cp examples/migration-config.example.json migration-config.json
+mkdir sonar-migration
+cd sonar-migration
 ```
 
-Edit `migration-config.json` with your credentials:
+### Step 2: Extract data from SonarQube Server
 
-```json
-{
-  "sonarqube": {
-    "url": "http://localhost:9000",
-    "token": "YOUR_SONARQUBE_ADMIN_TOKEN"
-  },
-  "sonarcloud": {
-    "url": "https://sonarcloud.io/",
-    "token": "YOUR_SONARCLOUD_ADMIN_TOKEN",
-    "enterprise_key": "YOUR_ENTERPRISE_KEY",
-    "org_key": "YOUR_TARGET_ORG_KEY"
-  },
-  "settings": {
-    "export_directory": "./files",
-    "concurrency": 10,
-    "timeout": 60,
-    "skip_profiles": false
-  }
-}
-```
-
-> Please note that this assumes that you are migrating all of your projects on your SonarQube Server instance to a single SonarCloud organization. If you need to migrate to multiple organizations, please refer to the [Run Commands Manually](#run-commands-manually) section below, where you can edit the `organizations.csv` file to specify different target organizations for different projects.
-
-### Step 3: Run Migration
-
-Run the executable with your config file:
-
-**macOS/Linux:**
 ```bash
-./sonar-reports-<platform> full-migrate migration-config.json
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  extract https://your-sonarqube-server.com YOUR_SQS_ADMIN_TOKEN
 ```
 
-**Windows:**
-```cmd
-sonar-reports-windows-x86_64.exe full-migrate migration-config.json
+**Expected output**: A timestamped directory under `./files/` containing extracted data in NDJSON format (e.g., `./files/1706745600/`)
+
+**Verify**: Check that `./files/<timestamp>/extract.json` exists and contains your server version
+
+### Step 3: Generate organization structure
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest structure
 ```
 
-Replace `<platform>` with your downloaded executable name (e.g., `macos-arm64`, `macos-x86_64`, or `linux-x86_64`).
+**Expected output**: `organizations.csv` and `projects.csv` in `./files/`
 
-That's it! The tool automatically:
-1. ✅ Extracts all data from SonarQube Server
-2. ✅ Generates organization structure
-3. ✅ Creates mappings (profiles, gates, groups)
-4. ✅ Migrates everything to SonarCloud
-5. ✅ Verifies the migration
+### Step 4: Map your SonarQube Cloud organizations
+
+Open `./files/organizations.csv` and fill in the `sonarcloud_org_key` column with your SonarQube Cloud organization keys:
+
+```csv
+alm,server_url,org_name,sonarcloud_org_key
+github,https://your-sonarqube-server.com,my-github-org,my-cloud-org-key
+```
+
+### Step 5: Generate entity mappings
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest mappings
+```
+
+**Expected output**: `gates.csv`, `profiles.csv`, `groups.csv`, `templates.csv`, `portfolios.csv` in `./files/`
+
+### Step 6: Run the migration
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  migrate YOUR_SQC_ENTERPRISE_TOKEN your-enterprise-key
+```
+
+**Expected output**: Configurations created in SonarQube Cloud
+
+### Step 7: Verify migration
+
+Log in to your SonarQube Cloud organization and verify:
+- Quality Gates were created with correct conditions
+- Quality Profiles were restored with rules
+- Groups exist with proper permissions
+- Projects are linked to repositories
 
 ---
 
-## What Gets Migrated
+## Detailed Workflow
 
-### ✅ Migrated Items
+### Phase 1: Extract
 
-- **Projects**: Configurations, settings, tags, new code definitions
-- **Quality Profiles**: Including custom rules
-- **Quality Gates**: Including all conditions
-- **Users & Permissions**: Groups, permissions, templates
-- **Portfolios**: Structure, projects, permissions
+Extract configuration data from your SonarQube Server instance via the REST API.
 
-### ⚠️ NOT Migrated
-
-- Historical analysis data
-- Issues and their history
-- Code coverage history
-- Security hotspots
-- Source code (you'll need to re-scan)
-
----
-
-## Alternative Methods
-
-### Option 1: Build the Executable Yourself
-
-If you prefer to build the executable from source:
-
-**macOS/Linux:**
-```bash
-git clone https://github.com/YOUR_REPO/sonar-reports.git
-cd sonar-reports
-./scripts/build.sh
-```
-
-**Windows:**
-```cmd
-git clone https://github.com/YOUR_REPO/sonar-reports.git
-cd sonar-reports
-scripts\build.bat
-```
-
-**Docker (Linux x86_64):**
-```bash
-git clone https://github.com/YOUR_REPO/sonar-reports.git
-cd sonar-reports
-docker buildx build --platform linux/amd64 -f docker/Dockerfile.linux-build -t sonar-reports-linux-builder --load .
-docker run --rm -v "$(pwd)/dist:/output" sonar-reports-linux-builder cp /app/dist/sonar-reports-linux-x86_64 /output/
-```
-
-The built executable will be in the `dist/` directory. Then follow steps 2-3 from the Quick Start guide.
-
-### Option 2: Binary with Shell Script
-
-Use a shell script wrapper for the binary:
+#### Command
 
 ```bash
-./scripts/execute_migration_with_binary.sh migration-config.json
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  extract <URL> <TOKEN> [OPTIONS]
 ```
 
-This script automatically detects your platform and runs the appropriate binary.
+#### Arguments
 
-### Option 3: Docker (No Installation)
+| Argument | Description |
+|----------|-------------|
+| `URL` | Full URL of your SonarQube Server (e.g., `https://sonar.example.com`) |
+| `TOKEN` | Admin user token with system administration permissions |
 
-If you prefer Docker, you can use the automated script for a quick migration:
+#### Options
 
-1. **Configure the script:**
-   ```bash
-   # Edit scripts/execute_full_migration.sh with your values
-   SONARQUBE_URL="http://localhost:9000"
-   SONARQUBE_TOKEN="your-token"
-   SONARCLOUD_URL="https://sonarcloud.io/"
-   SONARCLOUD_TOKEN="your-token"
-   SONARCLOUD_ENTERPRISE_KEY="your-enterprise-key"
-   SONARCLOUD_ORG_KEY="your-org"
-   ```
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--export_directory` | Output directory for extracted data | `/app/files/` |
+| `--concurrency` | Maximum concurrent API requests | 25 |
+| `--timeout` | Request timeout in seconds | 60 |
+| `--extract_id` | Resume a previous extraction | (new extraction) |
+| `--extract_type` | Type of extraction to run | (full) |
+| `--target_task` | Run only a specific task and its dependencies | (all tasks) |
+| `--pem_file_path` | Client certificate PEM file (for mTLS) | - |
+| `--key_file_path` | Client certificate key file (for mTLS) | - |
+| `--cert_password` | Password for client certificate | - |
 
-2. **Run:**
-   ```bash
-   chmod +x scripts/execute_full_migration.sh
-   ./scripts/execute_full_migration.sh
-   ```
+#### What Gets Extracted
 
-For step-by-step manual commands with Docker, see [Run Commands Manually](#run-commands-manually).
+The extraction runs 70 tasks organized by dependencies:
 
-### Option 4: Python CLI
+| Category | Data Extracted |
+|----------|----------------|
+| **Projects** | Project list, settings, bindings, measures, tags, links |
+| **Branches** | Branch information, pull request data |
+| **Quality Gates** | Gate definitions, conditions, user/group permissions |
+| **Quality Profiles** | Profiles, rules, backups, inheritance, permissions |
+| **Rules** | Rule definitions, plugin rules, custom rules |
+| **Permissions** | Groups, users, project permissions |
+| **Templates** | Permission templates, default templates |
+| **Portfolios** | Portfolio definitions, project assignments |
+| **Applications** | Application definitions |
+| **Server** | Server info, settings, webhooks, plugins |
 
-For maximum control, use the Python CLI directly:
+#### Output Files
 
-1. **Install dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Run full migration with config file:**
-   ```bash
-   python src/main.py full-migrate migration-config.json
-   ```
-
-For step-by-step manual commands with Python, see [Run Commands Manually](#run-commands-manually).
-
-### Option 5: Using Config Files with Individual Commands
-
-You can use JSON config files with any command:
-
-```bash
-# Extract with config
-./dist/sonar-reports-macos-arm64 extract --config extract-config.json
-
-# Migrate with config
-./dist/sonar-reports-macos-arm64 migrate --config migrate-config.json
+```
+files/
+└── <extract_id>/           # Unix timestamp (e.g., 1706745600)
+    ├── extract.json        # Metadata: version, edition, URL
+    ├── requests.log        # HTTP request/response log
+    └── <task_name>/        # One folder per task
+        └── results.1.jsonl # NDJSON output files
 ```
 
-See [docs/CONFIG.md](docs/CONFIG.md) for configuration file documentation.
+#### Resuming a Failed Extraction
 
----
+If extraction fails partway through, resume using the extract ID:
 
-## Run Commands Manually
-
-If you prefer to run commands step-by-step for more control, you can execute the migration process in stages using any of these methods.
-
-### Using Executable Binary
-
-**1. Extract data from SonarQube:**
 ```bash
-./sonar-reports-<platform> extract \
-  http://localhost:9000 \
-  YOUR_SONARQUBE_TOKEN \
-  --export_directory=./files \
-  --concurrency=10 \
-  --timeout=60
-```
-
-Optional extract parameters:
-- `--extract_type=all` - Extract all data (default)
-- `--target_task=getProjects` - Extract specific data only
-- `--extract_id=123456` - Resume a previous extract
-- `--pem_file_path` - Path to client certificate
-- `--key_file_path` - Path to certificate key
-- `--cert_password` - Certificate password
-
-**2. Generate organization structure:**
-```bash
-./sonar-reports-<platform> structure \
-  --export_directory=./files
-```
-
-**3. Update organizations.csv:**
-Edit `files/organizations.csv` and add your SonarCloud organization key to the `sonarcloud_org_key` column.
-
-**4. Generate mappings:**
-```bash
-./sonar-reports-<platform> mappings \
-  --export_directory=./files
-```
-
-**5. Migrate to SonarCloud:**
-```bash
-./sonar-reports-<platform> migrate \
-  YOUR_SONARCLOUD_TOKEN \
-  YOUR_ENTERPRISE_KEY \
-  --url=https://sonarcloud.io/ \
-  --export_directory=./files \
-  --concurrency=10
-```
-
-Optional migrate parameters:
-- `--run_id=123456` - Resume a previous migration
-- `--target_task=createProjects` - Migrate specific task only
-- `--edition=enterprise` - SonarCloud edition (default: enterprise)
-- `--skip_profiles` - Skip quality profile migration/provisioning
-
-**6. Generate a migration report (optional):**
-```bash
-./sonar-reports-<platform> report \
-  --export_directory=./files \
-  --report_type=migration \
-  --filename=migration-report
-```
-
-**7. Reset SonarCloud (CAUTION - deletes everything):**
-```bash
-./sonar-reports-<platform> reset \
-  YOUR_SONARCLOUD_TOKEN \
-  YOUR_ENTERPRISE_KEY \
-  --url=https://sonarcloud.io/ \
-  --export_directory=./files
-```
-
-Replace `<platform>` with your downloaded executable name (e.g., `macos-arm64`, `macos-x86_64`, `linux-x86_64`, or `windows-x86_64.exe`).
-
-### Using Docker
-
-First, build the Docker image:
-```bash
-docker build -t sonar-reports:local .
-```
-
-**Note:** When running from Docker, use `host.docker.internal` instead of `localhost` to access services on your host machine.
-
-**1. Extract data from SonarQube:**
-```bash
-docker run --rm \
-  -v "$(pwd)/files:/app/files" \
-  sonar-reports:local extract \
-  http://host.docker.internal:9000 \
-  YOUR_SONARQUBE_TOKEN \
-  --export_directory=/app/files \
-  --concurrency=10 \
-  --timeout=60
-```
-
-Optional extract parameters:
-- `--extract_type=all` - Extract all data (default)
-- `--target_task=getProjects` - Extract specific data only
-- `--extract_id=123456` - Resume a previous extract
-- `--pem_file_path` - Path to client certificate
-- `--key_file_path` - Path to certificate key
-- `--cert_password` - Certificate password
-
-**2. Generate organization structure:**
-```bash
-docker run --rm \
-  -v "$(pwd)/files:/app/files" \
-  sonar-reports:local structure \
-  --export_directory=/app/files
-```
-
-**3. Update organizations.csv:**
-Edit `files/organizations.csv` and add your SonarCloud organization key to the `sonarcloud_org_key` column.
-
-**4. Generate mappings:**
-```bash
-docker run --rm \
-  -v "$(pwd)/files:/app/files" \
-  sonar-reports:local mappings \
-  --export_directory=/app/files
-```
-
-**5. Migrate to SonarCloud:**
-```bash
-docker run --rm \
-  -v "$(pwd)/files:/app/files" \
-  sonar-reports:local migrate \
-  YOUR_SONARCLOUD_TOKEN \
-  YOUR_ENTERPRISE_KEY \
-  --url=https://sonarcloud.io/ \
-  --export_directory=/app/files \
-  --concurrency=10
-```
-
-Optional migrate parameters:
-- `--run_id=123456` - Resume a previous migration
-- `--target_task=createProjects` - Migrate specific task only
-- `--edition=enterprise` - SonarCloud edition (default: enterprise)
-- `--skip_profiles` - Skip quality profile migration/provisioning
-
-**6. Generate a migration report (optional):**
-```bash
-docker run --rm \
-  -v "$(pwd)/files:/app/files" \
-  sonar-reports:local report \
-  --export_directory=/app/files \
-  --report_type=migration \
-  --filename=migration-report
-```
-
-**7. Reset SonarCloud (CAUTION - deletes everything):**
-```bash
-docker run --rm \
-  -v "$(pwd)/files:/app/files" \
-  sonar-reports:local reset \
-  YOUR_SONARCLOUD_TOKEN \
-  YOUR_ENTERPRISE_KEY \
-  --url=https://sonarcloud.io/ \
-  --export_directory=/app/files
-```
-
-### Using Python
-
-First, install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-**1. Extract data from SonarQube:**
-```bash
-python src/main.py extract \
-  http://localhost:9000 \
-  YOUR_SONARQUBE_TOKEN \
-  --export_directory=./files \
-  --concurrency=10 \
-  --timeout=60
-```
-
-Optional extract parameters:
-- `--extract_type=all` - Extract all data (default)
-- `--target_task=getProjects` - Extract specific data only
-- `--extract_id=123456` - Resume a previous extract
-- `--pem_file_path` - Path to client certificate
-- `--key_file_path` - Path to certificate key
-- `--cert_password` - Certificate password
-
-**2. Generate organization structure:**
-```bash
-python src/main.py structure \
-  --export_directory=./files
-```
-
-**3. Update organizations.csv:**
-Edit `files/organizations.csv` and add your SonarCloud organization key to the `sonarcloud_org_key` column.
-
-**4. Generate mappings:**
-```bash
-python src/main.py mappings \
-  --export_directory=./files
-```
-
-**5. Migrate to SonarCloud:**
-```bash
-python src/main.py migrate \
-  YOUR_SONARCLOUD_TOKEN \
-  YOUR_ENTERPRISE_KEY \
-  --url=https://sonarcloud.io/ \
-  --export_directory=./files \
-  --concurrency=10
-```
-
-Optional migrate parameters:
-- `--run_id=123456` - Resume a previous migration
-- `--target_task=createProjects` - Migrate specific task only
-- `--edition=enterprise` - SonarCloud edition (default: enterprise)
-- `--skip_profiles` - Skip quality profile migration/provisioning
-
-**6. Generate a migration report (optional):**
-```bash
-python src/main.py report \
-  --export_directory=./files \
-  --report_type=migration \
-  --filename=migration-report
-```
-
-**7. Reset SonarCloud (CAUTION - deletes everything):**
-```bash
-python src/main.py reset \
-  YOUR_SONARCLOUD_TOKEN \
-  YOUR_ENTERPRISE_KEY \
-  --url=https://sonarcloud.io/ \
-  --export_directory=./files \
-  --concurrency=10
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  extract https://your-server.com YOUR_TOKEN --extract_id 1706745600
 ```
 
 ---
 
-## Post-Migration Steps
+### Phase 2: Structure
 
-### 1. Verify Projects
+Generate organization and project mappings based on DevOps platform bindings.
 
-Visit your SonarCloud organization:
-```
-https://sonarcloud.io/organizations/YOUR_ORG/projects
-```
+#### Command
 
-Or verify via API:
 ```bash
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-  "https://sonarcloud.io/api/projects/search?organization=YOUR_ORG&ps=500" | jq
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  structure [OPTIONS]
 ```
 
-### 2. Check Quality Gates
+#### Options
 
-```
-https://sonarcloud.io/organizations/YOUR_ORG/quality_gates
-```
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--export_directory` | Directory containing extracted data | `/app/files/` |
 
-### 3. Verify Quality Profiles
+#### What It Does
 
-```
-https://sonarcloud.io/organizations/YOUR_ORG/quality_profiles
-```
+1. Reads project bindings from the extraction
+2. Groups projects by DevOps platform (GitHub, GitLab, Azure DevOps, Bitbucket)
+3. Identifies unique organizations based on repository ownership
+4. Creates mapping files for user review
 
-### 4. Re-scan Your Projects
+#### Output Files
 
-Historical analysis data is NOT migrated. You need to run new scans:
+**organizations.csv**
 
-**Maven:**
+| Column | Description | User Action |
+|--------|-------------|-------------|
+| `alm` | DevOps platform (github, gitlab, azure, bitbucket) | Read-only |
+| `server_url` | Original SonarQube Server URL | Read-only |
+| `org_name` | DevOps organization/namespace | Read-only |
+| `sonarcloud_org_key` | Target SonarQube Cloud org key | **Fill this in** |
+
+**projects.csv**
+
+| Column | Description |
+|--------|-------------|
+| `key` | Original project key |
+| `name` | Project name |
+| `server_url` | Source server URL |
+| `repository` | Linked repository |
+| `sonarqube_org_key` | Mapped organization key |
+
+#### Required Manual Step
+
+After running `structure`, you must edit `organizations.csv` and fill in the `sonarcloud_org_key` column with your SonarQube Cloud organization keys before proceeding to the next phase.
+
+---
+
+### Phase 3: Mappings
+
+Create detailed mapping files for all entities that will be migrated.
+
+#### Command
+
 ```bash
-mvn sonar:sonar \
-  -Dsonar.projectKey=YOUR_PROJECT_KEY \
-  -Dsonar.organization=YOUR_ORG \
-  -Dsonar.host.url=https://sonarcloud.io \
-  -Dsonar.token=YOUR_TOKEN
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  mappings [OPTIONS]
 ```
 
-**Gradle:**
+#### Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--export_directory` | Directory containing extracted data | `/app/files/` |
+
+#### Output Files
+
+**gates.csv** - Quality Gate mappings
+
+| Column | Description |
+|--------|-------------|
+| `name` | Gate name |
+| `server_url` | Source server |
+| `sonarcloud_org_key` | Target organization |
+| `is_default` | Default gate flag |
+| `conditions` | Gate conditions (JSON) |
+
+**profiles.csv** - Quality Profile mappings
+
+| Column | Description |
+|--------|-------------|
+| `name` | Profile name |
+| `language` | Programming language |
+| `server_url` | Source server |
+| `sonarcloud_org_key` | Target organization |
+| `is_default` | Default profile flag |
+| `parent_name` | Parent profile for inheritance |
+
+**groups.csv** - Group mappings
+
+| Column | Description |
+|--------|-------------|
+| `name` | Group name |
+| `description` | Group description |
+| `server_url` | Source server |
+| `sonarcloud_org_key` | Target organization |
+
+**templates.csv** - Permission Template mappings
+
+| Column | Description |
+|--------|-------------|
+| `name` | Template name |
+| `server_url` | Source server |
+| `sonarcloud_org_key` | Target organization |
+| `is_default` | Default template flag |
+
+**portfolios.csv** - Portfolio mappings
+
+| Column | Description |
+|--------|-------------|
+| `key` | Portfolio key |
+| `name` | Portfolio name |
+| `server_url` | Source server |
+| `sonarcloud_org_key` | Target organization |
+
+---
+
+### Phase 4: Migrate
+
+Execute the migration by pushing configurations to SonarQube Cloud.
+
+#### Command
+
 ```bash
-./gradlew sonar \
-  -Dsonar.projectKey=YOUR_PROJECT_KEY \
-  -Dsonar.organization=YOUR_ORG \
-  -Dsonar.host.url=https://sonarcloud.io \
-  -Dsonar.token=YOUR_TOKEN
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  migrate <TOKEN> <ENTERPRISE_KEY> [OPTIONS]
 ```
 
-**Other scanners:** See [SonarCloud documentation](https://docs.sonarcloud.io/)
+#### Arguments
 
-### 5. Configure DevOps Integration
+| Argument | Description |
+|----------|-------------|
+| `TOKEN` | SonarQube Cloud token with enterprise and organization admin permissions |
+| `ENTERPRISE_KEY` | Key of your SonarQube Cloud enterprise |
 
-Set up automatic analysis by configuring ALM integration:
-- GitHub
-- Azure DevOps
-- GitLab
-- Bitbucket
+#### Options
 
-See [SonarCloud ALM Integration](https://docs.sonarcloud.io/advanced-setup/ci-based-analysis/)
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--url` | SonarQube Cloud URL | `https://sonarcloud.io/` |
+| `--edition` | SonarQube Cloud license edition | - |
+| `--export_directory` | Directory containing mapping files | `/app/files/` |
+| `--concurrency` | Maximum concurrent API requests | 25 |
+| `--run_id` | Resume a previous migration | (new migration) |
+| `--target_task` | Run only a specific task and its dependencies | (all tasks) |
+
+#### Migration Tasks
+
+The migration executes 44 tasks in dependency order:
+
+| Category | What Gets Created |
+|----------|-------------------|
+| **Groups** | User groups with descriptions |
+| **Permissions** | Organization-level group permissions |
+| **Templates** | Permission templates with user/group assignments |
+| **Quality Gates** | Gates with conditions, default assignments |
+| **Quality Profiles** | Profiles restored from backup, inheritance set, defaults configured |
+| **Projects** | Projects created/linked, gates assigned, profiles assigned, tags set |
+| **Portfolios** | Portfolios created with project assignments |
+
+#### Resuming a Failed Migration
+
+If migration fails partway through, resume using the run ID:
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  migrate YOUR_TOKEN your-enterprise-key --run_id 1706745600
+```
+
+The tool tracks completed tasks and resumes from the last completed task.
+
+---
+
+### Phase 5: Pipelines (Optional)
+
+Automatically update CI/CD pipeline configurations to use SonarQube Cloud.
+
+#### Command
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  pipelines <SECRETS_FILE> <SONAR_TOKEN> <SONAR_URL> [OPTIONS]
+```
+
+#### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `SECRETS_FILE` | Path to file containing repository secrets |
+| `SONAR_TOKEN` | SonarQube Cloud token to set as repository secret |
+| `SONAR_URL` | SonarQube Cloud URL to set as repository secret |
+
+#### What It Does
+
+1. Creates organization secrets (`SONARQUBE_CLOUD_TOKEN`, `SONARQUBE_CLOUD_URL`)
+2. Fetches pipeline files from repositories
+3. Parses and updates YAML configurations
+4. Updates scanner configuration files
+5. Creates pull requests with changes
+
+#### Supported Platforms
+
+- GitHub (primary)
+- GitLab (extensible)
+- Azure DevOps (extensible)
+- Bitbucket (extensible)
+
+#### Supported Scanners
+
+- SonarQube CLI Scanner
+- Maven (`pom.xml`)
+- Gradle (`build.gradle`)
+- .NET Scanner
+
+---
+
+## Additional Commands
+
+### Report
+
+Generate markdown reports based on extracted data.
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  report [OPTIONS]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--export_directory` | Directory containing extracted data | `/app/files/` |
+
+Report types include migration readiness and maturity assessments.
+
+### Reset
+
+Reset a SonarQube Cloud enterprise to its original state.
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  reset <TOKEN> <ENTERPRISE_KEY> [OPTIONS]
+```
+
+**Warning**: This deletes everything in every organization within the enterprise.
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--url` | SonarQube Cloud URL | `https://sonarcloud.io/` |
+| `--edition` | SonarQube Cloud license edition | - |
+| `--concurrency` | Maximum concurrent API requests | 25 |
+| `--export_directory` | Directory for interim files | `/app/files/` |
+
+---
+
+## Output Files Reference
+
+### Extraction Output
+
+| File | Purpose |
+|------|---------|
+| `<extract_id>/extract.json` | Extraction metadata (version, edition, URL) |
+| `<extract_id>/requests.log` | HTTP request/response log for debugging |
+| `<extract_id>/<task>/results.*.jsonl` | Extracted data in NDJSON format |
+
+### Structure Output
+
+| File | Purpose | Requires Editing |
+|------|---------|------------------|
+| `organizations.csv` | Organization mappings | Yes - fill in `sonarcloud_org_key` |
+| `projects.csv` | Project mappings | No |
+
+### Mappings Output
+
+| File | Purpose | Requires Editing |
+|------|---------|------------------|
+| `gates.csv` | Quality Gate mappings | No |
+| `profiles.csv` | Quality Profile mappings | No |
+| `groups.csv` | Group mappings | No |
+| `templates.csv` | Permission Template mappings | No |
+| `portfolios.csv` | Portfolio mappings | No |
 
 ---
 
 ## Troubleshooting
 
-### Migration Fails During Extract
+### Common Errors
 
-**Check logs:**
+#### "Token does not have sufficient permissions"
+
+**Cause**: The admin token lacks required permissions.
+
+**Solution**: Ensure your SonarQube Server token has:
+- Administer System permission
+- Administer Quality Gates permission
+- Administer Quality Profiles permission
+
+#### "Organization not found"
+
+**Cause**: The `sonarcloud_org_key` in `organizations.csv` doesn't match an existing organization.
+
+**Solution**:
+1. Verify the organization exists in SonarQube Cloud
+2. Check for typos in the organization key
+3. Ensure the organization is part of your enterprise
+
+#### "Request timeout"
+
+**Cause**: Large datasets or slow network connection.
+
+**Solution**: Increase the timeout value:
 ```bash
-tail -100 files/*/requests.log
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  extract https://your-server.com YOUR_TOKEN --timeout 120
 ```
 
-**Common issues:**
-- SonarQube URL not accessible
-- Token lacks admin permissions
-- Docker: use `host.docker.internal` instead of `localhost`
+#### "Connection refused" or SSL errors
 
-### Migration Fails During Upload
+**Cause**: Network issues or certificate problems.
 
-**Common issues:**
-- SonarCloud token lacks enterprise admin permissions
-- Organization not added to enterprise
-- Incorrect organization key
+**Solutions**:
+- Verify the URL is accessible from your machine
+- For self-signed certificates, use client certificate options:
+  ```bash
+  docker run -v ./files:/app/files -v ./certs:/app/certs ghcr.io/sonar-solutions/sonar-reports:latest \
+    extract https://your-server.com YOUR_TOKEN \
+    --pem_file_path /app/certs/client.pem \
+    --key_file_path /app/certs/client.key
+  ```
 
-**Review logs:**
+#### Migration task fails midway
+
+**Cause**: API error, rate limiting, or network interruption.
+
+**Solution**: Resume the migration using the run ID shown in the output:
 ```bash
-ls -lah files/*/requests.log
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  migrate YOUR_TOKEN your-enterprise-key --run_id <FAILED_RUN_ID>
 ```
 
-### No Projects Extracted
+### Finding Logs
 
-- Verify SonarQube token has admin permissions
-- Check that projects exist in SonarQube
-- Review `files/<extract-id>/requests.log` for API errors
+- **Request logs**: `./files/<extract_id>/requests.log` contains all HTTP requests and responses
+- **Docker logs**: `docker logs <container_id>` shows CLI output
 
-### Authentication Errors
+### Reducing Memory Usage
 
-- Verify tokens are valid and not expired
-- Required permissions:
-  - **SonarQube**: Admin or global analysis permissions
-  - **SonarCloud**: Enterprise-level admin permissions
-
-### API Rate Limiting
-
-Reduce concurrency in your config file:
-```json
-{
-  "settings": {
-    "concurrency": 5,
-    "timeout": 120
-  }
-}
-```
-
-### Resume Failed Migration
-
-If migration fails partway through:
+For large SonarQube instances (50,000+ projects), reduce concurrency:
 
 ```bash
-# Find the run ID from directory names in files/
-ls files/
-
-# Resume with run_id
-./dist/sonar-reports-macos-arm64 migrate --config migrate-config.json --run_id=<RUN_ID>
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  extract https://your-server.com YOUR_TOKEN --concurrency 10
 ```
 
 ---
 
-## Advanced Usage
+## Docker Deployment
 
-### Migrate Specific Organizations Only
+### Basic Usage
 
-1. Run extract and structure commands
-2. Edit `files/organizations.csv` and remove rows you don't want
-3. Run mappings and migrate commands
-
-### Migrate Specific Tasks Only
+Mount a local directory to persist data between commands:
 
 ```bash
-./dist/sonar-reports-macos-arm64 migrate \
-  YOUR_TOKEN YOUR_ENTERPRISE_KEY \
-  --export_directory=./files \
-  --target_task=createProjects
+docker run -v /path/to/local/files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest <command>
 ```
 
-### Skip Quality Profile Migration
+### With Client Certificates
 
-If quality profiles are not important to migrate, or if profile provisioning causes issues, you can skip them entirely:
+Mount your certificate files:
 
 ```bash
-./dist/sonar-reports-macos-arm64 migrate \
-  YOUR_TOKEN YOUR_ENTERPRISE_KEY \
-  --export_directory=./files \
-  --skip_profiles
+docker run \
+  -v ./files:/app/files \
+  -v ./certs:/app/certs \
+  ghcr.io/sonar-solutions/sonar-reports:latest \
+  extract https://your-server.com YOUR_TOKEN \
+  --pem_file_path /app/certs/client.pem \
+  --key_file_path /app/certs/client.key \
+  --cert_password YOUR_CERT_PASSWORD
 ```
 
-For `full-migrate`, set `skip_profiles` in the config file:
-```json
-{
-  "settings": {
-    "skip_profiles": true
-  }
-}
+### Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  sonar-migration:
+    image: ghcr.io/sonar-solutions/sonar-reports:latest
+    volumes:
+      - ./files:/app/files
+      - ./certs:/app/certs  # Optional: for client certificates
 ```
 
-This skips all profile-related tasks: creating profiles, restoring profile rules, setting default profiles, profile parent relationships, profile group permissions, and project profile assignments.
-
-### Extract Specific Data Only
+Run commands with:
 
 ```bash
-./dist/sonar-reports-macos-arm64 extract \
-  http://localhost:9000 YOUR_TOKEN \
-  --export_directory=./files \
-  --target_task=getProjects
-```
-
-### Custom Export Directory
-
-Specify a different directory:
-```json
-{
-  "settings": {
-    "export_directory": "/path/to/your/directory"
-  }
-}
-```
-
-### Adjust Concurrency and Timeout
-
-For slower connections or rate limiting:
-```json
-{
-  "settings": {
-    "concurrency": 5,
-    "timeout": 120
-  }
-}
-```
-
-### Docker Testing
-
-Test the Linux binary in a clean container environment:
-
-```bash
-# Build the test container
-docker build -f docker/Dockerfile.test-linux -t sonar-reports-test .
-
-# Run a test migration (requires SonarQube accessible from Docker)
-docker run --rm \
-  -v "$(pwd):/app" \
-  -w /app \
-  --add-host=host.docker.internal:host-gateway \
-  sonar-reports-test
-```
-
-**Note:** When running in Docker, use `host.docker.internal` instead of `localhost` in your config file to access services on the host machine.
-
----
-
-## Security
-
-⚠️ **Important Security Considerations:**
-
-### Never Commit Secrets
-
-- Never commit `migration-config.json` to version control
-- Config files with secrets are already in `.gitignore`
-- Only `.example.json` files should be committed
-
-### Protect Your Tokens
-
-- Store tokens securely (environment variables, secret managers)
-- Tokens have full admin access - treat them as highly sensitive
-- Consider using temporary tokens that expire after migration
-
-### Use File Permissions
-
-Restrict access to config files:
-```bash
-chmod 600 migration-config.json
+docker compose run sonar-migration extract https://your-server.com YOUR_TOKEN
+docker compose run sonar-migration structure
+docker compose run sonar-migration mappings
+docker compose run sonar-migration migrate YOUR_SQC_TOKEN your-enterprise-key
 ```
 
 ### Environment Variables
 
-For CI/CD, use environment variables:
+| Variable | Description | Default |
+|----------|-------------|---------|
+| (none currently) | The tool uses command-line arguments | - |
+
+---
+
+## Multi-Server Migration
+
+To migrate from multiple SonarQube Server instances:
+
+### Step 1: Extract from each server
+
 ```bash
-export SONAR_TOKEN="your-token"
-cat > migration-config.json <<EOF
-{
-  "sonarqube": {
-    "token": "$SONAR_TOKEN"
-  }
-}
-EOF
+# Server 1
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  extract https://sonar1.example.com TOKEN1
+
+# Server 2
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  extract https://sonar2.example.com TOKEN2
 ```
 
+### Step 2: Run structure (aggregates all extractions)
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest structure
+```
+
+### Step 3: Edit organizations.csv
+
+Map organizations from all servers to your cloud organizations.
+
+### Step 4: Continue with mappings and migrate
+
+The remaining steps work the same as a single-server migration.
+
 ---
 
-## Additional Documentation
+## Best Practices
 
-- **[docs/QUICK-START.md](docs/QUICK-START.md)** - Detailed step-by-step guide (if available)
-- **[docs/BUILD.md](docs/BUILD.md)** - Building executables for all platforms
-- **[docs/CONFIG.md](docs/CONFIG.md)** - Configuration file reference
-- **[docs/OLD_README.rst](docs/OLD_README.rst)** - Legacy technical documentation
+1. **Create a dedicated migration user** in SonarQube Cloud with enterprise admin permissions
+2. **Test with a subset first** using `--target_task` to migrate specific entities
+3. **Review CSV mappings** before running migrate to ensure accuracy
+4. **Monitor the requests.log** for API errors during extraction and migration
+5. **Use lower concurrency** for large instances to avoid overwhelming the server
+6. **Back up existing configurations** before running reset on your cloud enterprise
 
 ---
 
-## Support
+## Version Support
 
-For issues or questions:
+The tool automatically detects your SonarQube Server version and uses the appropriate API endpoints:
 
-1. Check log files in `files/*/requests.log`
-2. Review this documentation and linked guides
-3. Check for similar issues in the repository
-4. Open a new issue with:
-   - Your command/config (redact tokens!)
-   - Error messages
-   - Relevant log excerpts
+- Supports SonarQube Server 6.3+
+- Authentication adapts based on version:
+  - Server < 10: Basic authentication
+  - Server >= 10: Bearer token authentication
+- Edition-aware: Handles Community, Developer, Enterprise, and Data Center editions
 
 ---
 
 ## License
 
-See LICENSE file for details.
+See [LICENSE](LICENSE) for details.
