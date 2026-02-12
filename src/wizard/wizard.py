@@ -459,8 +459,7 @@ def run_pipelines_phase(state: WizardState, export_directory: str) -> WizardStat
         configure_logger(name='http_request', level='INFO',
                          output_file=os.path.join(pipeline_dir, REQUESTS_LOG))
 
-        loop = asyncio.get_event_loop()
-        results = loop.run_until_complete(
+        results = asyncio.run(
             update_pipelines(
                 input_directory=pipeline_dir,
                 output_directory=run_dir,
@@ -518,6 +517,47 @@ def get_next_phase(current_phase: WizardPhase) -> WizardPhase | None:
         return PHASE_SEQUENCE[0]
 
 
+def _handle_resume(state: WizardState, export_directory: str) -> WizardState | None:
+    """Handle resume/restart/cancel logic for an existing session.
+
+    Returns the (possibly reset) state, or None if the user cancelled.
+    """
+    if state.phase == WizardPhase.INIT:
+        return state
+
+    display_resume_info(state)
+    if confirm_action("Resume from previous session?", default=True):
+        display_message("Resuming wizard...")
+        return state
+
+    if confirm_action("Start a new wizard session? (This will overwrite previous state)", default=False):
+        state = WizardState(phase=WizardPhase.INIT)
+        state.save(export_directory)
+        return state
+
+    display_message("Wizard cancelled.")
+    return None
+
+
+def _determine_starting_phase(state: WizardState, export_directory: str) -> tuple[WizardState, WizardPhase | None]:
+    """Determine which phase to start from based on current state.
+
+    Returns updated state and the starting phase, or None to exit.
+    """
+    if state.phase == WizardPhase.INIT:
+        return state, WizardPhase.EXTRACT
+
+    if state.phase == WizardPhase.COMPLETE:
+        display_wizard_complete()
+        if confirm_action("Start a new migration?", default=False):
+            state = WizardState(phase=WizardPhase.INIT)
+            state.save(export_directory)
+            return state, WizardPhase.EXTRACT
+        return state, None
+
+    return state, state.phase
+
+
 @click.command()
 @click.option('--export_directory', default='/app/files/',
               help="Root directory for export files and wizard state")
@@ -533,31 +573,14 @@ def wizard(export_directory):
     state = WizardState.load(export_directory)
 
     # Check for resume
-    if state.phase != WizardPhase.INIT:
-        display_resume_info(state)
-        if confirm_action("Resume from previous session?", default=True):
-            display_message("Resuming wizard...")
-        else:
-            if confirm_action("Start a new wizard session? (This will overwrite previous state)", default=False):
-                state = WizardState(phase=WizardPhase.INIT)
-                state.save(export_directory)
-            else:
-                display_message("Wizard cancelled.")
-                return
+    state = _handle_resume(state, export_directory)
+    if state is None:
+        return
 
     # Determine starting phase
-    if state.phase == WizardPhase.INIT:
-        current_phase = WizardPhase.EXTRACT
-    elif state.phase == WizardPhase.COMPLETE:
-        display_wizard_complete()
-        if confirm_action("Start a new migration?", default=False):
-            state = WizardState(phase=WizardPhase.INIT)
-            state.save(export_directory)
-            current_phase = WizardPhase.EXTRACT
-        else:
-            return
-    else:
-        current_phase = state.phase
+    state, current_phase = _determine_starting_phase(state, export_directory)
+    if current_phase is None:
+        return
 
     # Run phases
     try:

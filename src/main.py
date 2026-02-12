@@ -392,9 +392,8 @@ def pipelines(secrets_file, sonar_token, sonar_url, input_directory, output_dire
     run_id = str(int(datetime.now(UTC).timestamp()))
     run_dir = os.path.join(output_directory, run_id)
     os.makedirs(run_dir, exist_ok=True)
-    loop = asyncio.get_event_loop()
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(pipeline_dir, 'requests.log'), operation='pipelines')
-    results = loop.run_until_complete(
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(pipeline_dir, 'requests.log'))
+    results = asyncio.run(
         update_pipelines(
             input_directory=pipeline_dir, output_directory=run_dir, org_secret_mapping=secrets, sonar_token=sonar_token,
             sonar_url=sonar_url

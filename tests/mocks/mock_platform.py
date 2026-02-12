@@ -79,12 +79,15 @@ class MockPlatform:
             sha=sha256(uuid4().hex.encode()).hexdigest(),
         )
 
-    async def create_or_update_file(self, token, repository, message, branch_name, file_path, content: str, sha,):
-        self.updated_files[file_path] = content
-        output_dir = os.path.join(FILES_DIR, self.case.split('/')[-1])
+    def _write_output_file(self, output_dir, file_path, content):
         os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir, file_path.split('/')[-1]), 'wt') as f:
             f.write(content)
+
+    async def create_or_update_file(self, token, repository, message, branch_name, file_path, content: str, sha,):
+        self.updated_files[file_path] = content
+        output_dir = os.path.join(FILES_DIR, self.case.split('/')[-1])
+        self._write_output_file(output_dir, file_path, content)
         return dict(
             content=content,
             branch_name=branch_name,
