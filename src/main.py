@@ -278,13 +278,14 @@ def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_dir
         target_tasks = [target_task]
     else:
         target_tasks = list(
-            [k for k in configs.keys() if not any([k.startswith(i) for i in ['get', 'delete', 'reset']])])
+            [k for k in configs.keys() if not any([k.startswith(i) for i in ['get', 'delete', 'reset']]) ])
     completed = completed.union(MIGRATION_TASKS)
+    plan = None
     if create_plan:
         plan = generate_task_plan(
             target_tasks=target_tasks,
             task_configs=configs, completed=completed)
-        with open(os.path.join(run_dir, 'plan.json'), 'wt') as f:
+        with open(os.path.join(run_dir, 'migrate.json'), 'wt') as f:
             json.dump(
                 dict(
                     plan=plan,
@@ -298,7 +299,7 @@ def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_dir
                 ), f
             )
     else:
-        with open(os.path.join(run_dir, 'plan.json'), 'rt') as f:
+        with open(os.path.join(run_dir, 'migrate.json'), 'rt') as f:
             plan = json.load(f)['plan']
     plan = filter_completed(plan=plan, directory=run_dir)
     execute_plan(execution_plan=plan, inputs=dict(url=url, api_url=api_url, enterprise_key=enterprise_key),
@@ -357,6 +358,80 @@ def reset(token, edition, url, enterprise_key, concurrency, export_directory):
                  task_configs=configs,
                  output_directory=export_directory, current_run_id=run_id,
                  run_ids={run_id})
+
+@cli.command()
+@click.argument('token')
+@click.argument('enterprise_key')
+@click.option('--edition', default='enterprise', help="SonarQube Cloud License Edition")
+@click.option('--url', default='https://sonarcloud.io/', help="Url of the SonarQube Cloud")
+@click.option('--concurrency', default=25, help="Maximum number of concurrent requests")
+@click.option('--export_directory', default='/app/files/', help="Directory to place all interim files")
+@click.option('--latest_only', default=True, is_flag=True, help="Only process latest scan for each project")
+def history(token, edition, url, enterprise_key, concurrency, export_directory, latest_only):
+    """Migrate latest scan data for migrated projects to SonarQube Cloud.
+    
+    Generates scan data using real source code, issues, and measures from extracted data,
+    then uploads to SonarQube Cloud.
+    
+    TOKEN is a user token that has admin permissions at the enterprise level and all organizations
+    ENTERPRISE_KEY is the key of the SonarQube Cloud enterprise
+    """
+    if not url.endswith('/'):
+        url = f"{url}/"
+    
+    # Load migration and extract mappings
+    migration_mapping = get_unique_extracts(directory=export_directory, key='migrate.json')
+    extract_mapping = get_unique_extracts(directory=export_directory)
+    
+    if not migration_mapping:
+        click.echo("No migration data found. Please run 'migrate' command first.")
+        return
+    
+    if not extract_mapping:
+        click.echo("No extract data found. Please run 'extract' command first.")
+        return
+    
+    # Get migrated projects
+    from history.projects import get_new_projects
+    from history.process import process_project
+    
+    projects = get_new_projects(export_directory, migration_mapping)
+    
+    if not projects:
+        click.echo("No migrated projects found.")
+        return
+    
+    # Create output directory for scans
+    run_id = str(int(datetime.now(UTC).timestamp()))
+    output_dir = os.path.join(export_directory, run_id)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Configure logging
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(output_dir, 'requests.log'))
+    
+    # Create semaphore to limit concurrent operations
+    semaphore = asyncio.Semaphore(concurrency)
+    
+    # Process all projects concurrently
+    loop = asyncio.get_event_loop()
+    tasks = [
+        process_project(
+            source_project_key, project, semaphore,
+            export_directory, extract_mapping, migration_mapping,
+            output_dir, token, url
+        )
+        for source_project_key, project in projects.items()
+    ]
+    results = loop.run_until_complete(asyncio.gather(*tasks))
+    
+    # Summary
+    successful = sum(1 for r in results if r['status'] == 'success')
+    failed = len(results) - successful
+    click.echo(f"\nSummary: {successful} successful, {failed} failed")
+    
+    return results
+
+
 
 
 @cli.command()

@@ -5,12 +5,7 @@
     "developer",
     "datacenter"
   ],
-  "dependencies": [
-    {
-      "key": "getProjects",
-      "strategy": "each"
-    }
-  ],
+  "dependencies": [],
   "operations": [
     {
       "operation": "http_request",
@@ -23,7 +18,7 @@
         },
         "url": {
           "value": {
-            "raw": "/api/project_analyses/search"
+            "raw": "/api/metrics/search"
           },
           "operations": []
         },
@@ -47,57 +42,31 @@
         },
         "pageLimit": {
           "value": {
-            "raw": 500
+            "raw": 10
           },
           "operations": []
         },
         "resultKey": {
           "value": {
-            "raw": "analyses"
+            "raw": "metrics"
           },
           "operations": []
         },
         "maxPageSize": {
           "value": {
-            "raw": 100
+            "raw": 500
           },
           "operations": []
         },
         "totalKey": {
           "value": {
-            "raw": "$.paging.total"
+            "raw": "$.total"
           },
           "operations": []
         },
         "params": {
           "value": {
-            "map": {
-              "project": {
-                "value": {
-                  "source": "getProjects",
-                  "path": "$.key"
-                },
-                "operations": []
-              }
-            }
-          },
-          "operations": []
-        }
-      }
-    },
-    {
-      "operation": "set_key",
-      "kwargs": {
-        "key": {
-          "value": {
-            "raw": "projectKey"
-          },
-          "operations": []
-        },
-        "val": {
-          "value": {
-            "source": "getProjects",
-            "path": "$.key"
+            "map": {}
           },
           "operations": []
         }

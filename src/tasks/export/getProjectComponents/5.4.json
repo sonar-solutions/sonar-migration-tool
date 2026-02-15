@@ -9,10 +9,6 @@
     {
       "key": "getProjects",
       "strategy": "each"
-    },
-    {
-      "key": "getMetrics",
-      "strategy": "all"
     }
   ],
   "operations": [
@@ -27,7 +23,7 @@
         },
         "url": {
           "value": {
-            "raw": "/api/measures/component"
+            "raw": "/api/components/tree"
           },
           "operations": []
         },
@@ -39,13 +35,13 @@
         },
         "paginationKey": {
           "value": {
-            "raw": null
+            "raw": "p"
           },
           "operations": []
         },
         "pageSizeKey": {
           "value": {
-            "raw": null
+            "raw": "ps"
           },
           "operations": []
         },
@@ -57,19 +53,19 @@
         },
         "resultKey": {
           "value": {
-            "raw": "$.component.measures"
+            "raw": "$.components"
           },
           "operations": []
         },
         "maxPageSize": {
           "value": {
-            "raw": null
+            "raw": 500
           },
           "operations": []
         },
         "totalKey": {
           "value": {
-            "raw": null
+            "raw": "$.paging.total"
           },
           "operations": []
         },
@@ -83,28 +79,10 @@
                 },
                 "operations": []
               },
-              "metricKeys": {
+              "qualifiers": {
                 "value": {
-                  "raw": null
-                },
-                "operations": [
-                  {
-                    "operation": "join_string",
-                    "kwargs": {
-                      "strings": {
-                        "value": {
-                          "source": "getMetrics",
-                          "path": "$.key"
-                        }
-                      },
-                      "delimiter": {
-                        "value": {
-                          "raw": ","
-                        }
-                      }
-                    }
-                  }
-                ]
+                  "raw": "UTS,FIL,DIR"
+                }
               }
             }
           },

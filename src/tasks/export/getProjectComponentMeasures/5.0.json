@@ -7,7 +7,7 @@
   ],
   "dependencies": [
     {
-      "key": "getProjects",
+      "key": "getProjectComponents",
       "strategy": "each"
     },
     {
@@ -45,7 +45,7 @@
         },
         "pageSizeKey": {
           "value": {
-            "raw": null
+            "raw": "ps"
           },
           "operations": []
         },
@@ -63,7 +63,7 @@
         },
         "maxPageSize": {
           "value": {
-            "raw": null
+            "raw": 500
           },
           "operations": []
         },
@@ -78,7 +78,7 @@
             "map": {
               "component": {
                 "value": {
-                  "source": "getProjects",
+                  "source": "getProjectComponents",
                   "path": "$.key"
                 },
                 "operations": []
@@ -117,14 +117,32 @@
       "kwargs": {
         "key": {
           "value": {
+            "raw": "projectComponentKey"
+          },
+          "operations": []
+        },
+        "val": {
+          "value": {
+            "source": "getProjectComponents",
+            "path": "$.key"
+          },
+          "operations": []
+        }
+      }
+    },
+    {
+      "operation": "set_key",
+      "kwargs": {
+        "key": {
+          "value": {
             "raw": "projectKey"
           },
           "operations": []
         },
         "val": {
           "value": {
-            "source": "getProjects",
-            "path": "$.key"
+            "source": "getProjectComponents",
+            "path": "$.projectKey"
           },
           "operations": []
         }

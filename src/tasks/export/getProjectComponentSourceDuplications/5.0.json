@@ -7,12 +7,8 @@
   ],
   "dependencies": [
     {
-      "key": "getProjects",
+      "key": "getProjectComponents",
       "strategy": "each"
-    },
-    {
-      "key": "getMetrics",
-      "strategy": "all"
     }
   ],
   "operations": [
@@ -27,7 +23,7 @@
         },
         "url": {
           "value": {
-            "raw": "/api/measures/component"
+            "raw": "/api/duplications/show"
           },
           "operations": []
         },
@@ -57,7 +53,7 @@
         },
         "resultKey": {
           "value": {
-            "raw": "$.component.measures"
+            "raw": null
           },
           "operations": []
         },
@@ -76,37 +72,32 @@
         "params": {
           "value": {
             "map": {
-              "component": {
+              "key": {
                 "value": {
-                  "source": "getProjects",
+                  "source": "getProjectComponents",
                   "path": "$.key"
                 },
                 "operations": []
-              },
-              "metricKeys": {
-                "value": {
-                  "raw": null
-                },
-                "operations": [
-                  {
-                    "operation": "join_string",
-                    "kwargs": {
-                      "strings": {
-                        "value": {
-                          "source": "getMetrics",
-                          "path": "$.key"
-                        }
-                      },
-                      "delimiter": {
-                        "value": {
-                          "raw": ","
-                        }
-                      }
-                    }
-                  }
-                ]
               }
             }
+          },
+          "operations": []
+        }
+      }
+    },
+    {
+      "operation": "set_key",
+      "kwargs": {
+        "key": {
+          "value": {
+            "raw": "projectComponentKey"
+          },
+          "operations": []
+        },
+        "val": {
+          "value": {
+            "source": "getProjectComponents",
+            "path": "$.key"
           },
           "operations": []
         }
@@ -123,8 +114,8 @@
         },
         "val": {
           "value": {
-            "source": "getProjects",
-            "path": "$.key"
+            "source": "getProjectComponents",
+            "path": "$.projectKey"
           },
           "operations": []
         }

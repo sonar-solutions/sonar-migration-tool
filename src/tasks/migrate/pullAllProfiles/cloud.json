@@ -1,18 +1,16 @@
 {
   "editions": [
-    "community",
     "enterprise",
-    "developer",
-    "datacenter"
+    "teams"
   ],
   "dependencies": [
     {
-      "key": "getProjects",
+      "key": "getEnterpriseOrgKeys",
       "strategy": "each"
     },
     {
-      "key": "getMetrics",
-      "strategy": "all"
+      "key": "createProfiles",
+      "strategy": "each"
     }
   ],
   "operations": [
@@ -27,7 +25,7 @@
         },
         "url": {
           "value": {
-            "raw": "/api/measures/component"
+            "raw": "/api/qualityprofiles/search"
           },
           "operations": []
         },
@@ -57,7 +55,7 @@
         },
         "resultKey": {
           "value": {
-            "raw": "$.component.measures"
+            "raw": "profiles"
           },
           "operations": []
         },
@@ -76,35 +74,11 @@
         "params": {
           "value": {
             "map": {
-              "component": {
+              "organization": {
                 "value": {
-                  "source": "getProjects",
-                  "path": "$.key"
-                },
-                "operations": []
-              },
-              "metricKeys": {
-                "value": {
-                  "raw": null
-                },
-                "operations": [
-                  {
-                    "operation": "join_string",
-                    "kwargs": {
-                      "strings": {
-                        "value": {
-                          "source": "getMetrics",
-                          "path": "$.key"
-                        }
-                      },
-                      "delimiter": {
-                        "value": {
-                          "raw": ","
-                        }
-                      }
-                    }
-                  }
-                ]
+                  "source": "getEnterpriseOrgKeys",
+                  "path": "key"
+                }
               }
             }
           },
@@ -117,16 +91,14 @@
       "kwargs": {
         "key": {
           "value": {
-            "raw": "projectKey"
-          },
-          "operations": []
+            "raw": "sonarCloudOrgKey"
+          }
         },
         "val": {
           "value": {
-            "source": "getProjects",
-            "path": "$.key"
-          },
-          "operations": []
+            "source": "getEnterpriseOrgKeys",
+            "path": "key"
+          }
         }
       }
     },
@@ -135,16 +107,14 @@
       "kwargs": {
         "key": {
           "value": {
-            "raw": "serverUrl"
-          },
-          "operations": []
+            "raw": "enterpriseKey"
+          }
         },
         "val": {
           "value": {
-            "source": "inputs",
-            "path": "url"
-          },
-          "operations": []
+            "source": "getEnterpriseOrgKeys",
+            "path": "enterpriseKey"
+          }
         }
       }
     }

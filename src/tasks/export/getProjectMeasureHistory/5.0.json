@@ -27,7 +27,7 @@
         },
         "url": {
           "value": {
-            "raw": "/api/measures/component"
+            "raw": "/api/measures/search_history"
           },
           "operations": []
         },
@@ -57,19 +57,19 @@
         },
         "resultKey": {
           "value": {
-            "raw": "$.component.measures"
+            "raw": "$.measures"
           },
           "operations": []
         },
         "maxPageSize": {
           "value": {
-            "raw": null
+            "raw": 1000
           },
           "operations": []
         },
         "totalKey": {
           "value": {
-            "raw": null
+            "raw": "$.paging.total"
           },
           "operations": []
         },
@@ -83,7 +83,7 @@
                 },
                 "operations": []
               },
-              "metricKeys": {
+              "metrics": {
                 "value": {
                   "raw": null
                 },

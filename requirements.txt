@@ -6,3 +6,5 @@ PyNaCl
 ruamel.yaml
 bashlex
 lxml
+aiofiles
+protobuf

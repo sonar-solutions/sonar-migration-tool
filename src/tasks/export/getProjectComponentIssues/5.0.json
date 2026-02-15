@@ -7,12 +7,8 @@
   ],
   "dependencies": [
     {
-      "key": "getProjects",
+      "key": "getProjectComponents",
       "strategy": "each"
-    },
-    {
-      "key": "getMetrics",
-      "strategy": "all"
     }
   ],
   "operations": [
@@ -27,7 +23,7 @@
         },
         "url": {
           "value": {
-            "raw": "/api/measures/component"
+            "raw": "/api/issues/search"
           },
           "operations": []
         },
@@ -39,74 +35,74 @@
         },
         "paginationKey": {
           "value": {
-            "raw": null
+            "raw": "p"
           },
           "operations": []
         },
         "pageSizeKey": {
           "value": {
-            "raw": null
+            "raw": "ps"
           },
           "operations": []
         },
         "pageLimit": {
           "value": {
-            "raw": null
+            "raw": 20
           },
           "operations": []
         },
         "resultKey": {
           "value": {
-            "raw": "$.component.measures"
+            "raw": "$.issues"
           },
           "operations": []
         },
         "maxPageSize": {
           "value": {
-            "raw": null
+            "raw": 500
           },
           "operations": []
         },
         "totalKey": {
           "value": {
-            "raw": null
+            "raw": "$.paging.total"
           },
           "operations": []
         },
         "params": {
           "value": {
             "map": {
-              "component": {
+              "components": {
                 "value": {
-                  "source": "getProjects",
+                  "source": "getProjectComponents",
                   "path": "$.key"
                 },
                 "operations": []
               },
-              "metricKeys": {
+              "additionalFields": {
                 "value": {
-                  "raw": null
-                },
-                "operations": [
-                  {
-                    "operation": "join_string",
-                    "kwargs": {
-                      "strings": {
-                        "value": {
-                          "source": "getMetrics",
-                          "path": "$.key"
-                        }
-                      },
-                      "delimiter": {
-                        "value": {
-                          "raw": ","
-                        }
-                      }
-                    }
-                  }
-                ]
+                  "raw": "comments,transitions,users"
+                }
               }
             }
+          },
+          "operations": []
+        }
+      }
+    },
+    {
+      "operation": "set_key",
+      "kwargs": {
+        "key": {
+          "value": {
+            "raw": "projectComponentKey"
+          },
+          "operations": []
+        },
+        "val": {
+          "value": {
+            "source": "getProjectComponents",
+            "path": "$.key"
           },
           "operations": []
         }
@@ -123,8 +119,8 @@
         },
         "val": {
           "value": {
-            "source": "getProjects",
-            "path": "$.key"
+            "source": "getProjectComponents",
+            "path": "$.projectKey"
           },
           "operations": []
         }
