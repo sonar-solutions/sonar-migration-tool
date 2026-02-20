@@ -10,6 +10,7 @@ from wizard.state import WizardPhase, WizardState
 REQUESTS_LOG = 'requests.log'
 ORGANIZATIONS_CSV = 'organizations.csv'
 PROJECTS_CSV = 'projects.csv'
+SKIPPED_ORG_SENTINEL = 'SKIPPED'
 
 from wizard.prompts import (
     display_welcome,
@@ -27,6 +28,7 @@ from wizard.prompts import (
     prompt_url,
     prompt_text,
     confirm_action,
+    display_separator,
 )
 
 
@@ -39,69 +41,74 @@ def run_extract_phase(state: WizardState, export_directory: str) -> WizardState:
 
     display_phase_start(WizardPhase.EXTRACT)
 
-    # Collect credentials if not already set
-    if not state.source_url:
-        state.source_url = prompt_url("SonarQube Server URL")
+    while True:
+        # Collect credentials if not already set
+        if not state.source_url:
+            state.source_url = prompt_url("SonarQube Server URL")
 
-    display_message(f"Using source URL: {state.source_url}")
-    token = prompt_credentials("SonarQube Server Admin Token")
+        display_message(f"Using source URL: {state.source_url}")
+        token = prompt_credentials("SonarQube Server Admin Token")
 
-    # Optional client certificate
-    pem_file_path = None
-    key_file_path = None
-    cert_password = None
-    if confirm_action("Do you need to use a client certificate?", default=False):
-        pem_file_path = prompt_text("Path to client certificate PEM file")
-        key_file_path = prompt_text("Path to client certificate key file")
-        cert_password = prompt_credentials("Certificate password (leave empty if none)", hide_input=True)
-        if not cert_password:
-            cert_password = None
+        # Optional client certificate
+        pem_file_path = None
+        key_file_path = None
+        cert_password = None
+        if confirm_action("Do you need to use a client certificate?", default=False):
+            pem_file_path = prompt_text("Path to client certificate PEM file")
+            key_file_path = prompt_text("Path to client certificate key file")
+            cert_password = prompt_credentials("Certificate password (leave empty if none)", hide_input=True)
+            if not cert_password:
+                cert_password = None
 
-    # Generate extract ID
-    extract_id = str(int(datetime.now(UTC).timestamp()))
-    state.extract_id = extract_id
+        # Generate extract ID
+        extract_id = str(int(datetime.now(UTC).timestamp()))
+        state.extract_id = extract_id
 
-    try:
-        cert = configure_client_cert(key_file_path, pem_file_path, cert_password)
-        server_version, edition = get_server_details(url=state.source_url, cert=cert, token=token)
+        try:
+            cert = configure_client_cert(key_file_path, pem_file_path, cert_password)
+            server_version, edition = get_server_details(url=state.source_url, cert=cert, token=token)
 
-        extract_directory = os.path.join(export_directory, extract_id + '/')
-        os.makedirs(extract_directory, exist_ok=True)
+            extract_directory = os.path.join(export_directory, extract_id + '/')
+            os.makedirs(extract_directory, exist_ok=True)
 
-        configure_logger(name='http_request', level='INFO',
-                         output_file=os.path.join(extract_directory, REQUESTS_LOG))
-        configure_client(url=state.source_url, cert=cert, server_version=server_version,
-                         token=token, concurrency=25, timeout=60)
+            configure_logger(name='http_request', level='INFO',
+                             output_file=os.path.join(extract_directory, REQUESTS_LOG))
+            configure_client(url=state.source_url, cert=cert, server_version=server_version,
+                             token=token, concurrency=25, timeout=60)
 
-        configs = get_available_task_configs(client_version=server_version, edition=edition)
-        target_tasks = [k for k in configs.keys() if k.startswith('get')]
+            configs = get_available_task_configs(client_version=server_version, edition=edition)
+            target_tasks = [k for k in configs.keys() if k.startswith('get')]
 
-        plan = generate_task_plan(target_tasks=target_tasks, task_configs=configs)
+            plan = generate_task_plan(target_tasks=target_tasks, task_configs=configs)
 
-        with open(os.path.join(extract_directory, 'extract.json'), 'wt') as f:
-            json.dump(
-                {
-                    "plan": plan,
-                    "version": server_version,
-                    "edition": edition,
-                    "url": state.source_url,
-                    "target_tasks": target_tasks,
-                    "available_configs": list(configs.keys()),
-                    "run_id": extract_id,
-                }, f
-            )
+            with open(os.path.join(extract_directory, 'extract.json'), 'wt') as f:
+                json.dump(
+                    {
+                        "plan": plan,
+                        "version": server_version,
+                        "edition": edition,
+                        "url": state.source_url,
+                        "target_tasks": target_tasks,
+                        "available_configs": list(configs.keys()),
+                        "run_id": extract_id,
+                    }, f
+                )
 
-        execute_plan(execution_plan=plan, inputs={"url": state.source_url}, concurrency=25,
-                     task_configs=configs, output_directory=export_directory,
-                     current_run_id=extract_id, run_ids={extract_id})
+            execute_plan(execution_plan=plan, inputs={"url": state.source_url}, concurrency=25,
+                         task_configs=configs, output_directory=export_directory,
+                         current_run_id=extract_id, run_ids={extract_id})
 
-        display_success(f"Extract complete: {extract_id}")
-        state.phase = WizardPhase.STRUCTURE
-        state.save(export_directory)
+            display_success(f"Extract complete: {extract_id}")
+            state.phase = WizardPhase.STRUCTURE
+            state.save(export_directory)
+            break
 
-    except Exception as e:
-        display_error(f"Extract failed: {str(e)}")
-        raise
+        except Exception as e:
+            display_error(f"Extract failed: {str(e)}")
+            if confirm_action("Would you like to re-enter your information and try again?", default=True):
+                state.source_url = None
+                continue
+            raise
 
     display_phase_complete(WizardPhase.EXTRACT)
     return state
@@ -150,58 +157,83 @@ def run_org_mapping_phase(state: WizardState, export_directory: str) -> WizardSt
 
     display_phase_start(WizardPhase.ORG_MAPPING)
 
-    # Collect SonarQube Cloud credentials
-    if not state.target_url:
-        state.target_url = prompt_url("SonarQube Cloud URL", default="https://sonarcloud.io/")
+    while True:
+        # Collect SonarQube Cloud credentials
+        if not state.target_url:
+            state.target_url = prompt_url("SonarQube Cloud URL", default="https://sonarcloud.io/")
 
-    if not state.enterprise_key:
-        state.enterprise_key = prompt_text("SonarQube Cloud Enterprise Key")
+        if not state.enterprise_key:
+            state.enterprise_key = prompt_text("SonarQube Cloud Enterprise Key")
 
-    display_message("")
-    display_message("Organization Mapping")
-    display_message("-" * 40)
-    display_message("You need to map each SonarQube Server organization to a")
-    display_message("SonarQube Cloud organization key.")
-    display_message("")
-
-    # Load organizations
-    organizations = load_csv(directory=export_directory, filename=ORGANIZATIONS_CSV)
-
-    if not organizations:
-        display_error("No organizations found. Please run structure analysis first.")
-        raise ValueError("No organizations found")
-
-    # Check which organizations need mapping
-    unmapped = [org for org in organizations if not org.get('sonarcloud_org_key')]
-
-    if unmapped:
-        display_message(f"Found {len(unmapped)} organization(s) to map:")
+        display_message("")
+        display_message("Organization Mapping")
+        display_message("-" * 40)
+        display_message("You need to map each SonarQube Server organization to a")
+        display_message("SonarQube Cloud organization key.")
         display_message("")
 
-        for org in organizations:
-            current_cloud_key = org.get('sonarcloud_org_key', '')
-            if not current_cloud_key:
-                display_message(f"  Organization: {org.get('sonarqube_org_key', 'Unknown')}")
-                display_message(f"    Server URL: {org.get('server_url', 'Unknown')}")
-                display_message(f"    DevOps Binding: {org.get('devops_binding', 'None')}")
-                display_message(f"    Projects: {org.get('project_count', 0)}")
+        try:
+            # Load organizations
+            organizations = load_csv(directory=export_directory, filename=ORGANIZATIONS_CSV)
+
+            if not organizations:
+                display_error("No organizations found. Please run structure analysis first.")
+                raise ValueError("No organizations found")
+
+            # Check which organizations need mapping
+            unmapped = [org for org in organizations if not org.get('sonarcloud_org_key')]
+
+            if unmapped:
+                display_message(f"Found {len(unmapped)} organization(s) to map:")
                 display_message("")
 
-                cloud_key = prompt_text(
-                    f"Enter SonarCloud organization key for '{org.get('sonarqube_org_key', 'Unknown')}'")
-                org['sonarcloud_org_key'] = cloud_key
+                for org in organizations:
+                    current_cloud_key = org.get('sonarcloud_org_key', '')
+                    if not current_cloud_key:
+                        display_message(f"  Organization: {org.get('sonarqube_org_key', 'Unknown')}")
+                        display_message(f"    Server URL: {org.get('server_url', 'Unknown')}")
+                        display_message(f"    DevOps Binding: {org.get('devops_binding', 'None')}")
+                        display_message(f"    Projects: {org.get('project_count', 0)}")
+                        display_message("")
+
+                        if confirm_action(
+                            f"Migrate '{org.get('sonarqube_org_key', 'Unknown')}' and all its projects?",
+                            default=True
+                        ):
+                            cloud_key = prompt_text(
+                                f"Enter SonarCloud organization key for '{org.get('sonarqube_org_key', 'Unknown')}'")
+                            org['sonarcloud_org_key'] = cloud_key
+                            display_separator()
+                        else:
+                            org['sonarcloud_org_key'] = SKIPPED_ORG_SENTINEL
+                            display_warning(
+                                f"Organization '{org.get('sonarqube_org_key', 'Unknown')}' "
+                                f"and its {org.get('project_count', 0)} project(s) will be skipped"
+                            )
+                            display_separator()
+                    elif current_cloud_key == SKIPPED_ORG_SENTINEL:
+                        display_message(f"  {org.get('sonarqube_org_key')} -> SKIPPED")
+                    else:
+                        display_message(f"  {org.get('sonarqube_org_key')} -> {current_cloud_key} (already mapped)")
+
+                # Save updated organizations
+                export_csv(directory=export_directory, name='organizations', data=organizations)
+                display_success("Organization mappings saved")
             else:
-                display_message(f"  {org.get('sonarqube_org_key')} -> {current_cloud_key} (already mapped)")
+                display_message("All organizations are already mapped.")
 
-        # Save updated organizations
-        export_csv(directory=export_directory, name='organizations', data=organizations)
-        display_success("Organization mappings saved")
-    else:
-        display_message("All organizations are already mapped.")
+            state.organizations_mapped = True
+            state.phase = WizardPhase.MAPPINGS
+            state.save(export_directory)
+            break
 
-    state.organizations_mapped = True
-    state.phase = WizardPhase.MAPPINGS
-    state.save(export_directory)
+        except Exception as e:
+            display_error(f"Organization mapping failed: {str(e)}")
+            if confirm_action("Would you like to re-enter your information and try again?", default=True):
+                state.target_url = None
+                state.enterprise_key = None
+                continue
+            raise
 
     display_phase_complete(WizardPhase.ORG_MAPPING)
     return state
@@ -216,8 +248,23 @@ def run_mappings_phase(state: WizardState, export_directory: str) -> WizardState
 
     try:
         extract_mapping = get_unique_extracts(directory=export_directory)
+        organizations = load_csv(directory=export_directory, filename=ORGANIZATIONS_CSV)
+        skipped_org_keys = {
+            org['sonarqube_org_key'] for org in organizations
+            if org.get('sonarcloud_org_key') == SKIPPED_ORG_SENTINEL
+        }
+
         projects = load_csv(directory=export_directory, filename=PROJECTS_CSV)
+        all_project_count = len(projects)
+        projects = [p for p in projects if p['sonarqube_org_key'] not in skipped_org_keys]
         project_org_mapping = {p['server_url'] + p['key']: p['sonarqube_org_key'] for p in projects}
+
+        if skipped_org_keys:
+            skipped_project_count = all_project_count - len(projects)
+            display_warning(
+                f"Skipping {len(skipped_org_keys)} organization(s) "
+                f"and {skipped_project_count} associated project(s)"
+            )
 
         mapping = {
             "templates": map_templates(project_org_mapping=project_org_mapping,
@@ -291,20 +338,30 @@ def run_validate_phase(state: WizardState, export_directory: str) -> WizardState
         raise ValueError(f"Unmapped organizations found: {', '.join(unmapped_orgs)}")
 
     # Count entities to migrate
+    skipped_org_keys = {
+        org['sonarqube_org_key'] for org in organizations
+        if org.get('sonarcloud_org_key') == SKIPPED_ORG_SENTINEL
+    }
+    active_orgs = [org for org in organizations
+                   if org.get('sonarcloud_org_key') != SKIPPED_ORG_SENTINEL]
+
     projects = load_csv(directory=export_directory, filename=PROJECTS_CSV)
+    active_projects = [p for p in projects if p.get('sonarqube_org_key') not in skipped_org_keys]
     profiles = load_csv(directory=export_directory, filename='profiles.csv')
     templates = load_csv(directory=export_directory, filename='templates.csv')
     gates = load_csv(directory=export_directory, filename='gates.csv')
     groups = load_csv(directory=export_directory, filename='groups.csv')
 
-    display_summary("Migration Summary", {
-        "Organizations": len(organizations),
-        "Projects": len(projects),
+    summary = {
+        "Organizations": f"{len(active_orgs)} active" + (f", {len(skipped_org_keys)} skipped" if skipped_org_keys else ""),
+        "Projects": f"{len(active_projects)} active" + (f", {len(projects) - len(active_projects)} skipped" if skipped_org_keys else ""),
         "Quality Profiles": len(profiles),
         "Permission Templates": len(templates),
         "Quality Gates": len(gates),
         "Groups": len(groups),
-    })
+    }
+
+    display_summary("Migration Summary", summary)
 
     display_success("Validation passed!")
     state.validation_passed = True
@@ -333,66 +390,86 @@ def run_migrate_phase(state: WizardState, export_directory: str) -> WizardState:
 
     if not confirm_action("Do you want to proceed with the migration?", default=False):
         display_message("Migration cancelled.")
-        return state
+        display_message("Your progress has been saved. Run the wizard again to resume.")
+        raise SystemExit(0)
 
-    # Get cloud token
-    token = prompt_credentials("SonarQube Cloud Admin Token")
+    while True:
+        # Get cloud token
+        token = prompt_credentials("SonarQube Cloud Admin Token")
 
-    try:
-        run_id = str(int(datetime.now(UTC).timestamp()))
-        state.migration_run_id = run_id
+        try:
+            run_id = str(int(datetime.now(UTC).timestamp()))
+            state.migration_run_id = run_id
 
-        url = state.target_url
-        api_url = url.replace('https://', 'https://api.')
+            url = state.target_url
+            api_url = url.replace('https://', 'https://api.')
 
-        configure_client(url=url, cert=None, server_version="cloud", token=token)
-        configure_client(url=api_url, cert=None, server_version="cloud", token=token)
+            configure_client(url=url, cert=None, server_version="cloud", token=token)
+            configure_client(url=api_url, cert=None, server_version="cloud", token=token)
 
-        configs = get_available_task_configs(client_version='cloud', edition='enterprise')
+            configs = get_available_task_configs(client_version='cloud', edition='enterprise')
 
-        run_dir, completed = validate_migration(directory=export_directory, run_id=run_id)
-        extract_mapping = get_unique_extracts(directory=export_directory)
+            run_dir, completed = validate_migration(directory=export_directory, run_id=run_id)
+            extract_mapping = get_unique_extracts(directory=export_directory)
 
-        configure_logger(name='http_request', level='INFO',
-                         output_file=os.path.join(run_dir, REQUESTS_LOG))
+            configure_logger(name='http_request', level='INFO',
+                             output_file=os.path.join(run_dir, REQUESTS_LOG))
 
-        target_tasks = [k for k in configs.keys()
-                        if not any(k.startswith(i) for i in ('get', 'delete', 'reset'))]
-        completed = completed.union(MIGRATION_TASKS)
+            target_tasks = [k for k in configs.keys()
+                            if not any(k.startswith(i) for i in ('get', 'delete', 'reset'))]
+            completed = completed.union(MIGRATION_TASKS)
 
-        plan = generate_task_plan(target_tasks=target_tasks, task_configs=configs, completed=completed)
+            plan = generate_task_plan(target_tasks=target_tasks, task_configs=configs, completed=completed)
 
-        with open(os.path.join(run_dir, 'plan.json'), 'wt') as f:
-            json.dump(
-                {
-                    "plan": plan,
-                    "version": "cloud",
-                    "edition": "enterprise",
-                    "completed": list(completed),
-                    "url": url,
-                    "target_tasks": target_tasks,
-                    "available_configs": list(configs.keys()),
-                    "run_id": run_id,
-                }, f
-            )
+            with open(os.path.join(run_dir, 'plan.json'), 'wt') as f:
+                json.dump(
+                    {
+                        "plan": plan,
+                        "version": "cloud",
+                        "edition": "enterprise",
+                        "completed": list(completed),
+                        "url": url,
+                        "target_tasks": target_tasks,
+                        "available_configs": list(configs.keys()),
+                        "run_id": run_id,
+                    }, f
+                )
 
-        plan = filter_completed(plan=plan, directory=run_dir)
+            plan = filter_completed(plan=plan, directory=run_dir)
 
-        execute_plan(execution_plan=plan,
-                     inputs={"url": url, "api_url": api_url, "enterprise_key": state.enterprise_key},
-                     concurrency=25,
-                     task_configs=configs,
-                     output_directory=export_directory,
-                     current_run_id=run_id,
-                     run_ids=set(extract_mapping.values()).union({run_id}))
+            execute_plan(execution_plan=plan,
+                         inputs={"url": url, "api_url": api_url, "enterprise_key": state.enterprise_key},
+                         concurrency=25,
+                         task_configs=configs,
+                         output_directory=export_directory,
+                         current_run_id=run_id,
+                         run_ids=set(extract_mapping.values()).union({run_id}))
 
-        display_success(f"Migration complete! Run ID: {run_id}")
-        state.phase = WizardPhase.PIPELINES
-        state.save(export_directory)
+            try:
+                from analysis_report import generate_final_analysis_report
+                report_rows = generate_final_analysis_report(run_directory=run_dir)
+                if report_rows:
+                    success_count = sum(1 for r in report_rows if r['outcome'] == 'success')
+                    failure_count = sum(1 for r in report_rows if r['outcome'] == 'failure')
+                    display_summary("Final Analysis Report", {
+                        "Location": os.path.join(run_dir, "final_analysis_report.csv"),
+                        "Total API calls": len(report_rows),
+                        "Successful": success_count,
+                        "Failed": failure_count,
+                    })
+            except Exception:
+                display_warning("Could not generate final analysis report.")
 
-    except Exception as e:
-        display_error(f"Migration failed: {str(e)}")
-        raise
+            display_success(f"Migration complete! Run ID: {run_id}")
+            state.phase = WizardPhase.PIPELINES
+            state.save(export_directory)
+            break
+
+        except Exception as e:
+            display_error(f"Migration failed: {str(e)}")
+            if confirm_action("Would you like to re-enter your information and try again?", default=True):
+                continue
+            raise
 
     display_phase_complete(WizardPhase.MIGRATE)
     return state
@@ -591,7 +668,7 @@ def wizard(export_directory):
             if handler:
                 state = handler(state, export_directory)
 
-            current_phase = get_next_phase(state.phase)
+            current_phase = state.phase
 
         # Complete
         state.phase = WizardPhase.COMPLETE

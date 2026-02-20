@@ -1,4 +1,6 @@
 """Display helpers and user prompts for the wizard interface"""
+import sys
+
 import click
 from wizard.state import WizardPhase
 
@@ -77,9 +79,56 @@ def display_phase_complete(phase: WizardPhase):
     click.echo(f"<<< Completed: {phase_name}")
 
 
+def _read_masked_input(prompt: str) -> str:
+    """Read input from the terminal, displaying asterisks for each character typed.
+
+    Falls back to click.prompt with hidden input when not running in a real terminal
+    (e.g. during testing or piped input).
+    """
+    try:
+        import tty
+        import termios
+        fd = sys.stdin.fileno()
+    except (AttributeError, ValueError, ImportError):
+        # Not a real terminal; fall back to hidden input
+        return click.prompt(prompt.rstrip(': '), hide_input=True)
+
+    click.echo(prompt, nl=False)
+    old_settings = termios.tcgetattr(fd)
+    chars = []
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ('\r', '\n'):
+                break
+            elif ch == '\x7f' or ch == '\x08':  # Backspace / Delete
+                if chars:
+                    chars.pop()
+                    # Move cursor back, overwrite the asterisk, move back again
+                    sys.stdout.write('\b \b')
+                    sys.stdout.flush()
+            elif ch == '\x03':  # Ctrl+C
+                click.echo()
+                raise KeyboardInterrupt
+            elif ch == '\x04':  # Ctrl+D
+                click.echo()
+                raise EOFError
+            else:
+                chars.append(ch)
+                sys.stdout.write('*')
+                sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    click.echo()
+    return ''.join(chars)
+
+
 def prompt_credentials(prompt_text: str, hide_input: bool = True) -> str:
-    """Collect credentials from user with hidden input"""
-    return click.prompt(prompt_text, hide_input=hide_input)
+    """Collect credentials from user with masked input (asterisks)"""
+    if hide_input:
+        return _read_masked_input(f"{prompt_text}: ")
+    return click.prompt(prompt_text, hide_input=False)
 
 
 def prompt_url(prompt_text: str, default: str = None) -> str:
@@ -93,6 +142,12 @@ def prompt_url(prompt_text: str, default: str = None) -> str:
 def prompt_text(prompt_text: str, default: str = None) -> str:
     """Collect text input from user"""
     return click.prompt(prompt_text, default=default)
+
+
+def display_separator():
+    """Display a visual separator line between output blocks and prompts"""
+    click.echo()
+    click.echo("-" * 60)
 
 
 def display_summary(title: str, stats_dict: dict):

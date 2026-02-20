@@ -28,8 +28,18 @@ def get_server_details(url, cert, token):
     return server_version, edition
 
 
+_loop = None
+
+def _get_event_loop():
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    return _loop
+
 def process_chunk(chunk):
-    results = asyncio.run(
+    loop = _get_event_loop()
+    results = loop.run_until_complete(
         MAPPING.get(
             chunk[0]['kwargs']['method'], process_request_chunk
         )(

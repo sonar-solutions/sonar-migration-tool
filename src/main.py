@@ -317,6 +317,17 @@ def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_dir
                  output_directory=export_directory, current_run_id=run_id,
                  run_ids=set(extract_mapping.values()).union({run_id}))
 
+    try:
+        from analysis_report import generate_final_analysis_report
+        report_rows = generate_final_analysis_report(run_directory=run_dir)
+        if report_rows:
+            success_count = sum(1 for r in report_rows if r['outcome'] == 'success')
+            failure_count = sum(1 for r in report_rows if r['outcome'] == 'failure')
+            click.echo(f"Final Analysis Report: {os.path.join(run_dir, 'final_analysis_report.csv')}")
+            click.echo(f"  Total API calls: {len(report_rows)}, Successful: {success_count}, Failed: {failure_count}")
+    except Exception:
+        click.echo("Warning: Could not generate final analysis report.")
+
 
 @cli.command()
 @click.argument('token')
@@ -601,6 +612,30 @@ def full_migrate(config_file):
     click.echo("  • You need to re-scan your projects to populate code and issues")
     click.echo("  • Configure DevOps integrations for automatic analysis")
     click.echo()
+
+
+@cli.command()
+@click.argument('run_id')
+@click.option('--export_directory', default='/app/files/',
+              help="Root Directory containing all of the SonarQube exports")
+def analysis_report(run_id, export_directory):
+    """Generate a final analysis report CSV from a migration run's requests.log.
+
+    RUN_ID is the ID of the migration run to analyze
+    """
+    from analysis_report import generate_final_analysis_report
+    run_dir = os.path.join(export_directory, run_id)
+    if not os.path.isdir(run_dir):
+        click.echo(f"Run directory not found: {run_dir}")
+        return
+    report_rows = generate_final_analysis_report(run_directory=run_dir)
+    if report_rows:
+        success_count = sum(1 for r in report_rows if r['outcome'] == 'success')
+        failure_count = sum(1 for r in report_rows if r['outcome'] == 'failure')
+        click.echo(f"Final Analysis Report: {os.path.join(run_dir, 'final_analysis_report.csv')}")
+        click.echo(f"  Total API calls: {len(report_rows)}, Successful: {success_count}, Failed: {failure_count}")
+    else:
+        click.echo("No POST requests found in requests.log")
 
 
 if __name__ == '__main__':
