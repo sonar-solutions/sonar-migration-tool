@@ -29,7 +29,7 @@ The simplest way to migrate - download the executable, create a config file, and
 
 ### Step 1: Download the Executable
 
-Download the pre-built executable for your platform from the [Releases page](https://github.com/YOUR_REPO/releases):
+Download the pre-built executable for your platform from the [Releases page](https://github.com/sonar-solutions/sonar-reports/releases):
 
 - **macOS (Apple Silicon)**: `sonar-reports-macos-arm64`
 - **macOS (Intel)**: `sonar-reports-macos-x86_64`
