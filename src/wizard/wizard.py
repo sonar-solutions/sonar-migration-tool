@@ -11,6 +11,7 @@ REQUESTS_LOG = 'requests.log'
 ORGANIZATIONS_CSV = 'organizations.csv'
 PROJECTS_CSV = 'projects.csv'
 SKIPPED_ORG_SENTINEL = 'SKIPPED'
+MSG_RETRY_PROMPT = "Would you like to re-enter your information and try again?"
 
 from wizard.prompts import (
     display_welcome,
@@ -105,7 +106,7 @@ def run_extract_phase(state: WizardState, export_directory: str) -> WizardState:
 
         except Exception as e:
             display_error(f"Extract failed: {str(e)}")
-            if confirm_action("Would you like to re-enter your information and try again?", default=True):
+            if confirm_action(MSG_RETRY_PROMPT, default=True):
                 state.source_url = None
                 continue
             raise
@@ -229,7 +230,7 @@ def run_org_mapping_phase(state: WizardState, export_directory: str) -> WizardSt
 
         except Exception as e:
             display_error(f"Organization mapping failed: {str(e)}")
-            if confirm_action("Would you like to re-enter your information and try again?", default=True):
+            if confirm_action(MSG_RETRY_PROMPT, default=True):
                 state.target_url = None
                 state.enterprise_key = None
                 continue
@@ -467,7 +468,7 @@ def run_migrate_phase(state: WizardState, export_directory: str) -> WizardState:
 
         except Exception as e:
             display_error(f"Migration failed: {str(e)}")
-            if confirm_action("Would you like to re-enter your information and try again?", default=True):
+            if confirm_action(MSG_RETRY_PROMPT, default=True):
                 continue
             raise
 

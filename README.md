@@ -53,73 +53,15 @@ A CLI tool for migrating SonarQube Server configurations to SonarQube Cloud. Ext
 
 ---
 
-## Quick Start
+## Getting Started
 
-This example walks through a complete migration from a single SonarQube Server instance to SonarQube Cloud.
-
-### Step 1: Create a working directory
-
-```bash
-mkdir sonar-migration
-cd sonar-migration
-```
-
-### Step 2: Extract data from SonarQube Server
-
-```bash
-docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
-  extract https://your-sonarqube-server.com YOUR_SQS_ADMIN_TOKEN
-```
-
-**Expected output**: A timestamped directory under `./files/` containing extracted data in NDJSON format (e.g., `./files/1706745600/`)
-
-**Verify**: Check that `./files/<timestamp>/extract.json` exists and contains your server version
-
-### Step 3: Generate organization structure
-
-```bash
-docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest structure
-```
-
-**Expected output**: `organizations.csv` and `projects.csv` in `./files/`
-
-### Step 4: Map your SonarQube Cloud organizations
-
-Open `./files/organizations.csv` and fill in the `sonarcloud_org_key` column with your SonarQube Cloud organization keys:
-
-```csv
-alm,server_url,org_name,sonarcloud_org_key
-github,https://your-sonarqube-server.com,my-github-org,my-cloud-org-key
-```
-
-### Step 5: Generate entity mappings
-
-```bash
-docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest mappings
-```
-
-**Expected output**: `gates.csv`, `profiles.csv`, `groups.csv`, `templates.csv`, `portfolios.csv` in `./files/`
-
-### Step 6: Run the migration
-
-```bash
-docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
-  migrate YOUR_SQC_ENTERPRISE_TOKEN your-enterprise-key
-```
-
-**Expected output**: Configurations created in SonarQube Cloud
-
-### Step 7: Verify migration
-
-Log in to your SonarQube Cloud organization and verify:
-- Quality Gates were created with correct conditions
-- Quality Profiles were restored with rules
-- Groups exist with proper permissions
-- Projects are linked to repositories
+Choose your approach:
+- **[Interactive Wizard (Recommended)](#interactive-wizard-recommended)** — guided, step-by-step (recommended for most users)
+- **[Manual CLI Method](#manual-cli-method)** — direct commands for scripting or advanced use
 
 ---
 
-## Interactive Wizard
+## Interactive Wizard (Recommended)
 
 For a guided migration experience, use the interactive wizard command. The wizard walks you through each phase, prompting for credentials and providing progress feedback.
 
@@ -182,7 +124,61 @@ Phase 2 of 7: Structure
 
 ---
 
-## Detailed Workflow
+## Manual CLI Method
+
+Most users should use the wizard. For scripting or automation, use the manual commands below.
+
+### Step 1: Create a working directory
+
+```bash
+mkdir sonar-migration
+cd sonar-migration
+```
+
+### Step 2: Extract data from SonarQube Server
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  extract https://your-sonarqube-server.com YOUR_SQS_ADMIN_TOKEN
+```
+
+### Step 3: Generate organization structure
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest structure
+```
+
+### Step 4: Map your SonarQube Cloud organizations
+
+Open `./files/organizations.csv` and fill in the `sonarcloud_org_key` column with your SonarQube Cloud organization keys:
+
+```csv
+alm,server_url,org_name,sonarcloud_org_key
+github,https://your-sonarqube-server.com,my-github-org,my-cloud-org-key
+```
+
+### Step 5: Generate entity mappings
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest mappings
+```
+
+### Step 6: Run the migration
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  migrate YOUR_SQC_ENTERPRISE_TOKEN your-enterprise-key
+```
+
+### Step 7: Verify migration
+
+Log in to your SonarQube Cloud organization and verify:
+- Quality Gates were created with correct conditions
+- Quality Profiles were restored with rules
+- Groups exist with proper permissions
+- Projects are linked to repositories
+
+---
 
 ### Phase 1: Extract
 
@@ -216,34 +212,6 @@ docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
 | `--key_file_path` | Client certificate key file (for mTLS) | - |
 | `--cert_password` | Password for client certificate | - |
 
-#### What Gets Extracted
-
-The extraction runs 70 tasks organized by dependencies:
-
-| Category | Data Extracted |
-|----------|----------------|
-| **Projects** | Project list, settings, bindings, measures, tags, links |
-| **Branches** | Branch information, pull request data |
-| **Quality Gates** | Gate definitions, conditions, user/group permissions |
-| **Quality Profiles** | Profiles, rules, backups, inheritance, permissions |
-| **Rules** | Rule definitions, plugin rules, custom rules |
-| **Permissions** | Groups, users, project permissions |
-| **Templates** | Permission templates, default templates |
-| **Portfolios** | Portfolio definitions, project assignments |
-| **Applications** | Application definitions |
-| **Server** | Server info, settings, webhooks, plugins |
-
-#### Output Files
-
-```
-files/
-└── <extract_id>/           # Unix timestamp (e.g., 1706745600)
-    ├── extract.json        # Metadata: version, edition, URL
-    ├── requests.log        # HTTP request/response log
-    └── <task_name>/        # One folder per task
-        └── results.1.jsonl # NDJSON output files
-```
-
 #### Resuming a Failed Extraction
 
 If extraction fails partway through, resume using the extract ID:
@@ -272,34 +240,6 @@ docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
 |--------|-------------|---------|
 | `--export_directory` | Directory containing extracted data | `/app/files/` |
 
-#### What It Does
-
-1. Reads project bindings from the extraction
-2. Groups projects by DevOps platform (GitHub, GitLab, Azure DevOps, Bitbucket)
-3. Identifies unique organizations based on repository ownership
-4. Creates mapping files for user review
-
-#### Output Files
-
-**organizations.csv**
-
-| Column | Description | User Action |
-|--------|-------------|-------------|
-| `alm` | DevOps platform (github, gitlab, azure, bitbucket) | Read-only |
-| `server_url` | Original SonarQube Server URL | Read-only |
-| `org_name` | DevOps organization/namespace | Read-only |
-| `sonarcloud_org_key` | Target SonarQube Cloud org key | **Fill this in** |
-
-**projects.csv**
-
-| Column | Description |
-|--------|-------------|
-| `key` | Original project key |
-| `name` | Project name |
-| `server_url` | Source server URL |
-| `repository` | Linked repository |
-| `sonarqube_org_key` | Mapped organization key |
-
 #### Required Manual Step
 
 After running `structure`, you must edit `organizations.csv` and fill in the `sonarcloud_org_key` column with your SonarQube Cloud organization keys before proceeding to the next phase.
@@ -323,55 +263,7 @@ docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
 |--------|-------------|---------|
 | `--export_directory` | Directory containing extracted data | `/app/files/` |
 
-#### Output Files
-
-**gates.csv** - Quality Gate mappings
-
-| Column | Description |
-|--------|-------------|
-| `name` | Gate name |
-| `server_url` | Source server |
-| `sonarcloud_org_key` | Target organization |
-| `is_default` | Default gate flag |
-| `conditions` | Gate conditions (JSON) |
-
-**profiles.csv** - Quality Profile mappings
-
-| Column | Description |
-|--------|-------------|
-| `name` | Profile name |
-| `language` | Programming language |
-| `server_url` | Source server |
-| `sonarcloud_org_key` | Target organization |
-| `is_default` | Default profile flag |
-| `parent_name` | Parent profile for inheritance |
-
-**groups.csv** - Group mappings
-
-| Column | Description |
-|--------|-------------|
-| `name` | Group name |
-| `description` | Group description |
-| `server_url` | Source server |
-| `sonarcloud_org_key` | Target organization |
-
-**templates.csv** - Permission Template mappings
-
-| Column | Description |
-|--------|-------------|
-| `name` | Template name |
-| `server_url` | Source server |
-| `sonarcloud_org_key` | Target organization |
-| `is_default` | Default template flag |
-
-**portfolios.csv** - Portfolio mappings
-
-| Column | Description |
-|--------|-------------|
-| `key` | Portfolio key |
-| `name` | Portfolio name |
-| `server_url` | Source server |
-| `sonarcloud_org_key` | Target organization |
+Outputs `gates.csv`, `profiles.csv`, `groups.csv`, `templates.csv`, and `portfolios.csv` in the export directory. See [Output Files Reference](#output-files-reference) for column details.
 
 ---
 
@@ -456,14 +348,6 @@ docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
 |--------|-------------|---------|
 | `--input_directory` | Directory containing migration files (must<br> include `generateOrganizationMappings` task output) | `/app/files/` |
 | `--output_directory` | Directory to place pipeline update output files | Same as<br> `--input_directory` |
-
-#### What It Does
-
-1. Creates organization secrets (`SONARQUBE_CLOUD_TOKEN`, `SONARQUBE_CLOUD_URL`)
-2. Fetches pipeline files from repositories
-3. Parses and updates YAML configurations
-4. Updates scanner configuration files
-5. Creates pull requests with changes
 
 #### Supported Platforms
 
