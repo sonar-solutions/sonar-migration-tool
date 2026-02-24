@@ -74,6 +74,31 @@
       }
     },
     {
+      "operation": "apply_filter",
+      "kwargs": {
+        "left": {
+          "value": {
+            "path": "permission"
+          }
+        },
+        "right": {
+          "value": {
+            "raw": ["admin", "gateadmin", "profileadmin", "provisioning", "scan"]
+          }
+        },
+        "operator": {
+          "value": {
+            "raw": "in"
+          }
+        },
+        "warn_message": {
+          "value": {
+            "raw": "Skipping invalid global permission"
+          }
+        }
+      }
+    },
+    {
       "operation": "http_request",
       "kwargs": {
         "url": {
