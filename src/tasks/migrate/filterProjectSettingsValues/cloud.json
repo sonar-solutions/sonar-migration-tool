@@ -43,7 +43,19 @@
               "sonar.core.serverBaseURL",
               "sonaranalyzer-vbnet.staticResourceName",
               "sonaranalyzer-cs.nuget.packageVersion",
-              "sonaranalyzer.security.cs.pluginVersion"
+              "sonaranalyzer.security.cs.pluginVersion",
+              "sonar.cs.analyzer.dotnet.pluginVersion",
+              "sonar.cs.analyzer.dotnet.staticResourceName",
+              "sonar.vbnet.analyzer.dotnet.pluginVersion",
+              "sonar.vbnet.analyzer.dotnet.staticResourceName",
+              "sonaranalyzer.security.cs.analyzerId",
+              "sonaranalyzer.security.cs.ruleNamespace",
+              "sonar.dbcleaner.weeksBeforeKeepingOnlyOneSnapshotByMonth",
+              "sonar.dbcleaner.weeksBeforeKeepingOnlyOneSnapshotByWeek",
+              "sonar.forceAuthentication",
+              "sonar.global.exclusions",
+              "sonar.lf.enableGravatar",
+              "sonar.qualityProfiles.allowDisableInheritedRules"
             ]
           }
         },
