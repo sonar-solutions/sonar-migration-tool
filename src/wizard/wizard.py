@@ -152,9 +152,57 @@ def run_structure_phase(state: WizardState, export_directory: str) -> WizardStat
     return state
 
 
+def _process_org_mapping(org: dict) -> None:
+    """Display info for a single unmapped org and prompt the user to migrate or skip it."""
+    org_key = org.get('sonarqube_org_key', 'Unknown')
+    display_message(f"  Organization: {org_key}")
+    display_message(f"    Server URL: {org.get('server_url', 'Unknown')}")
+    display_message(f"    DevOps Binding: {org.get('devops_binding', 'None')}")
+    display_message(f"    Projects: {org.get('project_count', 0)}")
+    display_message("")
+
+    if confirm_action(f"Migrate '{org_key}' and all its projects?", default=True):
+        cloud_key = prompt_text(f"Enter SonarCloud organization key for '{org_key}'")
+        org['sonarcloud_org_key'] = cloud_key
+        display_separator()
+    else:
+        org['sonarcloud_org_key'] = SKIPPED_ORG_SENTINEL
+        display_warning(
+            f"Organization '{org_key}' "
+            f"and its {org.get('project_count', 0)} project(s) will be skipped"
+        )
+        display_separator()
+
+
+def _map_all_organizations(organizations: list, export_directory: str) -> None:
+    """Iterate organizations, prompt for any unmapped ones, then export the result."""
+    from utils import export_csv
+
+    unmapped = [org for org in organizations if not org.get('sonarcloud_org_key')]
+
+    if not unmapped:
+        display_message("All organizations are already mapped.")
+        return
+
+    display_message(f"Found {len(unmapped)} organization(s) to map:")
+    display_message("")
+
+    for org in organizations:
+        current_cloud_key = org.get('sonarcloud_org_key', '')
+        if not current_cloud_key:
+            _process_org_mapping(org)
+        elif current_cloud_key == SKIPPED_ORG_SENTINEL:
+            display_message(f"  {org.get('sonarqube_org_key')} -> SKIPPED")
+        else:
+            display_message(f"  {org.get('sonarqube_org_key')} -> {current_cloud_key} (already mapped)")
+
+    export_csv(directory=export_directory, name='organizations', data=organizations)
+    display_success("Organization mappings saved")
+
+
 def run_org_mapping_phase(state: WizardState, export_directory: str) -> WizardState:
     """Guide user through organization mapping to SonarQube Cloud"""
-    from utils import load_csv, export_csv
+    from utils import load_csv
 
     display_phase_start(WizardPhase.ORG_MAPPING)
 
@@ -174,54 +222,13 @@ def run_org_mapping_phase(state: WizardState, export_directory: str) -> WizardSt
         display_message("")
 
         try:
-            # Load organizations
             organizations = load_csv(directory=export_directory, filename=ORGANIZATIONS_CSV)
 
             if not organizations:
                 display_error("No organizations found. Please run structure analysis first.")
                 raise ValueError("No organizations found")
 
-            # Check which organizations need mapping
-            unmapped = [org for org in organizations if not org.get('sonarcloud_org_key')]
-
-            if unmapped:
-                display_message(f"Found {len(unmapped)} organization(s) to map:")
-                display_message("")
-
-                for org in organizations:
-                    current_cloud_key = org.get('sonarcloud_org_key', '')
-                    if not current_cloud_key:
-                        display_message(f"  Organization: {org.get('sonarqube_org_key', 'Unknown')}")
-                        display_message(f"    Server URL: {org.get('server_url', 'Unknown')}")
-                        display_message(f"    DevOps Binding: {org.get('devops_binding', 'None')}")
-                        display_message(f"    Projects: {org.get('project_count', 0)}")
-                        display_message("")
-
-                        if confirm_action(
-                            f"Migrate '{org.get('sonarqube_org_key', 'Unknown')}' and all its projects?",
-                            default=True
-                        ):
-                            cloud_key = prompt_text(
-                                f"Enter SonarCloud organization key for '{org.get('sonarqube_org_key', 'Unknown')}'")
-                            org['sonarcloud_org_key'] = cloud_key
-                            display_separator()
-                        else:
-                            org['sonarcloud_org_key'] = SKIPPED_ORG_SENTINEL
-                            display_warning(
-                                f"Organization '{org.get('sonarqube_org_key', 'Unknown')}' "
-                                f"and its {org.get('project_count', 0)} project(s) will be skipped"
-                            )
-                            display_separator()
-                    elif current_cloud_key == SKIPPED_ORG_SENTINEL:
-                        display_message(f"  {org.get('sonarqube_org_key')} -> SKIPPED")
-                    else:
-                        display_message(f"  {org.get('sonarqube_org_key')} -> {current_cloud_key} (already mapped)")
-
-                # Save updated organizations
-                export_csv(directory=export_directory, name='organizations', data=organizations)
-                display_success("Organization mappings saved")
-            else:
-                display_message("All organizations are already mapped.")
+            _map_all_organizations(organizations, export_directory)
 
             state.organizations_mapped = True
             state.phase = WizardPhase.MAPPINGS
