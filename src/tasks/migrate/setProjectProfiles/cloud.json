@@ -50,6 +50,31 @@
       }
     },
     {
+      "operation": "apply_filter",
+      "kwargs": {
+        "left": {
+          "value": {
+            "path": "$.profile.language"
+          }
+        },
+        "right": {
+          "value": {
+            "raw": ["c++", "grvy", "ps"]
+          }
+        },
+        "operator": {
+          "value": {
+            "raw": "nin"
+          }
+        },
+        "warn_message": {
+          "value": {
+            "raw": "Skipping unsupported language"
+          }
+        }
+      }
+    },
+    {
       "operation": "http_request",
       "kwargs": {
         "url": {
