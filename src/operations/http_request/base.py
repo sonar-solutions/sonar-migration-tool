@@ -99,13 +99,26 @@ async def async_safe_json_request(client, method, url, log_attributes: dict, rai
         status_code, js = process_errors(
             url=url, exc=exc, method=method, log_attributes=log_attributes
         )
+    except Exception as exc:
+        status_code, js = None, dict()
+        log_event(
+            level='error', status='failure', process_type='request_completed', payload=dict(
+                method=method,
+                url=url,
+                status=None,
+                created_ts=datetime.now(tz=timezone.utc).timestamp(),
+                error=str(exc),
+                **log_attributes,
+            ),
+            logger_name='http_request'
+        )
     return status_code, js
 
 
 def process_response(resp, raise_over):
     status = resp.status_code
     js = format_response_body(response=resp)
-    if status >= raise_over:
+    if status is not None and status >= raise_over:
         resp.raise_for_status()
     return status, js
 
@@ -124,6 +137,8 @@ def process_errors(exc, method, url, log_attributes):
             logger_name='http_request'
         )
     elif isinstance(exc, httpx.HTTPStatusError):
+        js = format_response_body(response=exc.response)
+        status_code = exc.response.status_code
         log_event(
             level='error', status='failure', process_type='request_completed', payload=dict(
                 method=method,
@@ -135,8 +150,6 @@ def process_errors(exc, method, url, log_attributes):
             ),
             logger_name='http_request'
         )
-        js = format_response_body(response=exc.response)
-        status_code = exc.response.status_code
     return status_code, js
 
 
