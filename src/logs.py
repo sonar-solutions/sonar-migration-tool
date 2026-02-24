@@ -10,13 +10,15 @@ LEVEL_MAPPING = {
 }
 
 
-def configure_logger(name, level, output_file=None):
+def configure_logger(name, level, output_file=None, operation='default'):
     logger = getLogger(name)
     logger.setLevel(LEVEL_MAPPING.get(level.lower(), 0))
     if output_file is None:
         return logger
     handler = FileHandler(output_file)
     handler.setLevel(LEVEL_MAPPING.get(level.lower(), 0))
+    formatter = Formatter(f'%(asctime)s | {operation} | %(levelname)s | %(message)s')
+    handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
 

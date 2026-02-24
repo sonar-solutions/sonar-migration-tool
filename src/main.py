@@ -102,7 +102,7 @@ def extract(url, token, config_file, export_directory: str, extract_type, pem_fi
     server_version, edition = get_server_details(url=url, cert=cert, token=token)
     extract_directory = os.path.join(export_directory, extract_id + '/')
     os.makedirs(extract_directory, exist_ok=True)
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, 'requests.log'))
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, 'requests.log'), operation='extract')
     configure_client(url=url, cert=cert, server_version=server_version, token=token, concurrency=concurrency,
                      timeout=timeout)
     configs = get_available_task_configs(client_version=server_version, edition=edition)
@@ -273,7 +273,7 @@ def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_dir
         create_plan = True
     run_dir, completed = validate_migration(directory=export_directory, run_id=run_id)
     extract_mapping = get_unique_extracts(directory=export_directory)
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, 'requests.log'))
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, 'requests.log'), operation='migrate')
     if target_task is not None:
         target_tasks = [target_task]
     else:
@@ -334,7 +334,7 @@ def reset(token, edition, url, enterprise_key, concurrency, export_directory):
     run_dir = os.path.join(export_directory, run_id)
     os.makedirs(run_dir, exist_ok=True)
 
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, 'requests.log'))
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, 'requests.log'), operation='reset')
     target_tasks = list([k for k in configs.keys() if k.startswith('delete')])
     plan = generate_task_plan(
         target_tasks=target_tasks,
@@ -383,7 +383,7 @@ def pipelines(secrets_file, sonar_token, sonar_url, input_directory, output_dire
     run_dir = os.path.join(output_directory, run_id)
     os.makedirs(run_dir, exist_ok=True)
     loop = asyncio.get_event_loop()
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(pipeline_dir, 'requests.log'))
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(pipeline_dir, 'requests.log'), operation='pipelines')
     results = loop.run_until_complete(
         update_pipelines(
             input_directory=pipeline_dir, output_directory=run_dir, org_secret_mapping=secrets, sonar_token=sonar_token,
@@ -478,7 +478,7 @@ def full_migrate(config_file):
     server_version, edition = get_server_details(url=sonarqube_url, cert=cert, token=sonarqube_token)
     extract_directory = os.path.join(export_dir_abs, extract_id + '/')
     os.makedirs(extract_directory, exist_ok=True)
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, 'requests.log'))
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, 'requests.log'), operation='extract')
     configure_client(url=sonarqube_url, cert=cert, server_version=server_version, token=sonarqube_token,
                      concurrency=concurrency, timeout=timeout)
 
@@ -554,7 +554,7 @@ def full_migrate(config_file):
     api_url = sonarcloud_url.replace('https://', 'https://api.')
     configure_client(url=api_url, cert=None, server_version="cloud", token=sonarcloud_token)
 
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, 'requests.log'))
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, 'requests.log'), operation='migrate')
 
     configs = get_available_task_configs(client_version='cloud', edition='enterprise')
     target_tasks = list([k for k in configs.keys() if not any([k.startswith(i) for i in ['get', 'delete', 'reset']])])
