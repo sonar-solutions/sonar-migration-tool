@@ -14,7 +14,7 @@
       "kwargs": {
         "inputs": {
           "value": {
-            "raw": ["admin", "profileAdmin", "gateadmin", "securityhotspotadmin", "scan", "provisioning"]
+            "raw": ["admin", "profileadmin", "gateadmin", "securityhotspotadmin", "scan", "provisioning"]
           }
         },
         "resultKey": {
