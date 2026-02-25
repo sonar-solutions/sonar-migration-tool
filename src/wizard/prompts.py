@@ -1,5 +1,6 @@
 """Display helpers and user prompts for the wizard interface"""
 import sys
+from urllib.parse import urlparse
 
 import click
 from wizard.state import WizardPhase
@@ -131,12 +132,38 @@ def prompt_credentials(prompt_text: str, hide_input: bool = True) -> str:
     return click.prompt(prompt_text, hide_input=False)
 
 
-def prompt_url(prompt_text: str, default: str = None) -> str:
+def _validate_server_url(url: str) -> str | None:
+    """Return an error message if url is invalid, else None."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "Invalid URL format. Please enter a complete URL."
+
+    if parsed.scheme not in ("http", "https"):
+        return "URL must start with http:// or https://"
+
+    hostname = (parsed.hostname or "").lower()
+    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        return "localhost is not a valid server URL. Please enter a remote server address."
+
+    if not parsed.netloc:
+        return "URL must include a valid hostname."
+
+    return None
+
+
+def prompt_url(prompt_text: str, default: str = None, validate: bool = False) -> str:
     """Collect URL from user"""
-    url = click.prompt(prompt_text, default=default)
-    if not url.endswith('/'):
-        url = f"{url}/"
-    return url
+    while True:
+        url = click.prompt(prompt_text, default=default)
+        if validate:
+            error = _validate_server_url(url)
+            if error:
+                display_error(error)
+                continue
+        if not url.endswith('/'):
+            url = f"{url}/"
+        return url
 
 
 def prompt_text(prompt_text: str, default: str = None) -> str:

@@ -1,7 +1,10 @@
 """Main wizard logic and phase handlers for SonarQube migration"""
 import json
 import os
+import sys
 from datetime import datetime, UTC
+
+import ssl
 
 import click
 
@@ -43,10 +46,14 @@ def run_extract_phase(state: WizardState, export_directory: str) -> WizardState:
 
     display_phase_start(WizardPhase.EXTRACT)
 
+    pem_file_path = None
+    key_file_path = None
+    cert_password = None
+
     while True:
         # Collect credentials if not already set
         if not state.source_url:
-            state.source_url = prompt_url("SonarQube Server URL (e.g., https://sonarqube.example.com)")
+            state.source_url = prompt_url("SonarQube Server URL (e.g., https://sonarqube.example.com)", validate=True)
 
         token = prompt_credentials("SonarQube Server Admin Token")
 
@@ -55,18 +62,10 @@ def run_extract_phase(state: WizardState, export_directory: str) -> WizardState:
             {"URL": state.source_url}
         ):
             state.source_url = None
+            pem_file_path = None
+            key_file_path = None
+            cert_password = None
             continue
-
-        # Optional client certificate
-        pem_file_path = None
-        key_file_path = None
-        cert_password = None
-        if confirm_action("Do you need to use a client certificate?", default=False):
-            pem_file_path = prompt_text("Path to client certificate PEM file")
-            key_file_path = prompt_text("Path to client certificate key file")
-            cert_password = prompt_credentials("Certificate password (leave empty if none)", hide_input=True)
-            if not cert_password:
-                cert_password = None
 
         # Generate extract ID
         extract_id = str(int(datetime.now(UTC).timestamp()))
@@ -112,10 +111,50 @@ def run_extract_phase(state: WizardState, export_directory: str) -> WizardState:
             break
 
         except Exception as e:
+            # Walk the exception chain to detect SSL errors.
+            # httpx 0.27.x wraps ssl.SSLError inside httpx.ConnectError.
+            ssl_error = False
+            cause: BaseException | None = e
+            seen: set[int] = set()
+            while cause is not None and id(cause) not in seen:
+                seen.add(id(cause))
+                if isinstance(cause, ssl.SSLError):
+                    ssl_error = True
+                    break
+                cause = cause.__cause__ or cause.__context__
+
+            if ssl_error:
+                display_error(
+                    "SSL/TLS error — the server may require a client certificate, "
+                    "or has an invalid SSL certificate."
+                )
+                if confirm_action("Would you like to provide a client certificate?", default=True):
+                    pem_file_path = prompt_text("Path to client certificate PEM file")
+                    key_file_path = prompt_text("Path to client certificate key file")
+                    cert_password = prompt_credentials(
+                        "Certificate password (leave empty if none)", hide_input=True
+                    )
+                    if not cert_password:
+                        cert_password = None
+                    continue  # retry with cert; URL and token are preserved
+                # User declined cert — offer full retry or exit
+                if confirm_action(MSG_RETRY_PROMPT, default=True):
+                    state.source_url = None
+                    pem_file_path = None
+                    key_file_path = None
+                    cert_password = None
+                    continue
+                state.source_url = None
+                raise
+
             display_error(f"Extract failed: {str(e)}")
             if confirm_action(MSG_RETRY_PROMPT, default=True):
                 state.source_url = None
+                pem_file_path = None
+                key_file_path = None
+                cert_password = None
                 continue
+            state.source_url = None  # Clear invalid URL so next resume re-prompts
             raise
 
     display_phase_complete(WizardPhase.EXTRACT)
@@ -712,4 +751,4 @@ def wizard(export_directory):
         display_message("Your progress has been saved.")
         display_message(f"Run the wizard again to resume from: {state.phase.value}")
         state.save(export_directory)
-        raise
+        sys.exit(1)
