@@ -212,7 +212,9 @@ def mappings(export_directory):
               help="Root Directory containing all of the SonarQube exports")
 @click.option('--target_task',
               help='Name of a specific migration task to complete. All dependent tasks will be be included')
-def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_directory, target_task, config_file):
+@click.option('--skip_profiles', is_flag=True, default=False,
+              help='Skip quality profile migration/provisioning in SonarQube Cloud')
+def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_directory, target_task, config_file, skip_profiles):
     """Migrate SonarQube Server configurations to SonarQube Cloud. User must run the structure and mappings command and add the SonarQube Cloud organization keys to the organizations.csv in order to start the migration
 
     TOKEN is a user token that has admin permissions at the enterprise level and all organizations
@@ -234,6 +236,7 @@ def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_dir
                 'concurrency': concurrency,
                 'export_directory': export_directory,
                 'target_task': target_task,
+                'skip_profiles': skip_profiles if skip_profiles else None,
             }
             config = merge_config_with_cli(config, cli_args)
             token = config.get('token')
@@ -244,6 +247,7 @@ def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_dir
             concurrency = config.get('concurrency', 25)
             export_directory = config.get('export_directory', '/app/files/')
             target_task = config.get('target_task')
+            skip_profiles = config.get('skip_profiles', False)
         except (FileNotFoundError, json.JSONDecodeError) as e:
             click.echo(f"Error loading config file: {e}")
             return
@@ -279,6 +283,8 @@ def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_dir
     else:
         target_tasks = list(
             [k for k in configs.keys() if not any([k.startswith(i) for i in ['get', 'delete', 'reset']])])
+    if skip_profiles:
+        target_tasks = [t for t in target_tasks if 'Profile' not in t and 'profile' not in t]
     completed = completed.union(MIGRATION_TASKS)
     if create_plan:
         plan = generate_task_plan(
@@ -443,6 +449,7 @@ def full_migrate(config_file):
         export_directory = config.get('settings', {}).get('export_directory', './files')
         concurrency = config.get('settings', {}).get('concurrency', 10)
         timeout = config.get('settings', {}).get('timeout', 60)
+        skip_profiles = config.get('settings', {}).get('skip_profiles', False)
     except KeyError as e:
         click.echo(f"Error: Missing required configuration key: {e}")
         click.echo("\nRequired structure:")
@@ -558,6 +565,8 @@ def full_migrate(config_file):
 
     configs = get_available_task_configs(client_version='cloud', edition='enterprise')
     target_tasks = list([k for k in configs.keys() if not any([k.startswith(i) for i in ['get', 'delete', 'reset']])])
+    if skip_profiles:
+        target_tasks = [t for t in target_tasks if 'Profile' not in t and 'profile' not in t]
     completed = completed.union(set(MIGRATION_TASKS))
 
     plan = generate_task_plan(target_tasks=target_tasks, task_configs=configs, completed=completed)
