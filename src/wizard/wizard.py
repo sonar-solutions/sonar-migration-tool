@@ -216,7 +216,7 @@ def run_org_mapping_phase(state: WizardState, export_directory: str) -> WizardSt
     while True:
         # Collect SonarQube Cloud credentials
         if not state.target_url:
-            state.target_url = prompt_url("SonarQube Cloud URL (e.g., https://sonarcloud.io/)", default="https://sonarcloud.io/")
+            state.target_url = prompt_url("SonarQube Cloud URL (e.g., https://sonarcloud.io/)")
 
         if not state.enterprise_key:
             state.enterprise_key = prompt_text("SonarQube Cloud Enterprise Key")
