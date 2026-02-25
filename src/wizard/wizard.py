@@ -29,6 +29,7 @@ from wizard.prompts import (
     prompt_url,
     prompt_text,
     confirm_action,
+    confirm_review,
     display_separator,
 )
 
@@ -45,10 +46,16 @@ def run_extract_phase(state: WizardState, export_directory: str) -> WizardState:
     while True:
         # Collect credentials if not already set
         if not state.source_url:
-            state.source_url = prompt_url("SonarQube Server URL")
+            state.source_url = prompt_url("SonarQube Server URL (e.g., https://sonarqube.example.com)")
 
-        display_message(f"Using source URL: {state.source_url}")
         token = prompt_credentials("SonarQube Server Admin Token")
+
+        if not confirm_review(
+            "SonarQube Server information",
+            {"URL": state.source_url}
+        ):
+            state.source_url = None
+            continue
 
         # Optional client certificate
         pem_file_path = None
@@ -209,10 +216,21 @@ def run_org_mapping_phase(state: WizardState, export_directory: str) -> WizardSt
     while True:
         # Collect SonarQube Cloud credentials
         if not state.target_url:
-            state.target_url = prompt_url("SonarQube Cloud URL", default="https://sonarcloud.io/")
+            state.target_url = prompt_url("SonarQube Cloud URL (e.g., https://sonarcloud.io/)", default="https://sonarcloud.io/")
 
         if not state.enterprise_key:
             state.enterprise_key = prompt_text("SonarQube Cloud Enterprise Key")
+
+        if not confirm_review(
+            "SonarQube Cloud information",
+            {
+                "URL           ": state.target_url,
+                "Enterprise Key": state.enterprise_key,
+            }
+        ):
+            state.target_url = None
+            state.enterprise_key = None
+            continue
 
         display_message("")
         display_message("Organization Mapping")
@@ -657,18 +675,18 @@ def wizard(export_directory):
     # Load existing state or start fresh
     state = WizardState.load(export_directory)
 
-    # Check for resume
-    state = _handle_resume(state, export_directory)
-    if state is None:
-        return
-
-    # Determine starting phase
-    state, current_phase = _determine_starting_phase(state, export_directory)
-    if current_phase is None:
-        return
-
-    # Run phases
     try:
+        # Check for resume
+        state = _handle_resume(state, export_directory)
+        if state is None:
+            return
+
+        # Determine starting phase
+        state, current_phase = _determine_starting_phase(state, export_directory)
+        if current_phase is None:
+            return
+
+        # Run phases
         while current_phase and current_phase != WizardPhase.COMPLETE:
             display_phase_progress(current_phase)
 
@@ -683,7 +701,7 @@ def wizard(export_directory):
         state.save(export_directory)
         display_wizard_complete()
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, click.Abort, EOFError):
         display_message("")
         display_message("Wizard interrupted. Your progress has been saved.")
         display_message(f"Run the wizard again to resume from: {state.phase.value}")

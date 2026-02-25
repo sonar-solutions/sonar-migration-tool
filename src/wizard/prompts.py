@@ -183,6 +183,24 @@ def confirm_action(message: str, default: bool = False) -> bool:
     return click.confirm(message, default=default)
 
 
+def confirm_review(title: str, details: dict) -> bool:
+    """Display a summary of visible inputs and ask the user to accept or edit.
+
+    Token/secret fields are intentionally excluded — they are hidden during
+    input and cannot be visually verified. If the user chooses to edit, all
+    credentials (including the token) are re-collected.
+
+    Default is to edit/change (False) — user must explicitly choose to accept.
+    Returns True if accepted, False if the user wants to edit.
+    """
+    display_message("")
+    display_message(f"Please verify your {title}:")
+    for label, value in details.items():
+        display_message(f"  {label}: {value}")
+    display_message("")
+    return confirm_action("Accept this information and continue?", default=False)
+
+
 def display_resume_info(state):
     """Display information about the resumable state"""
     click.echo()
