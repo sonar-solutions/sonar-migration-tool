@@ -142,14 +142,48 @@ def _validate_server_url(url: str) -> str | None:
     if parsed.scheme not in ("http", "https"):
         return "URL must start with http:// or https://"
 
-    hostname = (parsed.hostname or "").lower()
-    if hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
-        return "localhost is not a valid server URL. Please enter a remote server address."
-
     if not parsed.netloc:
         return "URL must include a valid hostname."
 
     return None
+
+
+_LOOPBACK_HOSTNAMES = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _is_localhost_url(url: str) -> bool:
+    """Return True if the URL targets a loopback/localhost address."""
+    try:
+        hostname = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return hostname in _LOOPBACK_HOSTNAMES
+
+
+def _display_localhost_docker_notice():
+    """Explain Docker networking when a loopback URL is entered."""
+    click.echo()
+    display_warning(
+        "This tool runs inside a Docker container. Inside the container, "
+        "\"localhost\" refers to the container itself, not your host machine."
+    )
+    click.echo()
+    click.echo("To connect to a SonarQube instance running on your host machine,")
+    click.echo("use host.docker.internal as the hostname instead of localhost.")
+    click.echo()
+    click.echo("  Mac / Windows (Docker Desktop) — no extra flags needed:")
+    click.echo("    Use: http://host.docker.internal:<port>")
+    click.echo()
+    click.echo("  Linux — re-run the tool with the --add-host flag:")
+    click.echo(
+        "    docker run -it --add-host=host.docker.internal:host-gateway \\\n"
+        "      -v ./files:/app/files \\\n"
+        "      ghcr.io/sonar-solutions/sonar-reports:latest wizard"
+    )
+    click.echo("    Then use: http://host.docker.internal:<port>")
+    click.echo()
+    click.echo("Press Ctrl+C to exit and re-run, or re-enter your URL now.")
+    click.echo()
 
 
 def prompt_url(prompt_text: str, default: str = None, validate: bool = False) -> str:
@@ -157,6 +191,9 @@ def prompt_url(prompt_text: str, default: str = None, validate: bool = False) ->
     while True:
         url = click.prompt(prompt_text, default=default)
         if validate:
+            if _is_localhost_url(url):
+                _display_localhost_docker_notice()
+                continue
             error = _validate_server_url(url)
             if error:
                 display_error(error)
