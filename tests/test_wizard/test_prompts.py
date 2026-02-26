@@ -445,13 +445,13 @@ class TestPromptCredentials:
         mock_old_settings = [0, 0, 0, 0, 0, 0, [b'\x00'] * 32]
 
         with patch('wizard.prompts.sys') as mock_sys, \
-             patch('wizard.prompts.click') as mock_click:
+             patch('wizard.prompts.click') as _mock_click:
             mock_sys.stdin.fileno.return_value = mock_fd
             mock_sys.stdin.read.side_effect = mock_stdin_chars
             mock_sys.stdout.write.side_effect = lambda c: written_chars.append(c)
             mock_sys.stdout.flush.return_value = None
 
-            with patch('tty.setraw') as mock_setraw, \
+            with patch('tty.setraw') as _mock_setraw, \
                  patch('termios.tcgetattr', return_value=mock_old_settings), \
                  patch('termios.tcsetattr'):
                 from wizard.prompts import _read_masked_input
@@ -470,7 +470,7 @@ class TestPromptCredentials:
         mock_old_settings = [0, 0, 0, 0, 0, 0, [b'\x00'] * 32]
 
         with patch('wizard.prompts.sys') as mock_sys, \
-             patch('wizard.prompts.click') as mock_click:
+             patch('wizard.prompts.click') as _mock_click:
             mock_sys.stdin.fileno.return_value = mock_fd
             mock_sys.stdin.read.side_effect = mock_stdin_chars
             mock_sys.stdout.write.side_effect = lambda c: written_chars.append(c)

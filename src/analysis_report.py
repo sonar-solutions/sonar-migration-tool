@@ -106,6 +106,38 @@ def _extract_error_message(payload):
     return ''
 
 
+def _determine_outcome(http_status, log_status):
+    if http_status is not None and http_status < 400:
+        return 'success'
+    if log_status == 'failure' or (http_status is not None and http_status >= 400):
+        return 'failure'
+    return 'success'
+
+
+def _process_entry(entry):
+    if entry.get('process_type') != 'request_completed':
+        return None
+    payload = entry.get('payload', {})
+    if payload.get('method') != 'POST':
+        return None
+
+    url = payload.get('url', '')
+    http_status = payload.get('status')
+    log_status = entry.get('status', '')
+    outcome = _determine_outcome(http_status, log_status)
+    error_message = _extract_error_message(payload) if outcome == 'failure' else ''
+
+    return {
+        'entity_type': _classify_entity_type(url),
+        'entity_name': _extract_entity_name(payload),
+        'organization': _extract_organization(payload),
+        'url': url,
+        'http_status': http_status if http_status is not None else '',
+        'outcome': outcome,
+        'error_message': error_message,
+    }
+
+
 def generate_final_analysis_report(run_directory, output_directory=None):
     if output_directory is None:
         output_directory = run_directory
@@ -120,38 +152,9 @@ def generate_final_analysis_report(run_directory, output_directory=None):
             entry = _parse_log_line(line)
             if entry is None:
                 continue
-            if entry.get('process_type') != 'request_completed':
-                continue
-            payload = entry.get('payload', {})
-            if payload.get('method') != 'POST':
-                continue
-
-            url = payload.get('url', '')
-            http_status = payload.get('status')
-            log_status = entry.get('status', '')
-
-            if http_status is not None and http_status < 400:
-                outcome = 'success'
-            elif log_status == 'failure':
-                outcome = 'failure'
-            elif http_status is not None and http_status >= 400:
-                outcome = 'failure'
-            else:
-                outcome = 'success'
-
-            error_message = ''
-            if outcome == 'failure':
-                error_message = _extract_error_message(payload)
-
-            rows.append({
-                'entity_type': _classify_entity_type(url),
-                'entity_name': _extract_entity_name(payload),
-                'organization': _extract_organization(payload),
-                'url': url,
-                'http_status': http_status if http_status is not None else '',
-                'outcome': outcome,
-                'error_message': error_message,
-            })
+            row = _process_entry(entry)
+            if row is not None:
+                rows.append(row)
 
     if rows:
         export_csv(directory=output_directory, name='final_analysis_report', data=rows)
