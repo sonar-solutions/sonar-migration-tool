@@ -64,7 +64,8 @@ Edit `migration-config.json` with your credentials:
   "settings": {
     "export_directory": "./files",
     "concurrency": 10,
-    "timeout": 60
+    "timeout": 60,
+    "skip_profiles": false
   }
 }
 ```
@@ -264,6 +265,7 @@ Optional migrate parameters:
 - `--run_id=123456` - Resume a previous migration
 - `--target_task=createProjects` - Migrate specific task only
 - `--edition=enterprise` - SonarCloud edition (default: enterprise)
+- `--skip_profiles` - Skip quality profile migration/provisioning
 
 **6. Generate a migration report (optional):**
 ```bash
@@ -348,6 +350,7 @@ Optional migrate parameters:
 - `--run_id=123456` - Resume a previous migration
 - `--target_task=createProjects` - Migrate specific task only
 - `--edition=enterprise` - SonarCloud edition (default: enterprise)
+- `--skip_profiles` - Skip quality profile migration/provisioning
 
 **6. Generate a migration report (optional):**
 ```bash
@@ -424,6 +427,7 @@ Optional migrate parameters:
 - `--run_id=123456` - Resume a previous migration
 - `--target_task=createProjects` - Migrate specific task only
 - `--edition=enterprise` - SonarCloud edition (default: enterprise)
+- `--skip_profiles` - Skip quality profile migration/provisioning
 
 **6. Generate a migration report (optional):**
 ```bash
@@ -589,6 +593,28 @@ ls files/
   --export_directory=./files \
   --target_task=createProjects
 ```
+
+### Skip Quality Profile Migration
+
+If quality profiles are not important to migrate, or if profile provisioning causes issues, you can skip them entirely:
+
+```bash
+./dist/sonar-reports-macos-arm64 migrate \
+  YOUR_TOKEN YOUR_ENTERPRISE_KEY \
+  --export_directory=./files \
+  --skip_profiles
+```
+
+For `full-migrate`, set `skip_profiles` in the config file:
+```json
+{
+  "settings": {
+    "skip_profiles": true
+  }
+}
+```
+
+This skips all profile-related tasks: creating profiles, restoring profile rules, setting default profiles, profile parent relationships, profile group permissions, and project profile assignments.
 
 ### Extract Specific Data Only
 
