@@ -6,6 +6,7 @@ from datetime import datetime, UTC
 
 
 def generate_run_id(directory: str) -> str:
+    directory = os.path.realpath(directory)
     today = datetime.now(UTC).strftime('%m-%d-%Y')
     existing = [
         d for d in os.listdir(directory)
@@ -53,6 +54,7 @@ def multi_extract_object_reader(directory: str, mapping: dict[str: str], key):
 
 
 def export_csv(directory, name, data):
+    directory = os.path.realpath(directory)
     with open(os.path.join(directory, f'{name}.csv'), 'wt') as f:
         if data:
             writer = csv.DictWriter(f, fieldnames=data[0].keys())

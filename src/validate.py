@@ -1,7 +1,7 @@
 import os
 from utils import load_csv, export_jsonl
 def validate_migration(directory, run_id):
-    run_dir = f"{directory}/{run_id}/"
+    run_dir = os.path.realpath(os.path.join(directory, run_id)) + '/'
     os.makedirs(run_dir, exist_ok=True)
     completed = set()
     mappings = [

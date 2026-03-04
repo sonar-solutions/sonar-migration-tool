@@ -139,8 +139,11 @@ def _process_entry(entry):
 
 
 def generate_final_analysis_report(run_directory, output_directory=None):
+    run_directory = os.path.realpath(run_directory)
     if output_directory is None:
         output_directory = run_directory
+    else:
+        output_directory = os.path.realpath(output_directory)
 
     log_path = os.path.join(run_directory, 'requests.log')
     if not os.path.exists(log_path):

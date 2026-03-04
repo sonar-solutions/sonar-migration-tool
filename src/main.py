@@ -266,6 +266,7 @@ def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_dir
             concurrency = 25
         if export_directory is None:
             export_directory = '/app/files/'
+    export_directory = os.path.realpath(export_directory)
 
     # Validate required arguments
     if not token or not enterprise_key:
@@ -500,7 +501,7 @@ def full_migrate(config_file):
     server_version, edition = get_server_details(url=sonarqube_url, cert=cert, token=sonarqube_token)
     extract_directory = os.path.join(export_dir_abs, extract_id + '/')
     os.makedirs(extract_directory, exist_ok=True)
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, 'requests.log'), operation='extract')
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, REQUESTS_LOG), operation='extract')
     configure_client(url=sonarqube_url, cert=cert, server_version=server_version, token=sonarqube_token,
                      concurrency=concurrency, timeout=timeout)
 
@@ -576,7 +577,7 @@ def full_migrate(config_file):
     api_url = sonarcloud_url.replace('https://', 'https://api.')
     configure_client(url=api_url, cert=None, server_version="cloud", token=sonarcloud_token)
 
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, 'requests.log'), operation='migrate')
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, REQUESTS_LOG), operation='migrate')
 
     configs = get_available_task_configs(client_version='cloud', edition='enterprise')
     target_tasks = list([k for k in configs.keys() if not any([k.startswith(i) for i in ['get', 'delete', 'reset']])])

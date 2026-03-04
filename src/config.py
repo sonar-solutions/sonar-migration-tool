@@ -17,6 +17,7 @@ def load_config_file(config_path: str) -> Dict[str, Any]:
         FileNotFoundError: If the config file doesn't exist
         json.JSONDecodeError: If the config file is not valid JSON
     """
+    config_path = os.path.realpath(config_path)
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
