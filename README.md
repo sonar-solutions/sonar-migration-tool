@@ -85,10 +85,10 @@ The wizard guides you through all migration phases:
 
 1. **Extract** - Prompts for SonarQube Server URL and admin token, optional client certificate
 2. **Structure** - Automatically generates organization and project mappings
-3. **Organization Mapping** - Prompts you to map each SonarQube Server org to a SonarCloud org key
+3. **Organization Mapping** - Prompts you to map each SonarQube Server org to a SonarQube Cloud org key
 4. **Mappings** - Generates entity mappings (gates, profiles, groups, templates)
 5. **Validate** - Runs pre-flight validation checks
-6. **Migrate** - Confirms before pushing configurations to SonarCloud
+6. **Migrate** - Confirms before pushing configurations to SonarQube Cloud
 7. **Pipelines** - Optional CI/CD pipeline updates (if secrets.json exists)
 
 ### Features
@@ -295,6 +295,7 @@ docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
 | `--concurrency` | Maximum concurrent API requests | 25 |
 | `--run_id` | Resume a previous migration | (new migration) |
 | `--target_task` | Run only a specific task and its dependencies | (all tasks) |
+| `--skip_profiles` | Skip migration of quality profiles | `false` |
 
 #### Migration Tasks
 
@@ -366,6 +367,59 @@ docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
 ---
 
 ## Additional Commands
+
+### Full Migrate
+
+Run a complete end-to-end migration from a single JSON config file. Automatically runs extract, structure, org mapping, mappings, and migrate phases in sequence.
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  full_migrate <CONFIG_FILE>
+```
+
+#### Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `CONFIG_FILE` | Path to a JSON configuration file (see below) |
+
+#### Config File Format
+
+```json
+{
+  "sonarqube": {
+    "url": "https://your-sonarqube-server.com",
+    "token": "YOUR_SQS_ADMIN_TOKEN"
+  },
+  "sonarcloud": {
+    "url": "https://sonarcloud.io/",
+    "token": "YOUR_SQC_TOKEN",
+    "enterprise_key": "your-enterprise",
+    "org_key": "your-org-key"
+  },
+  "settings": {
+    "export_directory": "/app/files",
+    "concurrency": 10,
+    "timeout": 60
+  }
+}
+```
+
+### Analysis Report
+
+Parse a migration run's `requests.log` and generate a CSV summary of all API calls with success/failure outcomes.
+
+```bash
+docker run -v ./files:/app/files ghcr.io/sonar-solutions/sonar-reports:latest \
+  analysis_report <RUN_ID> [OPTIONS]
+```
+
+| Argument/Option | Description | Default |
+|-----------------|-------------|---------|
+| `RUN_ID` | ID of the migration run to analyze | — |
+| `--export_directory` | Directory containing migration run folders | `/app/files/` |
+
+Outputs `final_analysis_report.csv` inside the run directory.
 
 ### Report
 
@@ -544,7 +598,6 @@ docker run \
 ### Docker Compose
 
 ```yaml
-version: '3.8'
 services:
   sonar-migration:
     image: ghcr.io/sonar-solutions/sonar-reports:latest
@@ -561,12 +614,6 @@ docker compose run sonar-migration structure
 docker compose run sonar-migration mappings
 docker compose run sonar-migration migrate YOUR_SQC_TOKEN your-enterprise-key
 ```
-
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| (none currently) | The tool uses command-line arguments | - |
 
 ---
 
