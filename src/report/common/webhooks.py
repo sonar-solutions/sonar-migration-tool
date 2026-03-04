@@ -3,7 +3,7 @@ from collections import defaultdict
 from parser import extract_path_value
 from report.utils import generate_section
 from utils import multi_extract_object_reader
-from datetime import datetime, UTC, timedelta
+from datetime import datetime
 
 
 def process_webhook(webhooks, webhook, server_id):

@@ -1,4 +1,3 @@
-from logs import log_event
 
 
 def process_chunk(chunk):

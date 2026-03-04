@@ -5,7 +5,7 @@ def identify_pipeline_type(platform, file):
     pipeline_mod = None
     for pipeline_type in pipeline_types:
         mod = load_module(mod_type='pipelines', name=pipeline_type)
-        if mod.is_valid_pipeline(file=file):
+        if mod is not None and mod.is_valid_pipeline(file=file):
             pipeline_mod = mod
             break
     return pipeline_mod

@@ -1,6 +1,4 @@
 from report.utils import generate_section
-from report.common.profiles import process_profile_projects, process_quality_profiles, process_profile_rules, \
-    process_rules
 
 
 def process_languages(measures, profile_map):

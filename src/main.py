@@ -1,7 +1,7 @@
 import json
-from datetime import datetime, UTC
+import tempfile
 
-from constants import REPORT_TASKS, MIGRATION_TASKS
+from constants import MIGRATION_TASKS
 import click
 import os
 import asyncio
@@ -9,16 +9,59 @@ from execute import execute_plan
 from logs import configure_logger
 from operations.http_request import configure_client, configure_client_cert, get_server_details
 from plan import generate_task_plan, get_available_task_configs
-from utils import get_unique_extracts, export_csv, load_csv, filter_completed, get_latest_extract_id
+from utils import get_unique_extracts, export_csv, load_csv, filter_completed, generate_run_id
 from validate import validate_migration
 from importlib import import_module
 from pipelines.process import update_pipelines
 from config import load_config_file, merge_config_with_cli
+from wizard import wizard as wizard_command
+
+REQUESTS_LOG = 'requests.log'
+DEFAULT_EXPORT_DIR = '/app/files/'
 
 
 @click.group()
 def cli():
     pass
+
+
+cli.add_command(wizard_command)
+
+
+def _build_extract_params(config_file, url, token, export_directory, extract_type,
+                           pem_file_path, key_file_path, cert_password, target_task,
+                           concurrency, timeout, extract_id):
+    if config_file:
+        config = load_config_file(config_file)
+        cli_args = {
+            'url': url, 'token': token, 'export_directory': export_directory,
+            'extract_type': extract_type, 'pem_file_path': pem_file_path,
+            'key_file_path': key_file_path, 'cert_password': cert_password,
+            'target_task': target_task, 'concurrency': concurrency,
+            'timeout': timeout, 'extract_id': extract_id,
+        }
+        config = merge_config_with_cli(config, cli_args)
+        return {
+            'url': config.get('url'), 'token': config.get('token'),
+            'export_directory': config.get('export_directory', DEFAULT_EXPORT_DIR),
+            'extract_type': config.get('extract_type', 'all'),
+            'pem_file_path': config.get('pem_file_path'),
+            'key_file_path': config.get('key_file_path'),
+            'cert_password': config.get('cert_password'),
+            'target_task': config.get('target_task'),
+            'concurrency': config.get('concurrency', 25),
+            'timeout': config.get('timeout', 60),
+            'extract_id': config.get('extract_id'),
+        }
+    return {
+        'url': url, 'token': token,
+        'export_directory': export_directory or DEFAULT_EXPORT_DIR,
+        'extract_type': extract_type or 'all',
+        'pem_file_path': pem_file_path, 'key_file_path': key_file_path,
+        'cert_password': cert_password, 'target_task': target_task,
+        'concurrency': concurrency or 25, 'timeout': timeout or 60,
+        'extract_id': extract_id,
+    }
 
 
 @cli.command()
@@ -45,49 +88,17 @@ def extract(url, token, config_file, export_directory: str, extract_type, pem_fi
 
     You can also use --config to specify a JSON configuration file instead of command-line arguments.
     """
-    # Load config file if provided
-    if config_file:
-        try:
-            config = load_config_file(config_file)
-            # Merge CLI args with config file (CLI takes precedence)
-            cli_args = {
-                'url': url,
-                'token': token,
-                'export_directory': export_directory,
-                'extract_type': extract_type,
-                'pem_file_path': pem_file_path,
-                'key_file_path': key_file_path,
-                'cert_password': cert_password,
-                'target_task': target_task,
-                'concurrency': concurrency,
-                'timeout': timeout,
-                'extract_id': extract_id,
-            }
-            config = merge_config_with_cli(config, cli_args)
-            url = config.get('url')
-            token = config.get('token')
-            export_directory = config.get('export_directory', '/app/files/')
-            extract_type = config.get('extract_type', 'all')
-            pem_file_path = config.get('pem_file_path')
-            key_file_path = config.get('key_file_path')
-            cert_password = config.get('cert_password')
-            target_task = config.get('target_task')
-            concurrency = config.get('concurrency', 25)
-            timeout = config.get('timeout', 60)
-            extract_id = config.get('extract_id')
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            click.echo(f"Error loading config file: {e}")
-            return
-    else:
-        # Set defaults if not using config file
-        if export_directory is None:
-            export_directory = '/app/files/'
-        if extract_type is None:
-            extract_type = 'all'
-        if concurrency is None:
-            concurrency = 25
-        if timeout is None:
-            timeout = 60
+    try:
+        p = _build_extract_params(config_file, url, token, export_directory, extract_type,
+                                   pem_file_path, key_file_path, cert_password, target_task,
+                                   concurrency, timeout, extract_id)
+    except (FileNotFoundError, ValueError) as e:
+        click.echo(f"Error loading config file: {e}")
+        return
+    url, token = p['url'], p['token']
+    export_directory, extract_type = p['export_directory'], p['extract_type']
+    pem_file_path, key_file_path, cert_password = p['pem_file_path'], p['key_file_path'], p['cert_password']
+    target_task, concurrency, timeout, extract_id = p['target_task'], p['concurrency'], p['timeout'], p['extract_id']
 
     # Validate required arguments
     if not url or not token:
@@ -96,13 +107,18 @@ def extract(url, token, config_file, export_directory: str, extract_type, pem_fi
 
     if not url.endswith('/'):
         url = f"{url}/"
+    export_directory = os.path.realpath(export_directory)
+    _allowed = [os.path.realpath(os.getcwd()), os.path.realpath(tempfile.gettempdir())]
+    if not any(export_directory.startswith(b + os.sep) or export_directory == b for b in _allowed):
+        click.echo("Error: export_directory must be within the working directory")
+        return
     if extract_id is None:
-        extract_id = str(int(datetime.now(UTC).timestamp()))
+        extract_id = generate_run_id(export_directory)
     cert = configure_client_cert(key_file_path, pem_file_path, cert_password)
     server_version, edition = get_server_details(url=url, cert=cert, token=token)
     extract_directory = os.path.join(export_directory, extract_id + '/')
     os.makedirs(extract_directory, exist_ok=True)
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, 'requests.log'), operation='extract')
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, REQUESTS_LOG))
     configure_client(url=url, cert=cert, server_version=server_version, token=token, concurrency=concurrency,
                      timeout=timeout)
     configs = get_available_task_configs(client_version=server_version, edition=edition)
@@ -199,6 +215,40 @@ def mappings(export_directory):
         export_csv(directory=export_directory, name=k, data=v)
 
 
+def _build_migrate_params(config_file, token, enterprise_key, edition, url, run_id,
+                           concurrency, export_directory, target_task, skip_profiles):
+    if config_file:
+        config = load_config_file(config_file)
+        cli_args = {
+            'token': token, 'enterprise_key': enterprise_key, 'edition': edition,
+            'url': url, 'run_id': run_id, 'concurrency': concurrency,
+            'export_directory': export_directory, 'target_task': target_task,
+            'skip_profiles': skip_profiles if skip_profiles else None,
+        }
+        config = merge_config_with_cli(config, cli_args)
+        return {
+            'token': config.get('token'),
+            'enterprise_key': config.get('enterprise_key'),
+            'edition': config.get('edition', 'enterprise'),
+            'url': config.get('url', 'https://sonarcloud.io/'),
+            'run_id': config.get('run_id'),
+            'concurrency': config.get('concurrency', 25),
+            'export_directory': config.get('export_directory', DEFAULT_EXPORT_DIR),
+            'target_task': config.get('target_task'),
+            'skip_profiles': config.get('skip_profiles', False),
+        }
+    return {
+        'token': token, 'enterprise_key': enterprise_key,
+        'edition': edition or 'enterprise',
+        'url': url or 'https://sonarcloud.io/',
+        'run_id': run_id,
+        'concurrency': concurrency or 25,
+        'export_directory': export_directory or DEFAULT_EXPORT_DIR,
+        'target_task': target_task,
+        'skip_profiles': skip_profiles,
+    }
+
+
 @cli.command()
 @click.argument('token', required=False)
 @click.argument('enterprise_key', required=False)
@@ -223,44 +273,17 @@ def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_dir
     You can also use --config to specify a JSON configuration file instead of command-line arguments.
     """
     # Load config file if provided
-    if config_file:
-        try:
-            config = load_config_file(config_file)
-            # Merge CLI args with config file (CLI takes precedence)
-            cli_args = {
-                'token': token,
-                'enterprise_key': enterprise_key,
-                'edition': edition,
-                'url': url,
-                'run_id': run_id,
-                'concurrency': concurrency,
-                'export_directory': export_directory,
-                'target_task': target_task,
-                'skip_profiles': skip_profiles if skip_profiles else None,
-            }
-            config = merge_config_with_cli(config, cli_args)
-            token = config.get('token')
-            enterprise_key = config.get('enterprise_key')
-            edition = config.get('edition', 'enterprise')
-            url = config.get('url', 'https://sonarcloud.io/')
-            run_id = config.get('run_id')
-            concurrency = config.get('concurrency', 25)
-            export_directory = config.get('export_directory', '/app/files/')
-            target_task = config.get('target_task')
-            skip_profiles = config.get('skip_profiles', False)
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            click.echo(f"Error loading config file: {e}")
-            return
-    else:
-        # Set defaults if not using config file
-        if edition is None:
-            edition = 'enterprise'
-        if url is None:
-            url = 'https://sonarcloud.io/'
-        if concurrency is None:
-            concurrency = 25
-        if export_directory is None:
-            export_directory = '/app/files/'
+    try:
+        p = _build_migrate_params(config_file, token, enterprise_key, edition, url, run_id,
+                                   concurrency, export_directory, target_task, skip_profiles)
+    except (FileNotFoundError, ValueError) as e:
+        click.echo(f"Error loading config file: {e}")
+        return
+    token, enterprise_key = p['token'], p['enterprise_key']
+    edition, url, run_id = p['edition'], p['url'], p['run_id']
+    concurrency, export_directory = p['concurrency'], p['export_directory']
+    target_task, skip_profiles = p['target_task'], p['skip_profiles']
+    export_directory = os.path.realpath(export_directory)
 
     # Validate required arguments
     if not token or not enterprise_key:
@@ -273,11 +296,11 @@ def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_dir
     configure_client(url=api_url, cert=None, server_version="cloud", token=token)
     configs = get_available_task_configs(client_version='cloud', edition=edition)
     if run_id is None:
-        run_id = str(int(datetime.now(UTC).timestamp()))
+        run_id = generate_run_id(export_directory)
         create_plan = True
     run_dir, completed = validate_migration(directory=export_directory, run_id=run_id)
     extract_mapping = get_unique_extracts(directory=export_directory)
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, 'requests.log'), operation='migrate')
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, REQUESTS_LOG))
     if target_task is not None:
         target_tasks = [target_task]
     else:
@@ -313,6 +336,21 @@ def migrate(token, edition, url, enterprise_key, concurrency, run_id, export_dir
                  output_directory=export_directory, current_run_id=run_id,
                  run_ids=set(extract_mapping.values()).union({run_id}))
 
+    try:
+        from analysis_report import generate_final_analysis_report
+        run_dir_real = os.path.realpath(run_dir)
+        cwd_base = os.path.realpath(os.getcwd())
+        if not (run_dir_real.startswith(cwd_base + os.sep) or run_dir_real == cwd_base):
+            raise ValueError("run_dir is outside the working directory")
+        report_rows = generate_final_analysis_report(run_directory=run_dir_real)
+        if report_rows:
+            success_count = sum(1 for r in report_rows if r['outcome'] == 'success')
+            failure_count = sum(1 for r in report_rows if r['outcome'] == 'failure')
+            click.echo(f"Final Analysis Report: {os.path.join(run_dir, 'final_analysis_report.csv')}")
+            click.echo(f"  Total API calls: {len(report_rows)}, Successful: {success_count}, Failed: {failure_count}")
+    except Exception:
+        click.echo("Warning: Could not generate final analysis report.")
+
 
 @cli.command()
 @click.argument('token')
@@ -336,11 +374,11 @@ def reset(token, edition, url, enterprise_key, concurrency, export_directory):
     configure_client(url=url, cert=None, server_version="cloud", token=token)
     api_url = url.replace('https://', 'https://api.')
     configure_client(url=api_url, cert=None, server_version="cloud", token=token)
-    run_id = str(int(datetime.now(UTC).timestamp()))
+    run_id = generate_run_id(export_directory)
     run_dir = os.path.join(export_directory, run_id)
     os.makedirs(run_dir, exist_ok=True)
 
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, 'requests.log'), operation='reset')
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, REQUESTS_LOG))
     target_tasks = list([k for k in configs.keys() if k.startswith('delete')])
     plan = generate_task_plan(
         target_tasks=target_tasks,
@@ -385,12 +423,11 @@ def pipelines(secrets_file, sonar_token, sonar_url, input_directory, output_dire
     else:
         click.echo("No Migrations Found")
         return
-    run_id = str(int(datetime.now(UTC).timestamp()))
+    run_id = generate_run_id(output_directory)
     run_dir = os.path.join(output_directory, run_id)
     os.makedirs(run_dir, exist_ok=True)
-    loop = asyncio.get_event_loop()
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(pipeline_dir, 'requests.log'), operation='pipelines')
-    results = loop.run_until_complete(
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(pipeline_dir, REQUESTS_LOG))
+    results = asyncio.run(
         update_pipelines(
             input_directory=pipeline_dir, output_directory=run_dir, org_secret_mapping=secrets, sonar_token=sonar_token,
             sonar_url=sonar_url
@@ -434,7 +471,7 @@ def full_migrate(config_file):
     """
     try:
         config = load_config_file(config_file)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
+    except (FileNotFoundError, ValueError) as e:
         click.echo(f"Error loading config file: {e}")
         return
 
@@ -485,7 +522,7 @@ def full_migrate(config_file):
     server_version, edition = get_server_details(url=sonarqube_url, cert=cert, token=sonarqube_token)
     extract_directory = os.path.join(export_dir_abs, extract_id + '/')
     os.makedirs(extract_directory, exist_ok=True)
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, 'requests.log'), operation='extract')
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, REQUESTS_LOG), operation='extract')
     configure_client(url=sonarqube_url, cert=cert, server_version=server_version, token=sonarqube_token,
                      concurrency=concurrency, timeout=timeout)
 
@@ -561,7 +598,7 @@ def full_migrate(config_file):
     api_url = sonarcloud_url.replace('https://', 'https://api.')
     configure_client(url=api_url, cert=None, server_version="cloud", token=sonarcloud_token)
 
-    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, 'requests.log'), operation='migrate')
+    configure_logger(name='http_request', level='INFO', output_file=os.path.join(run_dir, REQUESTS_LOG), operation='migrate')
 
     configs = get_available_task_configs(client_version='cloud', edition='enterprise')
     target_tasks = list([k for k in configs.keys() if not any([k.startswith(i) for i in ['get', 'delete', 'reset']])])
@@ -598,6 +635,30 @@ def full_migrate(config_file):
     click.echo("  • You need to re-scan your projects to populate code and issues")
     click.echo("  • Configure DevOps integrations for automatic analysis")
     click.echo()
+
+
+@cli.command()
+@click.argument('run_id')
+@click.option('--export_directory', default='/app/files/',
+              help="Root Directory containing all of the SonarQube exports")
+def analysis_report(run_id, export_directory):
+    """Generate a final analysis report CSV from a migration run's requests.log.
+
+    RUN_ID is the ID of the migration run to analyze
+    """
+    from analysis_report import generate_final_analysis_report
+    run_dir = os.path.join(export_directory, run_id)
+    if not os.path.isdir(run_dir):
+        click.echo(f"Run directory not found: {run_dir}")
+        return
+    report_rows = generate_final_analysis_report(run_directory=run_dir)
+    if report_rows:
+        success_count = sum(1 for r in report_rows if r['outcome'] == 'success')
+        failure_count = sum(1 for r in report_rows if r['outcome'] == 'failure')
+        click.echo(f"Final Analysis Report: {os.path.join(run_dir, 'final_analysis_report.csv')}")
+        click.echo(f"  Total API calls: {len(report_rows)}, Successful: {success_count}, Failed: {failure_count}")
+    else:
+        click.echo("No POST requests found in requests.log")
 
 
 if __name__ == '__main__':

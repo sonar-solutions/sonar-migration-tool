@@ -16,7 +16,7 @@ def update_script(script, root_dir, dir_project_mapping):
             parsed=bashlex.parse(script),
             dir_project_mapping=dir_project_mapping
         )
-    except bashlex.parser.errors.ParsingError as e:
+    except Exception:
         pass
 
     if not dir_project_mapping:
@@ -27,10 +27,16 @@ def update_script(script, root_dir, dir_project_mapping):
             )
         }
 
-    for line in bashlex.split(script):
+    try:
+        tokens = list(bashlex.split(script))
+    except Exception:
+        tokens = []
+    for line in tokens:
         include = True
         if 'sonar.projectKey' in line:
             include = False
+            if root_dir not in dir_project_mapping:
+                dir_project_mapping[root_dir] = {'projects': set(), 'scanners': set()}
             dir_project_mapping[root_dir]['projects'].add(line.split('=')[-1])
         if 'sonar.projectName' in line:
             include = False

@@ -1,0 +1,9 @@
+key,name,server_url,sonarqube_org_key,visibility,mainBranch
+project-1,Frontend Application,https://sonar.example.com/,org-alpha,private,main
+project-2,Backend API,https://sonar.example.com/,org-alpha,private,main
+project-3,Mobile App,https://sonar.example.com/,org-alpha,public,develop
+project-4,Data Pipeline,https://sonar.example.com/,org-beta,private,main
+project-5,Analytics Service,https://sonar.example.com/,org-beta,private,master
+project-6,Auth Service,https://sonar.example.com/,org-beta,private,main
+project-7,Infrastructure,https://sonar.example.com/,org-gamma,private,main
+project-8,Documentation,https://sonar.example.com/,org-gamma,public,main

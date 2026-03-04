@@ -1,10 +1,10 @@
-from .servers import generate_server_markdown
-from .bindings import generate_devops_markdown
-from .pipelines import generate_pipeline_markdown
-from .portfolios import generate_portfolio_markdown
-from .applications import generate_application_markdown
-from .gates import generate_gate_markdown
-from .profiles import generate_profile_markdown
-from .plugins import generate_plugin_markdown
-from .projects import process_project_details, generate_project_metrics_markdown
-from .permissions import generate_permission_template_markdown
+from .servers import generate_server_markdown as generate_server_markdown
+from .bindings import generate_devops_markdown as generate_devops_markdown
+from .pipelines import generate_pipeline_markdown as generate_pipeline_markdown
+from .portfolios import generate_portfolio_markdown as generate_portfolio_markdown
+from .applications import generate_application_markdown as generate_application_markdown
+from .gates import generate_gate_markdown as generate_gate_markdown
+from .profiles import generate_profile_markdown as generate_profile_markdown
+from .plugins import generate_plugin_markdown as generate_plugin_markdown
+from .projects import process_project_details as process_project_details, generate_project_metrics_markdown as generate_project_metrics_markdown
+from .permissions import generate_permission_template_markdown as generate_permission_template_markdown

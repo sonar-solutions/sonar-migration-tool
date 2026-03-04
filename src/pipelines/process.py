@@ -16,6 +16,11 @@ CLOUD_TOKEN_NAME = 'SONARQUBE_CLOUD_TOKEN'
 CLOUD_URL_NAME = 'SONARQUBE_CLOUD_URL'
 
 
+def _write_file(path, content):
+    with open(path, 'wt') as f:
+        f.write(content)
+
+
 async def update_pipelines(input_directory, output_directory, org_secret_mapping, sonar_token, sonar_url):
     orgs, secrets = await create_org_secrets(
         migration_directory=input_directory,
@@ -42,7 +47,10 @@ async def create_org_secrets(migration_directory, org_secret_mapping, sonar_toke
     for organization in object_reader(migration_directory, 'generateOrganizationMappings'):
         if not organization.get('is_cloud', False):
             continue
-        organization['token'] = org_secret_mapping[organization['sonarcloud_org_key']]
+        org_key = organization['sonarcloud_org_key']
+        if org_key not in org_secret_mapping:
+            raise KeyError(f"No secret found for organization '{org_key}'. Available keys: {list(org_secret_mapping.keys())}")
+        organization['token'] = org_secret_mapping[org_key]
         organizations[organization['sonarcloud_org_key']] = organization
         if organization.get('alm') == 'azure':
             continue
@@ -122,7 +130,7 @@ async def update_repository(token, output_directory, repo_string, projects, orga
 
 
 async def update_pipeline_files(platform, repo_folder, projects, repository, branch, files, token):
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     updates = list()
     updated_files = list()
     for (file, _) in files:
@@ -141,12 +149,12 @@ async def update_pipeline_files(platform, repo_folder, projects, repository, bra
     mappings = defaultdict(lambda: dict(projects=set(), scanners=set()))
     for file, dir_project_mapping in updated:
         file_folder = create_nested_folders(current_dir=repo_folder, folder_string=os.path.dirname(file['file_path']))
-        with open(os.path.join(file_folder, f"input.{os.path.basename(file['file_path'])}"), 'wt') as f:
-            f.write(file['content'])
+        await loop.run_in_executor(None, partial(
+            _write_file, os.path.join(file_folder, f"input.{os.path.basename(file['file_path'])}"), file['content']))
         if file['is_updated']:
             updated_files.append(file)
-            with open(os.path.join(file_folder, f"output.{os.path.basename(file['file_path'])}"), 'wt') as f:
-                f.write(file['updated_content'])
+            await loop.run_in_executor(None, partial(
+                _write_file, os.path.join(file_folder, f"output.{os.path.basename(file['file_path'])}"), file['updated_content']))
         for key, value in dir_project_mapping.items():
             mappings[key]['projects'] = mappings[key]['projects'].union(value['projects'])
             mappings[key]['scanners'] = mappings[key]['scanners'].union(value['scanners'])
@@ -178,10 +186,15 @@ async def update_pipeline_files(platform, repo_folder, projects, repository, bra
 
 def update_pipeline_file(platform, file):
     pipeline_type = identify_pipeline_type(platform=platform, file=file)
+    if pipeline_type is None:
+        file['is_updated'] = False
+        return file, {}
     targets = pipeline_type.process_yaml(file=file)
     dir_project_mapping = dict()
     file['is_updated'] = False
     for target in targets:
+        if not target['runs_sonar']:
+            continue
         file['updated_yaml'], dir_project_mapping = update_pipeline_target(
             pipeline_type=pipeline_type,
             yaml=file['yaml'],
@@ -203,6 +216,8 @@ async def update_config_files(platform, project_mappings, projects, root_dir, sc
         scanners = {'cli'}
     content = list()
     if not projects:
+        if not project_mappings:
+            return []
         projects = {list(project_mappings.keys())[0]}
     for scanner in scanners:
         mod = load_module(mod_type='scanners', name=scanner)
@@ -233,14 +248,14 @@ async def update_config_files(platform, project_mappings, projects, root_dir, sc
     return [config for config in updated_configs if config['is_updated']]
 
 async def update_config_file(scanner_mod, file, projects, project_mappings, repo_folder):
+    loop = asyncio.get_running_loop()
     file_folder = create_nested_folders(current_dir=repo_folder, folder_string=os.path.dirname(file['file_path']))
-    with open(os.path.join(file_folder, f"input.{os.path.basename(file['file_path'])}"), 'wt') as f:
-        f.write(file['content'])
-    file.update(scanner_mod.update_content(content=file['content'], projects=projects,
-                                                 project_mappings=project_mappings))
+    await loop.run_in_executor(None, partial(
+        _write_file, os.path.join(file_folder, f"input.{os.path.basename(file['file_path'])}"), file['content']))
+    file.update(scanner_mod.update_content(file['content'], projects, project_mappings))
     if file['is_updated']:
-        with open(os.path.join(file_folder, f"output.{os.path.basename(file['file_path'])}"), 'wt') as f:
-            f.write(file['updated_content'])
+        await loop.run_in_executor(None, partial(
+            _write_file, os.path.join(file_folder, f"output.{os.path.basename(file['file_path'])}"), file['updated_content']))
     return file
 
 

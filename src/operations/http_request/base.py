@@ -4,10 +4,10 @@ from tenacity import retry, stop_after_attempt, wait_random_exponential
 from asyncio import gather
 from parser import extract_path_value
 from io import BytesIO
-
-httpx_client: tuple = None, None
 from logs import log_event
 from datetime import datetime, timezone
+
+httpx_client: tuple = None, None
 
 CLIENTS = dict()
 

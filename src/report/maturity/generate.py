@@ -1,7 +1,5 @@
-import os
 from report.common import generate_server_markdown, generate_devops_markdown, generate_pipeline_markdown, \
-    generate_application_markdown, generate_plugin_markdown, process_project_details, generate_profile_markdown, \
-    generate_project_metrics_markdown, generate_gate_markdown, generate_portfolio_markdown, \
+    generate_plugin_markdown, generate_profile_markdown, \
     generate_permission_template_markdown
 from report.common.measures import process_project_measures
 from report.common.users import generate_user_markdown

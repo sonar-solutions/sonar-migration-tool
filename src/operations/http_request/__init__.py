@@ -1,6 +1,6 @@
-from asyncio import get_event_loop
+import asyncio
 from .get import extract_chunk
-from .base import generate_auth_headers, configure_client_cert, configure_client, process_request_chunk
+from .base import generate_auth_headers, configure_client_cert as configure_client_cert, configure_client as configure_client, process_request_chunk
 
 MAPPING = dict(
     GET=extract_chunk,
@@ -28,8 +28,17 @@ def get_server_details(url, cert, token):
     return server_version, edition
 
 
+_loop = None
+
+def _get_event_loop():
+    global _loop
+    if _loop is None or _loop.is_closed():
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    return _loop
+
 def process_chunk(chunk):
-    loop = get_event_loop()
+    loop = _get_event_loop()
     results = loop.run_until_complete(
         MAPPING.get(
             chunk[0]['kwargs']['method'], process_request_chunk

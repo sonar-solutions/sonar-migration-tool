@@ -1,4 +1,4 @@
-from plan import get_available_task_configs, generate_task_plan
+from plan import get_available_task_configs
 
 def test_multiple_entity_configs():
     r = get_available_task_configs(client_version=10.6, edition='enterprise')

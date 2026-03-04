@@ -1,0 +1,4 @@
+sonarqube_org_key,server_url,devops_binding,project_count,sonarcloud_org_key
+org-alpha,https://sonar.example.com/,github,5,
+org-beta,https://sonar.example.com/,gitlab,3,cloud-org-beta
+org-gamma,https://sonar.example.com/,azure,2,

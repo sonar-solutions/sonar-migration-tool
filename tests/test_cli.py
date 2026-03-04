@@ -1,9 +1,9 @@
-import os
 
 import pytest
 from click.testing import CliRunner
 from main import cli
 from .mocks.mock_platform import MockPlatform
+from .conftest import FILES_DIR
 
 @pytest.fixture(scope='session')
 def runner():
@@ -49,7 +49,7 @@ def test_mappings_completes_with_empty_results(runner, server_url, empty_results
 def test_pipelines(mocker, respx_mock, runner, platform, pipeline_case):
     mocker.patch('pipelines.process.get_platform_module',
                  return_value=MockPlatform(platform=platform, case=pipeline_case))
-    result = runner.invoke(cli, ['pipelines', f'{pipeline_case}/secrets.json', 'test_url', 'test_token', f'--input_directory={pipeline_case}', f'--output_directory=/app/files/'],  catch_exceptions=False)
+    result = runner.invoke(cli, ['pipelines', f'{pipeline_case}/secrets.json', 'test_url', 'test_token', f'--input_directory={pipeline_case}', f'--output_directory={FILES_DIR}/'],  catch_exceptions=False)
     print(result.stdout)
     assert result.exit_code == 0
     assert '[]' not in result.output

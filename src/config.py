@@ -1,7 +1,21 @@
 """Configuration file loader for sonar-reports"""
 import json
 import os
+import tempfile
 from typing import Dict, Any, Optional
+
+_PATH_KEYS = frozenset({'export_directory'})
+
+
+def _validate_config_paths(config: Dict[str, Any]) -> None:
+    cwd_base = os.path.realpath(os.getcwd())
+    tmp_base = os.path.realpath(tempfile.gettempdir())
+    for key in _PATH_KEYS:
+        if key in config and config[key]:
+            resolved = os.path.realpath(str(config[key]))
+            if not resolved.startswith(cwd_base + os.sep) and not resolved.startswith(tmp_base + os.sep):
+                raise ValueError(f"Config path '{key}' must be within the working directory: {resolved}")
+            config[key] = resolved
 
 
 def load_config_file(config_path: str) -> Dict[str, Any]:
@@ -16,13 +30,19 @@ def load_config_file(config_path: str) -> Dict[str, Any]:
     Raises:
         FileNotFoundError: If the config file doesn't exist
         json.JSONDecodeError: If the config file is not valid JSON
+        ValueError: If the config file path is outside the working directory
     """
+    config_path = os.path.realpath(config_path)
+    allowed_base = os.path.realpath(os.getcwd())
+    if not (config_path.startswith(allowed_base + os.sep) or config_path == allowed_base):
+        raise ValueError(f"Configuration file must be within the working directory: {config_path}")
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
     with open(config_path, 'r') as f:
         config = json.load(f)
 
+    _validate_config_paths(config)
     return config
 
 

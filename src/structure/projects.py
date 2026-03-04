@@ -1,4 +1,3 @@
-from collections import defaultdict
 
 from utils import multi_extract_object_reader
 from parser import extract_path_value

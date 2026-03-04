@@ -1,7 +1,27 @@
 import os
 import json
 import csv
+import tempfile
 from collections import defaultdict
+from datetime import datetime, UTC
+
+
+def _is_safe_subdir(base_dir, name):
+    path = os.path.realpath(os.path.join(base_dir, name))
+    return path.startswith(base_dir + os.sep) and os.path.isdir(path)
+
+
+def generate_run_id(directory: str) -> str:
+    directory = os.path.realpath(directory)
+    allowed_bases = [os.path.realpath(os.getcwd()), os.path.realpath(tempfile.gettempdir())]
+    if not any(directory.startswith(b + os.sep) or directory == b for b in allowed_bases):
+        raise ValueError(f"Directory must be within the working directory: {directory}")
+    today = datetime.now(UTC).strftime('%m-%d-%Y')
+    existing = [
+        d for d in os.listdir(directory)
+        if _is_safe_subdir(directory, d) and d.startswith(today + '-')
+    ]
+    return f"{today}-{len(existing) + 1:02d}"
 
 
 def object_reader(directory: str, key: str):
@@ -18,8 +38,10 @@ def object_reader(directory: str, key: str):
 
 
 def get_latest_extract_id(directory):
-    dirs = [d for d in os.listdir(directory) if os.path.isdir(os.path.join(directory, d)) and d.isnumeric()]
-    return max(dirs, key=int) if dirs else None
+    dirs = [d for d in os.listdir(directory)
+            if os.path.isdir(os.path.join(directory, d))
+            and os.path.exists(os.path.join(directory, d, 'extract.json'))]
+    return max(dirs) if dirs else None
 
 
 def get_unique_extracts(directory, key='extract.json'):
@@ -41,8 +63,16 @@ def multi_extract_object_reader(directory: str, mapping: dict[str: str], key):
 
 
 def export_csv(directory, name, data):
-    if data:
-        with open(os.path.join(directory, f'{name}.csv'), 'wt') as f:
+    directory = os.path.realpath(directory)
+    cwd_base = os.path.realpath(os.getcwd())
+    tmp_base = os.path.realpath(tempfile.gettempdir())
+    if not directory.startswith(cwd_base + os.sep) and not directory.startswith(tmp_base + os.sep):
+        raise ValueError(f"directory must be within the working directory: {directory}")
+    csv_path = os.path.realpath(os.path.join(directory, f'{name}.csv'))
+    if not csv_path.startswith(directory + os.sep):
+        raise ValueError(f"Invalid CSV filename: {name}")
+    with open(csv_path, 'wt') as f:
+        if data:
             writer = csv.DictWriter(f, fieldnames=data[0].keys())
             writer.writeheader()
             writer.writerows([{k:json.dumps(v) if any([isinstance(v, i) for i in [dict, list, bool]]) else v for k, v in row.items()} for row in data])

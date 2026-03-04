@@ -1,0 +1,7 @@
+name,sonarqube_org_key,members,description
+developers,org-alpha,"[""user1"", ""user2"", ""user3""]",Development team
+qa-team,org-alpha,"[""qa1"", ""qa2""]",Quality assurance team
+admins,org-alpha,"[""admin1""]",Administrators
+developers,org-beta,"[""dev1"", ""dev2""]",Beta org developers
+reviewers,org-beta,"[""reviewer1""]",Code reviewers
+ops,org-gamma,"[""ops1"", ""ops2""]",Operations team

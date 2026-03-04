@@ -1,6 +1,4 @@
 import uuid
-from opcode import opname
-from unittest.mock import ANY
 import pytest
 import shutil
 from plan import get_available_task_configs
@@ -11,12 +9,13 @@ import httpx
 from urllib.parse import urlparse, parse_qs
 import respx
 from respx.patterns import M
-import os
 from click.testing import CliRunner
-from main import cli, extract, report
+from main import cli
 from .mocks.mock_platform import MockPlatform
 
 TEST_DIR = os.path.dirname(__file__)
+PROJECT_ROOT = os.path.dirname(TEST_DIR)
+FILES_DIR = os.path.join(PROJECT_ROOT, 'files')
 PIPELINE_MOCK_DIR = os.path.join(TEST_DIR, 'mocks/pipelines/')
 PIPELINE_MOCKS = [os.path.join(PIPELINE_MOCK_DIR, i) for i in os.listdir(PIPELINE_MOCK_DIR)]
 PIPELINE_CASES = [os.path.join(PIPELINE_MOCK_DIR, i) for i in os.listdir(PIPELINE_MOCK_DIR) if
@@ -87,9 +86,9 @@ def endpoints(root_dir, edition, version):
 @pytest.fixture(scope='session')
 def output_dir(root_dir, edition, version):
     import shutil
-    path = f"/app/files/{edition}/{version}/"
+    path = os.path.join(FILES_DIR, edition, version) + "/"
     shutil.rmtree(path, ignore_errors=True)
-    os.makedirs(f"/app/files/{edition}", exist_ok=True)
+    os.makedirs(os.path.join(FILES_DIR, edition), exist_ok=True)
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -108,6 +107,7 @@ def request_mocks(custom_mock, server_url, edition, version, endpoints):
         if k == 'api/server/version':
             continue
         custom_mock.route(M(url=f"{server_url}/{k}")).mock(side_effect=partial(validate_api_input, endpoint=v))
+    return custom_mock
 
 
 def validate_api_input(request, endpoint):
@@ -135,14 +135,14 @@ def extracts(request_mocks, server_url, token, report_output_dir, report_type):
 
 @pytest.fixture(scope='session')
 def empty_results():
-    path = f"/app/files/empty/"
+    path = os.path.join(FILES_DIR, 'empty') + "/"
     configs = get_available_task_configs(client_version=1000000, edition='enterprise')
     shutil.rmtree(path, ignore_errors=True)
     os.makedirs(path, exist_ok=True)
     for task, config in configs.items():
-        task_dir = f"{path}{task}"
+        task_dir = os.path.join(path, task)
         os.makedirs(task_dir, exist_ok=True)
-        with open(f'{task_dir}/results.1.json', 'wt') as f:
+        with open(os.path.join(task_dir, 'results.1.json'), 'wt') as f:
             f.write('{}')
     return path
 

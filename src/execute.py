@@ -1,7 +1,4 @@
 import os
-import uuid
-import json
-from copy import deepcopy
 
 from logs import log_event
 from dependencies import load_dependencies

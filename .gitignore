@@ -124,3 +124,15 @@ files
 config.json
 *-config.json
 my-*.json
+
+# Test output artifacts
+files/
+
+# Project notes (internal documentation)
+project-notes/
+
+# Temporary working directory
+tmp/
+
+# SonarQube scanner artifacts
+.sonar/

@@ -1,4 +1,3 @@
-from logs import log_event
 from utils import multi_extract_object_reader
 import re
 

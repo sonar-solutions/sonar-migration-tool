@@ -1,0 +1,5 @@
+name,key,sonarqube_org_key,permissions
+Default Template,template-default-alpha,org-alpha,"[""admin"", ""codeviewer"", ""issueadmin"", ""scan""]"
+CI/CD Template,template-cicd-alpha,org-alpha,"[""scan"", ""codeviewer""]"
+Default Template,template-default-beta,org-beta,"[""admin"", ""codeviewer""]"
+Readonly Template,template-readonly-gamma,org-gamma,"[""codeviewer""]"

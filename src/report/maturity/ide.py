@@ -1,5 +1,4 @@
 from report.utils import generate_section
-from datetime import datetime, timedelta, UTC
 
 
 def generate_ide_markdown(users):

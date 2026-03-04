@@ -1,6 +1,5 @@
 from collections import defaultdict
 
-from logs import log_event
 from utils import object_reader
 import os
 def load_dependencies(task, inputs, task_config, concurrency, output_directory, run_ids) -> list:
