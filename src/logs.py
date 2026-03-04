@@ -1,5 +1,5 @@
 from datetime import datetime, UTC
-from logging import getLogger, FileHandler
+from logging import getLogger, FileHandler, Formatter
 
 LEVEL_MAPPING = {
     'debug': 10,
