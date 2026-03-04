@@ -133,3 +133,6 @@ project-notes/
 
 # Temporary working directory
 tmp/
+
+# SonarQube scanner artifacts
+.sonar/
