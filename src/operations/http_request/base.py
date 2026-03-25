@@ -100,7 +100,7 @@ async def async_safe_json_request(client, method, url, log_attributes: dict, rai
             url=url, exc=exc, method=method, log_attributes=log_attributes
         )
     except Exception as exc:
-        status_code, js = None, dict()
+        status_code, js = None, {}
         log_event(
             level='error', status='failure', process_type='request_completed', payload=dict(
                 method=method,
