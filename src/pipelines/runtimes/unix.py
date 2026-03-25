@@ -1,5 +1,8 @@
-import bashlex
 import os
+import re
+import shlex
+from dataclasses import dataclass, field
+from typing import List
 
 SONAR_COMMANDS = {
     'sonar-scanner': "cli",
@@ -8,12 +11,43 @@ SONAR_COMMANDS = {
 }
 
 
+@dataclass
+class _Word:
+    kind: str = 'word'
+    word: str = ''
+
+
+@dataclass
+class _Command:
+    kind: str = 'command'
+    parts: List = field(default_factory=list)
+
+
+def _parse_script(script):
+    commands = []
+    for line in script.split('\n'):
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        for segment in re.split(r'\s*(?:&&|\|\||;)\s*', line):
+            segment = segment.strip()
+            if not segment:
+                continue
+            try:
+                tokens = shlex.split(segment)
+            except ValueError:
+                tokens = segment.split()
+            if tokens:
+                commands.append(_Command(parts=[_Word(word=t) for t in tokens]))
+    return commands
+
+
 def update_script(script, root_dir, dir_project_mapping):
     updated = list()
     try:
         _, dir_project_mapping = process_command_list(
             root_directory=root_dir,
-            parsed=bashlex.parse(script),
+            parsed=_parse_script(script),
             dir_project_mapping=dir_project_mapping
         )
     except Exception:
@@ -28,7 +62,7 @@ def update_script(script, root_dir, dir_project_mapping):
         }
 
     try:
-        tokens = list(bashlex.split(script))
+        tokens = shlex.split(script)
     except Exception:
         tokens = []
     for line in tokens:
@@ -69,7 +103,7 @@ def process_command_list(root_directory, parsed: list, current_dir=None, dir_pro
                 if project:
                     dir_project_mapping[current_dir]['projects'].add(project)
                 if scanners:
-                    dir_project_mapping[current_dir]['scanners']=dir_project_mapping[current_dir]['scanners'].union(scanners)
+                    dir_project_mapping[current_dir]['scanners'] = dir_project_mapping[current_dir]['scanners'].union(scanners)
         elif command.kind == 'list':
             current_dir, dir_project_mapping = process_command_list(
                 parsed=command.parts,

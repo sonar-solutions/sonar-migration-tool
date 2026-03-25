@@ -4,5 +4,3 @@ markdown
 tenacity
 PyNaCl
 ruamel.yaml
-bashlex
-lxml
