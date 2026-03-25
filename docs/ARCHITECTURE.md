@@ -2,7 +2,7 @@
 
 ## Overview
 
-sonar-reports is a Python CLI application built with Click. It can run as a standalone PyInstaller executable, Docker container, or directly with Python. Its primary purpose is to facilitate migration from SonarQube Server to SonarQube Cloud (formerly SonarCloud).
+sonar-reports is a Python CLI application built with Click. It runs as a Docker container or directly with Python. Its primary purpose is to facilitate migration from SonarQube Server to SonarQube Cloud (formerly SonarCloud).
 
 ## Project Structure
 
@@ -142,10 +142,8 @@ The tool auto-detects SonarQube Server version and selects appropriate API endpo
 
 ## Build System
 
-- **PyInstaller** creates standalone executables from the spec file `sonar-reports.spec`.
-- Builds target **6 platforms**: macOS (x86_64, ARM64), Linux (x86_64, ARM64), Windows (x86_64, ARM64).
 - **Docker image** is based on Python 3.14-slim for minimal footprint.
-- **CI/CD** uses GitHub Actions workflows for automated testing, Docker image publishing, and release builds.
+- **CI/CD** uses GitHub Actions workflows for automated testing and Docker image publishing.
 
 ## Testing
 

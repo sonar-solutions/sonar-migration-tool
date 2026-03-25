@@ -20,16 +20,6 @@ docker run -v /path/to/local/files:/app/files ghcr.io/sonar-solutions/sonar-repo
 
 Replace `<command>` with any of the available migration commands described below.
 
-## Quick Migration with Docker
-
-If you already have a `migration-config.json` file prepared, you can run the entire migration in one shot using `full_migrate`:
-
-```bash
-docker run --rm -v "$(pwd)/files:/app/files" ghcr.io/sonar-solutions/sonar-reports:latest full_migrate /app/files/migration-config.json
-```
-
-The `--rm` flag automatically removes the container when it finishes, keeping things tidy.
-
 ## Using the Interactive Wizard
 
 The wizard walks you through the migration step by step with prompts. Because it is interactive, you need the `-it` flags so Docker connects your terminal to the container:
@@ -146,17 +136,6 @@ docker build -t sonar-reports:local .
 ```
 
 Then use `sonar-reports:local` in place of `ghcr.io/sonar-solutions/sonar-reports:latest` in any of the commands above.
-
-## Building Linux Binaries with Docker
-
-If you need to cross-compile a standalone Linux binary (for example, from a macOS or Windows host), you can use the dedicated build Dockerfile:
-
-```bash
-docker buildx build --platform linux/amd64 -f docker/Dockerfile.linux-build -t sonar-reports-linux-builder --load .
-docker run --rm -v "$(pwd)/dist:/output" sonar-reports-linux-builder cp /app/dist/sonar-reports-linux-x86_64 /output/
-```
-
-The compiled binary will appear in the `dist/` directory on your host.
 
 ## Migration Script (Automated)
 
