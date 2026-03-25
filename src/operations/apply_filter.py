@@ -31,5 +31,5 @@ def execute(left, right, operator, warn_message=None, **kwargs):
         allowed = left <= right
     if not allowed and warn_message:
         log_event(level='WARNING', status='anomalous', process_type='apply_filter',
-                  payload=dict(message=f"{warn_message}: '{left}'"))
+                  payload={"message": f"{warn_message}: '{left}'"})
     return allowed

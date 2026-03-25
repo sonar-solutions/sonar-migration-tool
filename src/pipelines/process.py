@@ -10,6 +10,7 @@ from asyncio import gather
 from pipelines.platforms import get_platform_module
 from pipelines.pipelines import identify_pipeline_type
 from ruamel.yaml import YAML
+from ruamel.yaml.scalarstring import FoldedScalarString, LiteralScalarString
 from io import StringIO
 
 CLOUD_TOKEN_NAME = 'SONARQUBE_CLOUD_TOKEN'
@@ -283,8 +284,17 @@ def update_pipeline_target(pipeline_type, yaml, target, dir_project_mapping):
                 root_dir=task['working_dir'],
                 dir_project_mapping=dir_project_mapping
             )
-            yaml = set_path_value(obj=yaml, path=task['script'], val=updated)
+            yaml = set_path_value(obj=yaml, path=task['script'], val=_preserve_scalar_style(script, updated))
     return yaml, dir_project_mapping
+
+
+def _preserve_scalar_style(original, new_value):
+    value = new_value if new_value.endswith('\n') or not new_value else new_value + '\n'
+    if isinstance(original, FoldedScalarString):
+        return FoldedScalarString(value)
+    if isinstance(original, LiteralScalarString):
+        return LiteralScalarString(value)
+    return value
 
 
 def update_script(script, root_dir, dir_project_mapping):
