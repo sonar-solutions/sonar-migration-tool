@@ -77,7 +77,7 @@ def update_script(script, root_dir, dir_project_mapping):
         if include:
             updated.append(line)
 
-    updated_script = " ".join(updated).replace('\n ', '\n').replace(' \n', '\n')
+    updated_script = " ".join(t.strip('\n') for t in updated if t.strip()).replace('\n ', '\n').replace(' \n', '\n')
     return updated_script, dir_project_mapping
 
 
