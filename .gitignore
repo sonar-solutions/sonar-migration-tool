@@ -136,3 +136,4 @@ tmp/
 
 # SonarQube scanner artifacts
 .sonar/
+README.md.bak
