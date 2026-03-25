@@ -115,7 +115,11 @@ def extract(url, token, config_file, export_directory: str, extract_type, pem_fi
     if extract_id is None:
         extract_id = generate_run_id(export_directory)
     cert = configure_client_cert(key_file_path, pem_file_path, cert_password)
-    server_version, edition = get_server_details(url=url, cert=cert, token=token)
+    try:
+        server_version, edition = get_server_details(url=url, cert=cert, token=token)
+    except PermissionError as e:
+        click.echo(f"Error: {e}")
+        return
     extract_directory = os.path.join(export_directory, extract_id + '/')
     os.makedirs(extract_directory, exist_ok=True)
     configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, REQUESTS_LOG))
@@ -519,7 +523,11 @@ def full_migrate(config_file):
     click.echo("Step 1/5: Extracting data from SonarQube...")
     extract_id = str(int(datetime.now(UTC).timestamp()))
     cert = configure_client_cert(None, None, None)
-    server_version, edition = get_server_details(url=sonarqube_url, cert=cert, token=sonarqube_token)
+    try:
+        server_version, edition = get_server_details(url=sonarqube_url, cert=cert, token=sonarqube_token)
+    except PermissionError as e:
+        click.echo(f"Error: {e}")
+        return
     extract_directory = os.path.join(export_dir_abs, extract_id + '/')
     os.makedirs(extract_directory, exist_ok=True)
     configure_logger(name='http_request', level='INFO', output_file=os.path.join(extract_directory, REQUESTS_LOG), operation='extract')
