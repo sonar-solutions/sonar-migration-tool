@@ -1,7 +1,7 @@
 # .github/workflows/app.yaml
 name: Test
 on:
-  workflow_dispatch
+  workflow_dispatch:
 jobs:
   build:
     runs-on: ubuntu-latest
