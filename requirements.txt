@@ -1,8 +1,0 @@
-httpx==0.27.2
-click
-markdown
-tenacity
-PyNaCl
-ruamel.yaml
-bashlex
-lxml
