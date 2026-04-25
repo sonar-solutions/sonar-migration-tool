@@ -1,1 +1,0 @@
-{"key": "org1_test_proj_1", "name": "Test Project", "isCloudBinding": true, "sourceServerUrl": "https://nautilus.sonarqube.org/", "repository": "workspace/simple_maven_scan", "slug": "workspace/simple_maven_scan", "mainBranch": "main", "sonarCloudOrgKey": "org1", "sourceProjectKey": "test_proj_1", "alm": "github"}

@@ -6,6 +6,8 @@
 # This script automates the complete migration process from SonarQube Server
 # to SonarCloud, including extraction, structure generation, mappings, and
 # the final migration.
+#
+# Prerequisites: Go 1.25+ installed
 ################################################################################
 
 set -e  # Exit on any error
@@ -75,15 +77,21 @@ if [ "$SONARCLOUD_ORG_KEY" = "your-target-org" ]; then
     exit 1
 fi
 
+# Verify Go is installed
+if ! command -v go &> /dev/null; then
+    print_error "Go is not installed. Please install Go 1.25+ from https://go.dev/dl/"
+    exit 1
+fi
+
 # Create export directory if it doesn't exist
 mkdir -p "$EXPORT_DIR"
 
 # Get absolute path for export directory
 EXPORT_DIR_ABS=$(cd "$EXPORT_DIR" && pwd)
 
-# Convert localhost URLs to host.docker.internal for Docker
-# This allows containers to access the host's localhost
-SONARQUBE_URL_DOCKER="${SONARQUBE_URL/localhost/host.docker.internal}"
+# Resolve the go/ directory relative to this script
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+GO_DIR="${SCRIPT_DIR}/../go"
 
 print_step "Migration Configuration"
 echo "SonarQube URL: $SONARQUBE_URL"
@@ -95,30 +103,16 @@ echo "Concurrency: $CONCURRENCY"
 echo "Timeout: ${TIMEOUT}s"
 
 # =============================================================================
-# Step 1: Build Docker Image
+# Step 1: Extract Data from SonarQube
 # =============================================================================
-print_step "Step 1: Building Docker Image"
+print_step "Step 1: Extracting Data from SonarQube"
 
-if ! docker build -t sonar-reports:local .; then
-    print_error "Failed to build Docker image"
-    exit 1
-fi
-
-echo -e "${GREEN}✓ Docker image built successfully${NC}"
-
-# =============================================================================
-# Step 2: Extract Data from SonarQube
-# =============================================================================
-print_step "Step 2: Extracting Data from SonarQube"
-
-if ! docker run --rm \
-    -v "${EXPORT_DIR_ABS}:/app/files" \
-    sonar-reports:local extract \
-    "$SONARQUBE_URL_DOCKER" \
+if ! (cd "$GO_DIR" && go run . extract \
+    "$SONARQUBE_URL" \
     "$SONARQUBE_TOKEN" \
-    --export_directory=/app/files \
-    --concurrency=$CONCURRENCY \
-    --timeout=$TIMEOUT; then
+    --export_directory="$EXPORT_DIR_ABS" \
+    --concurrency="$CONCURRENCY" \
+    --timeout="$TIMEOUT"); then
     print_error "Failed to extract data from SonarQube"
     exit 1
 fi
@@ -126,14 +120,12 @@ fi
 echo -e "${GREEN}✓ Data extracted successfully${NC}"
 
 # =============================================================================
-# Step 3: Generate Organization Structure
+# Step 2: Generate Organization Structure
 # =============================================================================
-print_step "Step 3: Generating Organization Structure"
+print_step "Step 2: Generating Organization Structure"
 
-if ! docker run --rm \
-    -v "${EXPORT_DIR_ABS}:/app/files" \
-    sonar-reports:local structure \
-    --export_directory=/app/files; then
+if ! (cd "$GO_DIR" && go run . structure \
+    --export_directory="$EXPORT_DIR_ABS"); then
     print_error "Failed to generate organization structure"
     exit 1
 fi
@@ -141,9 +133,9 @@ fi
 echo -e "${GREEN}✓ Organization structure generated${NC}"
 
 # =============================================================================
-# Step 4: Update organizations.csv with SonarCloud Org Key
+# Step 3: Update organizations.csv with SonarCloud Org Key
 # =============================================================================
-print_step "Step 4: Updating organizations.csv"
+print_step "Step 3: Updating organizations.csv"
 
 ORGS_FILE="${EXPORT_DIR_ABS}/organizations.csv"
 
@@ -167,14 +159,12 @@ cat "$ORGS_FILE"
 echo -e "${GREEN}✓ organizations.csv updated with SonarCloud org key${NC}"
 
 # =============================================================================
-# Step 5: Generate Mappings
+# Step 4: Generate Mappings
 # =============================================================================
-print_step "Step 5: Generating Mappings"
+print_step "Step 4: Generating Mappings"
 
-if ! docker run --rm \
-    -v "${EXPORT_DIR_ABS}:/app/files" \
-    sonar-reports:local mappings \
-    --export_directory=/app/files; then
+if ! (cd "$GO_DIR" && go run . mappings \
+    --export_directory="$EXPORT_DIR_ABS"); then
     print_error "Failed to generate mappings"
     exit 1
 fi
@@ -184,20 +174,18 @@ echo "Generated mapping files:"
 ls -lh "${EXPORT_DIR_ABS}"/*.csv
 
 # =============================================================================
-# Step 6: Run Migration to SonarCloud
+# Step 5: Run Migration to SonarCloud
 # =============================================================================
-print_step "Step 6: Migrating to SonarCloud"
+print_step "Step 5: Migrating to SonarCloud"
 
 print_warning "This step may take several minutes depending on the number of projects..."
 
-if ! docker run --rm \
-    -v "${EXPORT_DIR_ABS}:/app/files" \
-    sonar-reports:local migrate \
+if ! (cd "$GO_DIR" && go run . migrate \
     "$SONARCLOUD_TOKEN" \
     "$SONARCLOUD_ENTERPRISE_KEY" \
     --url="$SONARCLOUD_URL" \
-    --export_directory=/app/files \
-    --concurrency=$CONCURRENCY; then
+    --export_directory="$EXPORT_DIR_ABS" \
+    --concurrency="$CONCURRENCY"); then
     print_error "Migration failed"
     exit 1
 fi
@@ -205,9 +193,9 @@ fi
 echo -e "${GREEN}✓ Migration completed successfully${NC}"
 
 # =============================================================================
-# Step 7: Verify Migration
+# Step 6: Verify Migration
 # =============================================================================
-print_step "Step 7: Verifying Migration"
+print_step "Step 6: Verifying Migration"
 
 # Extract the base URL for sc-staging.io or sonarcloud.io
 SONARCLOUD_BASE_URL="${SONARCLOUD_URL%/}"

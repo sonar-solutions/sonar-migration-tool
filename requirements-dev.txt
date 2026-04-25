@@ -1,7 +1,0 @@
-pytest
-pytest-mock
-pytest-asyncio
-pytest-cov
-respx
-jsonschema
-pyinstaller
