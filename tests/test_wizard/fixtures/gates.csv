@@ -1,5 +1,0 @@
-name,key,sonarqube_org_key,isDefault,conditions
-Strict Quality Gate,gate-strict-alpha,org-alpha,true,"[{""metric"": ""coverage"", ""op"": ""LT"", ""error"": ""80""}, {""metric"": ""duplicated_lines_density"", ""op"": ""GT"", ""error"": ""3""}]"
-Lenient Quality Gate,gate-lenient-alpha,org-alpha,false,"[{""metric"": ""coverage"", ""op"": ""LT"", ""error"": ""50""}]"
-Standard Quality Gate,gate-standard-beta,org-beta,true,"[{""metric"": ""coverage"", ""op"": ""LT"", ""error"": ""70""}]"
-Minimal Quality Gate,gate-minimal-gamma,org-gamma,true,"[]"

@@ -1,0 +1,892 @@
+package cloud_test
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	sqapi "github.com/sonar-solutions/sq-api-go"
+	"github.com/sonar-solutions/sq-api-go/cloud"
+	"github.com/sonar-solutions/sq-api-go/types"
+)
+
+// Test constants for duplicated string literals (go:S1192).
+const (
+	pathProjectsCreate  = "/api/projects/create"
+	pathGroupsCreate    = "/api/user_groups/create"
+	pathPermsCreateTmpl = "/api/permissions/create_template"
+	pathRulesUpdate     = "/api/rules/update"
+	pathSettingsSet     = "/api/settings/set"
+	pathEntPortfolios   = "/enterprises/portfolios"
+	pathEntPortfolioP1  = "/enterprises/portfolios/p1"
+	nameProjectOne      = "Project One"
+	nameCustomJava      = "Custom Java"
+	nameMyProfile       = "My Profile"
+	nameMyGate          = "My Gate"
+	nameMyTemplate      = "My Template"
+	nameMyPortfolio     = "My Portfolio"
+	testRuleKey         = "java:S1234"
+)
+
+// newTestCloud creates a cloud.Client backed by an httptest server using mux.
+func newTestCloud(t *testing.T, mux *http.ServeMux) *cloud.Client {
+	t.Helper()
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	base := sqapi.NewCloudClient(ts.URL, "test-token")
+	return cloud.New(base)
+}
+
+// writeJSON encodes v as JSON to w.
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// assertFormValue checks a POST form parameter.
+func assertFormValue(t *testing.T, r *http.Request, key, want string) {
+	t.Helper()
+	if err := r.ParseForm(); err != nil {
+		t.Fatalf("parse form: %v", err)
+	}
+	assert.Equal(t, want, r.FormValue(key), "form param %q", key)
+}
+
+// --- Projects ---
+
+func TestProjectsCreate(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathProjectsCreate, func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "project", "org_proj1")
+		assertFormValue(t, r, "name", nameProjectOne)
+		assertFormValue(t, r, "organization", "myorg")
+		assertFormValue(t, r, "visibility", "public")
+		writeJSON(w, types.ProjectCreateResponse{
+			Project: types.Project{Key: "org_proj1", Name: nameProjectOne},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	proj, err := cc.Projects.Create(context.Background(), cloud.CreateProjectParams{
+		ProjectKey:   "org_proj1",
+		Name:         nameProjectOne,
+		Organization: "myorg",
+		Visibility:   "public",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "org_proj1", proj.Key)
+	assert.Equal(t, nameProjectOne, proj.Name)
+}
+
+func TestProjectsCreateWithNewCode(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathProjectsCreate, func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "newCodeDefinitionType", "NUMBER_OF_DAYS")
+		assertFormValue(t, r, "newCodeDefinitionValue", "30")
+		writeJSON(w, types.ProjectCreateResponse{
+			Project: types.Project{Key: "p1"},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	proj, err := cc.Projects.Create(context.Background(), cloud.CreateProjectParams{
+		ProjectKey:             "p1",
+		Name:                   "P",
+		Organization:           "o",
+		NewCodeDefinitionType:  "NUMBER_OF_DAYS",
+		NewCodeDefinitionValue: "30",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "p1", proj.Key)
+}
+
+func TestProjectsCreateError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathProjectsCreate, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Forbidden"}]}`, http.StatusForbidden)
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Projects.Create(context.Background(), cloud.CreateProjectParams{
+		ProjectKey: "p", Name: "P", Organization: "o",
+	})
+	require.Error(t, err)
+	assert.True(t, sqapi.IsForbidden(err))
+}
+
+func TestProjectsDelete(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/projects/delete", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "project", "proj1")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Projects.Delete(context.Background(), "proj1")
+	require.NoError(t, err)
+}
+
+func TestProjectsDeleteError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/projects/delete", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Not found"}]}`, http.StatusNotFound)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Projects.Delete(context.Background(), "nonexistent")
+	require.Error(t, err)
+	assert.True(t, sqapi.IsNotFound(err))
+}
+
+func TestProjectsSetTags(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/project_tags/set", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "project", "proj1")
+		assertFormValue(t, r, "tags", "java,backend")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Projects.SetTags(context.Background(), "proj1", "java,backend")
+	require.NoError(t, err)
+}
+
+// --- Groups ---
+
+func TestGroupsCreate(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathGroupsCreate, func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "name", "devs")
+		assertFormValue(t, r, "organization", "myorg")
+		assertFormValue(t, r, "description", "Developers")
+		writeJSON(w, types.GroupCreateResponse{
+			Group: types.Group{ID: 42, Name: "devs"},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	group, err := cc.Groups.Create(context.Background(), cloud.CreateGroupParams{
+		Name: "devs", Description: "Developers", Organization: "myorg",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "devs", group.Name)
+	assert.Equal(t, 42, group.ID)
+}
+
+func TestGroupsCreateNoDescription(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathGroupsCreate, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		assert.Empty(t, r.FormValue("description"))
+		writeJSON(w, types.GroupCreateResponse{
+			Group: types.Group{ID: 1, Name: "g"},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Groups.Create(context.Background(), cloud.CreateGroupParams{
+		Name: "g", Organization: "o",
+	})
+	require.NoError(t, err)
+}
+
+func TestGroupsCreateError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathGroupsCreate, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Forbidden"}]}`, http.StatusForbidden)
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Groups.Create(context.Background(), cloud.CreateGroupParams{
+		Name: "g", Organization: "o",
+	})
+	require.Error(t, err)
+	assert.True(t, sqapi.IsForbidden(err))
+}
+
+func TestGroupsDelete(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/user_groups/delete", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "id", "42")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Groups.Delete(context.Background(), 42)
+	require.NoError(t, err)
+}
+
+func TestGroupsAddUser(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/user_groups/add_user", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "name", "devs")
+		assertFormValue(t, r, "login", "alice")
+		assertFormValue(t, r, "organization", "myorg")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Groups.AddUser(context.Background(), "devs", "alice", "myorg")
+	require.NoError(t, err)
+}
+
+// --- QualityProfiles ---
+
+func TestQualityProfilesCreate(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualityprofiles/create", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "name", nameCustomJava)
+		assertFormValue(t, r, "language", "java")
+		assertFormValue(t, r, "organization", "myorg")
+		writeJSON(w, types.QualityProfileCreateResponse{
+			Profile: types.QualityProfile{Key: "qp1", Name: nameCustomJava, Language: "java"},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	profile, err := cc.QualityProfiles.Create(context.Background(), cloud.CreateProfileParams{
+		Name: nameCustomJava, Language: "java", Organization: "myorg",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "qp1", profile.Key)
+}
+
+func TestQualityProfilesCreateError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualityprofiles/create", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Forbidden"}]}`, http.StatusForbidden)
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.QualityProfiles.Create(context.Background(), cloud.CreateProfileParams{
+		Name: "P", Language: "java", Organization: "o",
+	})
+	require.Error(t, err)
+}
+
+func TestQualityProfilesRestore(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualityprofiles/restore", func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.Header.Get("Content-Type"), "multipart/form-data")
+		writeJSON(w, types.QualityProfileRestoreResponse{
+			Profile: types.QualityProfile{Key: "restored1", Name: "Restored"},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	profile, err := cc.QualityProfiles.Restore(context.Background(), "myorg", []byte("<profile/>"))
+	require.NoError(t, err)
+	assert.Equal(t, "restored1", profile.Key)
+}
+
+func TestQualityProfilesRestoreError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualityprofiles/restore", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Bad Request"}]}`, http.StatusBadRequest)
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.QualityProfiles.Restore(context.Background(), "o", []byte("<bad/>"))
+	require.Error(t, err)
+}
+
+func TestQualityProfilesDelete(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualityprofiles/delete", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "language", "java")
+		assertFormValue(t, r, "qualityProfile", "Old Profile")
+		assertFormValue(t, r, "organization", "myorg")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.QualityProfiles.Delete(context.Background(), "java", "Old Profile", "myorg")
+	require.NoError(t, err)
+}
+
+func TestQualityProfilesSetDefault(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualityprofiles/set_default", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "language", "java")
+		assertFormValue(t, r, "qualityProfile", nameMyProfile)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.QualityProfiles.SetDefault(context.Background(), "java", nameMyProfile, "myorg")
+	require.NoError(t, err)
+}
+
+func TestQualityProfilesChangeParent(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualityprofiles/change_parent", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "language", "java")
+		assertFormValue(t, r, "qualityProfile", "Child")
+		assertFormValue(t, r, "parentQualityProfile", "Parent")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.QualityProfiles.ChangeParent(context.Background(), "java", "Child", "Parent", "myorg")
+	require.NoError(t, err)
+}
+
+func TestQualityProfilesAddProject(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualityprofiles/add_project", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "language", "java")
+		assertFormValue(t, r, "qualityProfile", nameMyProfile)
+		assertFormValue(t, r, "project", "proj1")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.QualityProfiles.AddProject(context.Background(), "java", nameMyProfile, "proj1", "myorg")
+	require.NoError(t, err)
+}
+
+func TestQualityProfilesAddGroup(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualityprofiles/add_group", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "language", "java")
+		assertFormValue(t, r, "qualityProfile", nameMyProfile)
+		assertFormValue(t, r, "group", "devs")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.QualityProfiles.AddGroup(context.Background(), "java", nameMyProfile, "devs", "myorg")
+	require.NoError(t, err)
+}
+
+// --- QualityGates ---
+
+func TestQualityGatesCreate(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualitygates/create", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "name", nameMyGate)
+		assertFormValue(t, r, "organization", "myorg")
+		writeJSON(w, types.QualityGate{ID: 10, Name: nameMyGate})
+	})
+	cc := newTestCloud(t, mux)
+
+	gate, err := cc.QualityGates.Create(context.Background(), nameMyGate, "myorg")
+	require.NoError(t, err)
+	assert.Equal(t, 10, gate.ID)
+	assert.Equal(t, nameMyGate, gate.Name)
+}
+
+func TestQualityGatesCreateError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualitygates/create", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Forbidden"}]}`, http.StatusForbidden)
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.QualityGates.Create(context.Background(), "G", "o")
+	require.Error(t, err)
+	assert.True(t, sqapi.IsForbidden(err))
+}
+
+func TestQualityGatesCreateCondition(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualitygates/create_condition", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "gateId", "10")
+		assertFormValue(t, r, "metric", "coverage")
+		assertFormValue(t, r, "op", "LT")
+		assertFormValue(t, r, "error", "80")
+		writeJSON(w, types.QualityGateCondition{ID: 1, Metric: "coverage", Op: "LT", Error: "80"})
+	})
+	cc := newTestCloud(t, mux)
+
+	cond, err := cc.QualityGates.CreateCondition(context.Background(), cloud.CreateConditionParams{
+		GateID: 10, Organization: "myorg", Metric: "coverage", Op: "LT", Error: "80",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "coverage", cond.Metric)
+}
+
+func TestQualityGatesCreateConditionError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualitygates/create_condition", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Forbidden"}]}`, http.StatusForbidden)
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.QualityGates.CreateCondition(context.Background(), cloud.CreateConditionParams{
+		GateID: 10, Organization: "o", Metric: "coverage", Op: "LT", Error: "80",
+	})
+	require.Error(t, err)
+	assert.True(t, sqapi.IsForbidden(err))
+}
+
+func TestQualityGatesDestroy(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualitygates/destroy", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "id", "10")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.QualityGates.Destroy(context.Background(), 10, "myorg")
+	require.NoError(t, err)
+}
+
+func TestQualityGatesSelect(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualitygates/select", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "gateId", "10")
+		assertFormValue(t, r, "projectKey", "proj1")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.QualityGates.Select(context.Background(), 10, "proj1", "myorg")
+	require.NoError(t, err)
+}
+
+func TestQualityGatesSetDefault(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualitygates/set_as_default", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "id", "10")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.QualityGates.SetDefault(context.Background(), 10, "myorg")
+	require.NoError(t, err)
+}
+
+// --- Permissions ---
+
+func TestPermissionsCreateTemplate(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathPermsCreateTmpl, func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "name", nameMyTemplate)
+		assertFormValue(t, r, "organization", "myorg")
+		assertFormValue(t, r, "description", "A template")
+		assertFormValue(t, r, "projectKeyPattern", "proj_*")
+		writeJSON(w, types.PermissionTemplateCreateResponse{
+			PermissionTemplate: types.PermissionTemplate{ID: "tmpl1", Name: nameMyTemplate},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	tmpl, err := cc.Permissions.CreateTemplate(context.Background(), cloud.CreateTemplateParams{
+		Name: nameMyTemplate, Description: "A template", Organization: "myorg", ProjectKeyPattern: "proj_*",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "tmpl1", tmpl.ID)
+}
+
+func TestPermissionsCreateTemplateMinimal(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathPermsCreateTmpl, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		assert.Empty(t, r.FormValue("description"))
+		assert.Empty(t, r.FormValue("projectKeyPattern"))
+		writeJSON(w, types.PermissionTemplateCreateResponse{
+			PermissionTemplate: types.PermissionTemplate{ID: "t1", Name: "T"},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Permissions.CreateTemplate(context.Background(), cloud.CreateTemplateParams{
+		Name: "T", Organization: "o",
+	})
+	require.NoError(t, err)
+}
+
+func TestPermissionsCreateTemplateError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathPermsCreateTmpl, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Forbidden"}]}`, http.StatusForbidden)
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Permissions.CreateTemplate(context.Background(), cloud.CreateTemplateParams{
+		Name: "T", Organization: "o",
+	})
+	require.Error(t, err)
+}
+
+func TestPermissionsDeleteTemplate(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/permissions/delete_template", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "templateId", "tmpl1")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Permissions.DeleteTemplate(context.Background(), "tmpl1")
+	require.NoError(t, err)
+}
+
+func TestPermissionsSetDefaultTemplate(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/permissions/set_default_template", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "templateId", "tmpl1")
+		assertFormValue(t, r, "qualifier", "TRK")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Permissions.SetDefaultTemplate(context.Background(), "tmpl1", "TRK")
+	require.NoError(t, err)
+}
+
+func TestPermissionsAddGroup(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/permissions/add_group", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "groupName", "devs")
+		assertFormValue(t, r, "permission", "admin")
+		assertFormValue(t, r, "organization", "myorg")
+		assertFormValue(t, r, "projectKey", "proj1")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Permissions.AddGroup(context.Background(), "devs", "admin", "myorg", "proj1")
+	require.NoError(t, err)
+}
+
+func TestPermissionsAddGroupOrgLevel(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/permissions/add_group", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		assert.Empty(t, r.FormValue("projectKey"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Permissions.AddGroup(context.Background(), "devs", "admin", "myorg", "")
+	require.NoError(t, err)
+}
+
+func TestPermissionsAddGroupToTemplate(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/permissions/add_group_to_template", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "templateId", "tmpl1")
+		assertFormValue(t, r, "groupName", "devs")
+		assertFormValue(t, r, "permission", "codeviewer")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Permissions.AddGroupToTemplate(context.Background(), "tmpl1", "devs", "codeviewer")
+	require.NoError(t, err)
+}
+
+// --- Branches ---
+
+func TestBranchesRename(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/project_branches/rename", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "project", "proj1")
+		assertFormValue(t, r, "name", "main")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Branches.Rename(context.Background(), "proj1", "main")
+	require.NoError(t, err)
+}
+
+func TestBranchesRenameError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/project_branches/rename", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Not found"}]}`, http.StatusNotFound)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Branches.Rename(context.Background(), "nonexistent", "main")
+	require.Error(t, err)
+	assert.True(t, sqapi.IsNotFound(err))
+}
+
+// --- Rules ---
+
+func TestRulesUpdate(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathRulesUpdate, func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "key", testRuleKey)
+		assertFormValue(t, r, "tags", "security,java")
+		assertFormValue(t, r, "markdown_note", "Important rule")
+		writeJSON(w, types.RuleShowResponse{
+			Rule: types.Rule{Key: testRuleKey, Name: "Do something"},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	rule, err := cc.Rules.Update(context.Background(), cloud.UpdateRuleParams{
+		Key: testRuleKey, Tags: "security,java", MarkdownNote: "Important rule",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, testRuleKey, rule.Key)
+}
+
+func TestRulesUpdateMinimal(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathRulesUpdate, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		assert.Equal(t, testRuleKey, r.FormValue("key"))
+		assert.Empty(t, r.FormValue("tags"))
+		assert.Empty(t, r.FormValue("markdown_note"))
+		writeJSON(w, types.RuleShowResponse{
+			Rule: types.Rule{Key: testRuleKey},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Rules.Update(context.Background(), cloud.UpdateRuleParams{Key: testRuleKey})
+	require.NoError(t, err)
+}
+
+func TestRulesUpdateError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathRulesUpdate, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Not found"}]}`, http.StatusNotFound)
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Rules.Update(context.Background(), cloud.UpdateRuleParams{Key: "nonexistent"})
+	require.Error(t, err)
+	assert.True(t, sqapi.IsNotFound(err))
+}
+
+// --- Settings ---
+
+func TestSettingsSet(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathSettingsSet, func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "component", "proj1")
+		assertFormValue(t, r, "key", "sonar.coverage.exclusions")
+		assertFormValue(t, r, "value", "**/*.java")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Settings.Set(context.Background(), "proj1", "sonar.coverage.exclusions", "**/*.java")
+	require.NoError(t, err)
+}
+
+func TestSettingsSetError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathSettingsSet, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Forbidden"}]}`, http.StatusForbidden)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Settings.Set(context.Background(), "p", "k", "v")
+	require.Error(t, err)
+	assert.True(t, sqapi.IsForbidden(err))
+}
+
+func TestSettingsSetValues(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathSettingsSet, func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "component", "proj1")
+		assertFormValue(t, r, "key", "sonar.exclusions")
+		assertFormValue(t, r, "value", "a.java,b.java,c.java")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Settings.SetValues(context.Background(), "proj1", "sonar.exclusions", []string{"a.java", "b.java", "c.java"})
+	require.NoError(t, err)
+}
+
+// --- Enterprises ---
+
+func TestEnterprisesList(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/enterprises/enterprises", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(w, types.EnterprisesListResponse{
+			Enterprises: []types.Enterprise{{ID: "ent1", Name: "My Enterprise"}},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	enterprises, err := cc.Enterprises.List(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, enterprises, 1)
+	assert.Equal(t, "ent1", enterprises[0].ID)
+}
+
+func TestEnterprisesListError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/enterprises/enterprises", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Unauthorized"}]}`, http.StatusUnauthorized)
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Enterprises.List(context.Background())
+	require.Error(t, err)
+	assert.True(t, sqapi.IsUnauthorized(err))
+}
+
+func TestEnterprisesCreatePortfolio(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathEntPortfolios, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		err := json.NewDecoder(r.Body).Decode(&body)
+		require.NoError(t, err)
+		assert.Equal(t, "ent1", body["enterpriseId"])
+		assert.Equal(t, nameMyPortfolio, body["name"])
+		assert.Equal(t, "projects", body["selection"])
+		writeJSON(w, types.Portfolio{ID: "p1", Name: nameMyPortfolio})
+	})
+	cc := newTestCloud(t, mux)
+
+	portfolio, err := cc.Enterprises.CreatePortfolio(context.Background(), cloud.CreatePortfolioParams{
+		EnterpriseID: "ent1", Name: nameMyPortfolio, Description: "A portfolio",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "p1", portfolio.ID)
+}
+
+func TestEnterprisesCreatePortfolioCustomSelection(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathEntPortfolios, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "tags", body["selection"])
+		writeJSON(w, types.Portfolio{ID: "p1"})
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Enterprises.CreatePortfolio(context.Background(), cloud.CreatePortfolioParams{
+		EnterpriseID: "ent1", Name: "P", Selection: "tags",
+	})
+	require.NoError(t, err)
+}
+
+func TestEnterprisesCreatePortfolioError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathEntPortfolios, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Forbidden"}]}`, http.StatusForbidden)
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Enterprises.CreatePortfolio(context.Background(), cloud.CreatePortfolioParams{
+		EnterpriseID: "e", Name: "P",
+	})
+	require.Error(t, err)
+}
+
+func TestEnterprisesUpdatePortfolio(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathEntPortfolioP1, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPatch, r.Method)
+		var body map[string]any
+		err := json.NewDecoder(r.Body).Decode(&body)
+		require.NoError(t, err)
+		projects := body["projects"].([]any)
+		assert.Len(t, projects, 2)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Enterprises.UpdatePortfolio(context.Background(), cloud.UpdatePortfolioParams{
+		PortfolioID: "p1", Projects: []string{"proj1", "proj2"},
+	})
+	require.NoError(t, err)
+}
+
+func TestEnterprisesUpdatePortfolioError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathEntPortfolioP1, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Not found"}]}`, http.StatusNotFound)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Enterprises.UpdatePortfolio(context.Background(), cloud.UpdatePortfolioParams{
+		PortfolioID: "p1", Projects: []string{},
+	})
+	require.Error(t, err)
+}
+
+func TestEnterprisesDeletePortfolio(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathEntPortfolioP1, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodDelete, r.Method)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Enterprises.DeletePortfolio(context.Background(), "p1")
+	require.NoError(t, err)
+}
+
+func TestEnterprisesDeletePortfolioError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathEntPortfolioP1, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Not found"}]}`, http.StatusNotFound)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Enterprises.DeletePortfolio(context.Background(), "p1")
+	require.Error(t, err)
+	assert.True(t, sqapi.IsNotFound(err))
+}
+
+// --- DOP ---
+
+func TestDOPCreateProjectBinding(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dop-translation/project-bindings", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		body, _ := io.ReadAll(r.Body)
+		var data map[string]string
+		_ = json.Unmarshal(body, &data)
+		assert.Equal(t, "123", data["projectId"])
+		assert.Equal(t, "repo456", data["repositoryId"])
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.DOP.CreateProjectBinding(context.Background(), cloud.ProjectBindingParams{
+		ProjectID: "123", RepositoryID: "repo456",
+	})
+	require.NoError(t, err)
+}
+
+func TestDOPCreateProjectBindingError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dop-translation/project-bindings", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Bad Request"}]}`, http.StatusBadRequest)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.DOP.CreateProjectBinding(context.Background(), cloud.ProjectBindingParams{
+		ProjectID: "1", RepositoryID: "2",
+	})
+	require.Error(t, err)
+}
+
+// --- Base client error paths ---
+
+func TestBaseClientHTTPError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathProjectsCreate, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"errors":[{"msg":"Internal Server Error"}]}`))
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Projects.Create(context.Background(), cloud.CreateProjectParams{
+		ProjectKey: "p", Name: "P", Organization: "o",
+	})
+	require.Error(t, err)
+	var apiErr *sqapi.APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, 500, apiErr.StatusCode)
+}

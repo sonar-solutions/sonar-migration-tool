@@ -1,21 +1,27 @@
 # GitHub Actions Workflows
 
-This directory contains automated workflows for the sonar-reports project.
-
 ## Active Workflows
 
-### 1. `test.yml` - Pull Request Testing
-**Trigger:** Pull requests to `main` branch
-**Purpose:** Run automated tests using Docker Compose
-**What it does:**
-- Checks out the PR code
-- Runs the test suite in Docker containers
-- Validates code quality before merging
+### 1. `build.yml` - Test + Release
+**Triggers:**
+- Push to `main` or `kilo` branches — runs tests and SonarQube scan
+- Push of a version tag (`v*`) — runs tests, then builds and publishes cross-platform binaries
 
-### 2. `build.yml` - Docker Image Publishing
-**Trigger:** Push to `main` branch
-**Purpose:** Build and publish the Docker image to GitHub Container Registry
 **What it does:**
-- Builds the Docker image from the repository
-- Pushes to `ghcr.io/sonar-solutions/sonar-reports:latest`
-- Requires `CR_PAT` secret for authentication
+- Runs Go library and migration tool tests with coverage
+- Runs SonarQube Cloud analysis
+- On tagged releases: builds static binaries for 6 platform/arch combinations and uploads them as GitHub Release assets
+
+**Release binaries produced:**
+| Platform | Architecture | Filename |
+|----------|-------------|----------|
+| Linux    | x64         | `sonar-migration-tool-linux-amd64` |
+| Linux    | ARM64       | `sonar-migration-tool-linux-arm64` |
+| macOS    | x64         | `sonar-migration-tool-darwin-amd64` |
+| macOS    | ARM64       | `sonar-migration-tool-darwin-arm64` |
+| Windows  | x64         | `sonar-migration-tool-windows-amd64.exe` |
+| Windows  | ARM64       | `sonar-migration-tool-windows-arm64.exe` |
+
+### 2. `test.yml` - Manual Test Run
+**Trigger:** Manual dispatch (`workflow_dispatch`)
+**Purpose:** On-demand test run with SonarQube Cloud scan

@@ -1,6 +1,6 @@
 # Configuration File Documentation
 
-This document explains how to use JSON configuration files with sonar-reports instead of command-line arguments.
+This document explains how to use JSON configuration files with sonar-migration-tool instead of command-line arguments.
 
 ## Why Use Configuration Files?
 
@@ -31,7 +31,7 @@ Configuration files offer several advantages:
 
 3. Use it with the executable:
    ```bash
-   ./sonar-reports extract --config my-config.json
+   ./sonar-migration-tool extract --config my-config.json
    ```
 
 ## Configuration File Format
@@ -60,7 +60,7 @@ Create a file named `extract-config.json`:
 
 Usage:
 ```bash
-./sonar-reports extract --config extract-config.json
+./sonar-migration-tool extract --config extract-config.json
 ```
 
 ### For Migrate Command
@@ -82,7 +82,7 @@ Create a file named `migrate-config.json`:
 
 Usage:
 ```bash
-./sonar-reports migrate --config migrate-config.json
+./sonar-migration-tool migrate --config migrate-config.json
 ```
 
 ## Configuration Parameters
@@ -126,7 +126,7 @@ Command-line arguments **override** config file values. This allows you to:
 Example:
 ```bash
 # Config file has concurrency: 10
-./sonar-reports extract --config my-config.json --concurrency 5
+./sonar-migration-tool extract --config my-config.json --concurrency 5
 
 # This will use concurrency of 5, overriding the config file
 ```
@@ -161,7 +161,7 @@ cat > config.json <<EOF
 EOF
 
 # Run the tool
-./sonar-reports extract --config config.json
+./sonar-migration-tool extract --config config.json
 
 # Clean up
 rm config.json
@@ -228,17 +228,17 @@ Create `prod-config.json`:
 3. Run the workflow:
 ```bash
 # Extract from SonarQube
-./sonar-reports extract --config extract-config.json
+./sonar-migration-tool extract --config extract-config.json
 
 # Generate structure
-./sonar-reports structure --export_directory ./migration-data
+./sonar-migration-tool structure --export_directory ./migration-data
 
 # Generate mappings
-./sonar-reports mappings --export_directory ./migration-data
+./sonar-migration-tool mappings --export_directory ./migration-data
 
 # Edit organizations.csv to add SonarCloud org keys
 # Then migrate
-./sonar-reports migrate --config migrate-config.json
+./sonar-migration-tool migrate --config migrate-config.json
 ```
 
 ## Troubleshooting
