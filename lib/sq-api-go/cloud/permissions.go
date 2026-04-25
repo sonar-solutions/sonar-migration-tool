@@ -1,0 +1,79 @@
+package cloud
+
+import (
+	"context"
+	"net/url"
+
+	"github.com/sonar-solutions/sq-api-go/types"
+)
+
+// PermissionsClient provides write-path methods for SonarQube Cloud permissions.
+type PermissionsClient struct{ baseClient }
+
+// CreateTemplateParams holds the parameters for creating a permission template.
+type CreateTemplateParams struct {
+	Name              string
+	Description       string
+	Organization      string
+	ProjectKeyPattern string
+}
+
+// CreateTemplate creates a permission template via /api/permissions/create_template.
+func (p *PermissionsClient) CreateTemplate(ctx context.Context, params CreateTemplateParams) (*types.PermissionTemplate, error) {
+	form := url.Values{}
+	form.Set("name", params.Name)
+	form.Set("organization", params.Organization)
+	if params.Description != "" {
+		form.Set("description", params.Description)
+	}
+	if params.ProjectKeyPattern != "" {
+		form.Set("projectKeyPattern", params.ProjectKeyPattern)
+	}
+
+	var result types.PermissionTemplateCreateResponse
+	if err := p.postForm(ctx, "api/permissions/create_template", form, &result); err != nil {
+		return nil, err
+	}
+	return &result.PermissionTemplate, nil
+}
+
+// DeleteTemplate deletes a permission template via /api/permissions/delete_template.
+func (p *PermissionsClient) DeleteTemplate(ctx context.Context, templateID string) error {
+	form := url.Values{}
+	form.Set("templateId", templateID)
+	return p.postForm(ctx, "api/permissions/delete_template", form, nil)
+}
+
+// SetDefaultTemplate sets a permission template as the default for a qualifier via
+// /api/permissions/set_default_template.
+// qualifier is typically "TRK" for projects.
+func (p *PermissionsClient) SetDefaultTemplate(ctx context.Context, templateID, qualifier string) error {
+	form := url.Values{}
+	form.Set("templateId", templateID)
+	form.Set("qualifier", qualifier)
+	return p.postForm(ctx, "api/permissions/set_default_template", form, nil)
+}
+
+// AddGroup grants a permission to a group at the organization or project level via
+// /api/permissions/add_group.
+// projectKey is optional; omit for org-level permissions.
+func (p *PermissionsClient) AddGroup(ctx context.Context, groupName, permission, organization, projectKey string) error {
+	form := url.Values{}
+	form.Set("groupName", groupName)
+	form.Set("permission", permission)
+	form.Set("organization", organization)
+	if projectKey != "" {
+		form.Set("projectKey", projectKey)
+	}
+	return p.postForm(ctx, "api/permissions/add_group", form, nil)
+}
+
+// AddGroupToTemplate grants a permission to a group within a permission template via
+// /api/permissions/add_group_to_template.
+func (p *PermissionsClient) AddGroupToTemplate(ctx context.Context, templateID, groupName, permission string) error {
+	form := url.Values{}
+	form.Set("templateId", templateID)
+	form.Set("groupName", groupName)
+	form.Set("permission", permission)
+	return p.postForm(ctx, "api/permissions/add_group_to_template", form, nil)
+}

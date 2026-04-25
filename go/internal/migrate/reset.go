@@ -1,0 +1,146 @@
+package migrate
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+
+	sqapi "github.com/sonar-solutions/sq-api-go"
+	"github.com/sonar-solutions/sq-api-go/cloud"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
+	"golang.org/x/sync/errgroup"
+)
+
+// ResetConfig holds parameters for a reset run.
+type ResetConfig struct {
+	Token           string
+	EnterpriseKey   string
+	Edition         string
+	URL             string
+	Concurrency     int
+	ExportDirectory string
+}
+
+// RunReset deletes all migrated entities from SonarQube Cloud.
+func RunReset(ctx context.Context, cfg ResetConfig) error {
+	cfg.applyDefaults()
+
+	cloudURL := cfg.URL
+	apiURL := strings.Replace(cloudURL, "https://", "https://api.", 1)
+
+	cloudClient := sqapi.NewCloudClient(cloudURL, cfg.Token)
+	apiClient := sqapi.NewCloudClient(apiURL, cfg.Token)
+	cc := cloud.New(cloudClient)
+	apiCC := cloud.New(apiClient)
+	raw := common.NewRawClient(cloudClient.HTTPClient(), cloudClient.BaseURL())
+	rawAPI := common.NewRawClient(apiClient.HTTPClient(), apiClient.BaseURL())
+
+	edition := common.Edition(cfg.Edition)
+
+	runID := generateRunID(cfg.ExportDirectory)
+	runDir := filepath.Join(cfg.ExportDirectory, runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return fmt.Errorf("creating run dir: %w", err)
+	}
+
+	allDefs := RegisterAll()
+	registry := BuildMigrateRegistry(allDefs)
+	registry = FilterByEdition(registry, edition)
+
+	// Target only delete* tasks.
+	var targets []string
+	for name := range registry {
+		if strings.HasPrefix(name, "delete") {
+			targets = append(targets, name)
+		}
+	}
+
+	taskSet := ResolveDependencies(targets, registry)
+	if taskSet == nil {
+		return fmt.Errorf("cannot resolve dependencies for delete tasks")
+	}
+
+	plan, err := PlanPhases(taskSet, registry)
+	if err != nil {
+		return err
+	}
+
+	// Write metadata.
+	meta := map[string]any{
+		"plan":           plan,
+		"version":        "cloud",
+		"edition":        string(edition),
+		"enterprise_key": cfg.EnterpriseKey,
+		"run_id":         runID,
+	}
+	data, _ := json.MarshalIndent(meta, "", "  ")
+	_ = os.WriteFile(filepath.Join(runDir, "clear.json"), data, 0o644)
+
+	store := common.NewDataStore(runDir)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	executor := &Executor{
+		Cloud:     cc,
+		CloudAPI:  apiCC,
+		Raw:       raw,
+		RawAPI:    rawAPI,
+		Store:     store,
+		CloudURL:  cloudClient.BaseURL(),
+		APIURL:    apiClient.BaseURL(),
+		EntKey:    cfg.EnterpriseKey,
+		Edition:   edition,
+		ExportDir: cfg.ExportDirectory,
+		Sem:       make(chan struct{}, cfg.Concurrency),
+		Logger:    logger,
+	}
+
+	for i, phase := range plan {
+		logger.Info("starting phase", "phase", i+1, "tasks", len(phase))
+		if err := runResetPhase(ctx, executor, phase, registry); err != nil {
+			return fmt.Errorf("phase %d: %w", i+1, err)
+		}
+		for _, taskName := range phase {
+			store.MarkComplete(taskName)
+		}
+	}
+
+	fmt.Printf("Reset Complete: %s\n", runID)
+	return nil
+}
+
+func runResetPhase(ctx context.Context, e *Executor, taskNames []string, registry map[string]*TaskDef) error {
+	g, ctx := errgroup.WithContext(ctx)
+	for _, name := range taskNames {
+		def := registry[name]
+		e.Logger.Info("running task", "task", name)
+		g.Go(func() error {
+			if err := def.Run(ctx, e); err != nil {
+				return fmt.Errorf("task %s: %w", name, err)
+			}
+			return nil
+		})
+	}
+	return g.Wait()
+}
+
+func (cfg *ResetConfig) applyDefaults() {
+	if cfg.Concurrency <= 0 {
+		cfg.Concurrency = 25
+	}
+	if cfg.ExportDirectory == "" {
+		cfg.ExportDirectory = "/app/files/"
+	}
+	if cfg.URL == "" {
+		cfg.URL = "https://sonarcloud.io/"
+	}
+	if cfg.Edition == "" {
+		cfg.Edition = "enterprise"
+	}
+	if cfg.URL != "" && cfg.URL[len(cfg.URL)-1] != '/' {
+		cfg.URL += "/"
+	}
+}

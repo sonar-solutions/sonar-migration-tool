@@ -1,7 +1,0 @@
-name,language,key,sonarqube_org_key,isDefault,rulesActivated
-Java Best Practices,java,profile-java-alpha,org-alpha,true,245
-Python Standard,py,profile-py-alpha,org-alpha,false,120
-JavaScript Modern,js,profile-js-alpha,org-alpha,true,180
-Java Enterprise,java,profile-java-beta,org-beta,true,280
-TypeScript Strict,ts,profile-ts-beta,org-beta,false,95
-Go Standard,go,profile-go-gamma,org-gamma,true,75

@@ -1,35 +1,84 @@
-name: Build and Push Docker Image
+name: Build
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - kilo
+    tags:
+      - 'v*'
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
-  build:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Run Go library tests with coverage
+        working-directory: lib/sq-api-go
+        run: go test ./... -coverprofile=coverage.out -count=1
+      - name: Run Go migration tool tests with coverage
+        working-directory: go
+        run: go test $(go list ./... | grep -v '/cmd$') -coverprofile=coverage.out -count=1
+      - name: Rewrite coverage paths for SonarQube
+        run: |
+          sed 's|github.com/sonar-solutions/sonar-migration-tool/|go/|g' go/coverage.out > go/coverage.sonar.out
+          sed 's|github.com/sonar-solutions/sq-api-go/|lib/sq-api-go/|g' lib/sq-api-go/coverage.out > lib/sq-api-go/coverage.sonar.out
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  release:
+    name: Release Binaries
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
-
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64.exe
+          - goos: windows
+            goarch: arm64
+            suffix: windows-arm64.exe
     steps:
-      # Checkout the repository code
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      # Set up Docker Buildx (for multi-platform builds if needed)
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      # Log in to GitHub Container Registry
-      - name: Log in to GitHub Container Registry
-        run: echo "${{ secrets.CR_PAT }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      # Build the Docker image using the Dockerfile in the repo
-      - name: Build Docker image
-        run: |
-          docker build -t ghcr.io/sonar-solutions/sonar-reports:latest .
-
-      # Push the Docker image to GitHub Container Registry
-      - name: Push Docker image to GitHub Container Registry
-        run: |
-          docker push ghcr.io/sonar-solutions/sonar-reports:latest
-
+      - uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Build binary
+        working-directory: go
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: go build -o ../sonar-migration-tool-${{ matrix.suffix }} .
+      - name: Upload release artifact
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sonar-migration-tool-${{ matrix.suffix }}

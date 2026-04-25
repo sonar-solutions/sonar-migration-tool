@@ -1,5 +1,5 @@
 {
-  "_comment": "Example configuration file for sonar-reports",
+  "_comment": "Example configuration file for sonar-migration-tool",
   "_comment2": "Copy this file and customize for your needs",
 
   "extract": {

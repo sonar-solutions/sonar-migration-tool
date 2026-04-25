@@ -1,0 +1,322 @@
+package migrate
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+
+	sqapi "github.com/sonar-solutions/sq-api-go"
+	"github.com/sonar-solutions/sq-api-go/cloud"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
+)
+
+// createTasks returns tasks that create entities in SonarQube Cloud.
+func createTasks() []TaskDef {
+	return []TaskDef{
+		{
+			Name:         "createProjects",
+			Dependencies: []string{"generateProjectMappings"},
+			Run:          runCreateProjects,
+		},
+		{
+			Name:         "createProfiles",
+			Dependencies: []string{"generateProfileMappings"},
+			Run:          runCreateProfiles,
+		},
+		{
+			Name:         "createGates",
+			Dependencies: []string{"generateGateMappings"},
+			Run:          runCreateGates,
+		},
+		{
+			Name:         "createGroups",
+			Dependencies: []string{"generateGroupMappings"},
+			Run:          runCreateGroups,
+		},
+		{
+			Name:         "createPermissionTemplates",
+			Dependencies: []string{"generateTemplateMappings"},
+			Run:          runCreatePermissionTemplates,
+		},
+		{
+			Name:         "createPortfolios",
+			Editions:     []common.Edition{common.EditionEnterprise, common.EditionDatacenter},
+			Dependencies: []string{"generatePortfolioMappings", "getEnterprises"},
+			Run:          runCreatePortfolios,
+		},
+	}
+}
+
+func runCreateProjects(ctx context.Context, e *Executor) error {
+	return forEachMigrateItem(ctx, e, "createProjects", "generateProjectMappings",
+		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
+			orgKey := extractField(item, "sonarcloud_org_key")
+			if shouldSkipOrg(orgKey) {
+				return nil
+			}
+			key := extractField(item, "key")
+			name := extractField(item, "name")
+			ncdType := extractField(item, "new_code_definition_type")
+			ncdValue := extractAnyStr(item, "new_code_definition_value")
+
+			cloudKey := orgKey + "_" + key
+			proj, err := e.Cloud.Projects.Create(ctx, cloud.CreateProjectParams{
+				ProjectKey:             cloudKey,
+				Name:                   name,
+				Organization:           orgKey,
+				Visibility:             "private",
+				NewCodeDefinitionType:  ncdType,
+				NewCodeDefinitionValue: ncdValue,
+			})
+			if err != nil {
+				if !sqapi.IsAlreadyExists(err) {
+					e.Logger.Warn("createProjects: create failed", "key", key, "err", err)
+					return nil
+				}
+				e.Logger.Info("createProjects: already exists", "key", key)
+			} else {
+				cloudKey = proj.Key
+			}
+
+			result := common.EnrichRaw(item, map[string]any{
+				"cloud_project_key":  cloudKey,
+				"sonarcloud_org_key": orgKey,
+			})
+			return w.WriteOne(result)
+		})
+}
+
+func runCreateProfiles(ctx context.Context, e *Executor) error {
+	return forEachMigrateItemFiltered(ctx, e, "createProfiles", "generateProfileMappings",
+		func(item json.RawMessage) bool {
+			lang := extractField(item, "language")
+			return !unsupportedLanguages[lang]
+		},
+		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
+			orgKey := extractField(item, "sonarcloud_org_key")
+			if shouldSkipOrg(orgKey) {
+				return nil
+			}
+			name := extractField(item, "name")
+			lang := extractField(item, "language")
+
+			var profileKey string
+			prof, err := e.Cloud.QualityProfiles.Create(ctx, cloud.CreateProfileParams{
+				Name: name, Language: lang, Organization: orgKey,
+			})
+			if err != nil {
+				if !sqapi.IsAlreadyExists(err) {
+					e.Logger.Warn("createProfiles: create failed", "name", name, "err", err)
+					return nil
+				}
+				e.Logger.Info("createProfiles: already exists, looking up", "name", name)
+				profileKey, err = lookupExistingProfile(ctx, e.Raw, name, lang, orgKey)
+				if err != nil {
+					e.Logger.Warn("createProfiles: lookup failed", "name", name, "err", err)
+					return nil
+				}
+			} else {
+				profileKey = prof.Key
+			}
+
+			result := common.EnrichRaw(item, map[string]any{
+				"cloud_profile_key":  profileKey,
+				"sonarcloud_org_key": orgKey,
+			})
+			return w.WriteOne(result)
+		})
+}
+
+func runCreateGates(ctx context.Context, e *Executor) error {
+	return forEachMigrateItem(ctx, e, "createGates", "generateGateMappings",
+		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
+			orgKey := extractField(item, "sonarcloud_org_key")
+			if shouldSkipOrg(orgKey) {
+				return nil
+			}
+			name := extractField(item, "name")
+
+			var gateID string
+			gate, err := e.Cloud.QualityGates.Create(ctx, name, orgKey)
+			if err != nil {
+				if !sqapi.IsAlreadyExists(err) {
+					e.Logger.Warn("createGates: create failed", "name", name, "err", err)
+					return nil
+				}
+				e.Logger.Info("createGates: already exists, looking up", "name", name)
+				gateID, err = lookupExistingGate(ctx, e.Raw, name, orgKey)
+				if err != nil {
+					e.Logger.Warn("createGates: lookup failed", "name", name, "err", err)
+					return nil
+				}
+			} else {
+				gateID = strconv.Itoa(gate.ID)
+			}
+
+			result := common.EnrichRaw(item, map[string]any{
+				"cloud_gate_id":      gateID,
+				"sonarcloud_org_key": orgKey,
+			})
+			return w.WriteOne(result)
+		})
+}
+
+func runCreateGroups(ctx context.Context, e *Executor) error {
+	return forEachMigrateItem(ctx, e, "createGroups", "generateGroupMappings",
+		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
+			orgKey := extractField(item, "sonarcloud_org_key")
+			if shouldSkipOrg(orgKey) {
+				return nil
+			}
+			name := extractField(item, "name")
+			desc := extractField(item, "description")
+
+			var groupID string
+			group, err := e.Cloud.Groups.Create(ctx, cloud.CreateGroupParams{
+				Name: name, Description: desc, Organization: orgKey,
+			})
+			if err != nil {
+				if !sqapi.IsAlreadyExists(err) {
+					e.Logger.Warn("createGroups: create failed", "name", name, "err", err)
+					return nil
+				}
+				e.Logger.Info("createGroups: already exists, looking up", "name", name)
+				groupID, err = lookupExistingGroup(ctx, e.Raw, name, orgKey)
+				if err != nil {
+					e.Logger.Warn("createGroups: lookup failed", "name", name, "err", err)
+					return nil
+				}
+			} else {
+				groupID = strconv.Itoa(group.ID)
+			}
+
+			result := common.EnrichRaw(item, map[string]any{
+				"cloud_group_id":     groupID,
+				"sonarcloud_org_key": orgKey,
+			})
+			return w.WriteOne(result)
+		})
+}
+
+func runCreatePermissionTemplates(ctx context.Context, e *Executor) error {
+	return forEachMigrateItem(ctx, e, "createPermissionTemplates", "generateTemplateMappings",
+		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
+			orgKey := extractField(item, "sonarcloud_org_key")
+			if shouldSkipOrg(orgKey) {
+				return nil
+			}
+			name := extractField(item, "name")
+			desc := extractField(item, "description")
+			pattern := extractField(item, "project_key_pattern")
+			// Prepend org key to pattern if present.
+			if pattern != "" {
+				pattern = orgKey + "_" + pattern
+			}
+
+			var templateID string
+			tpl, err := e.Cloud.Permissions.CreateTemplate(ctx, cloud.CreateTemplateParams{
+				Name: name, Description: desc,
+				Organization: orgKey, ProjectKeyPattern: pattern,
+			})
+			if err != nil {
+				if !sqapi.IsAlreadyExists(err) {
+					e.Logger.Warn("createPermissionTemplates: create failed", "name", name, "err", err)
+					return nil
+				}
+				e.Logger.Info("createPermissionTemplates: already exists, looking up", "name", name)
+				templateID, err = lookupExistingTemplate(ctx, e.Raw, name, orgKey)
+				if err != nil {
+					e.Logger.Warn("createPermissionTemplates: lookup failed", "name", name, "err", err)
+					return nil
+				}
+			} else {
+				templateID = tpl.ID
+			}
+
+			result := common.EnrichRaw(item, map[string]any{
+				"cloud_template_id":  templateID,
+				"sonarcloud_org_key": orgKey,
+			})
+			return w.WriteOne(result)
+		})
+}
+
+func runCreatePortfolios(ctx context.Context, e *Executor) error {
+	entID, err := resolveEnterpriseID(e)
+	if err != nil {
+		return err
+	}
+
+	return forEachMigrateItem(ctx, e, "createPortfolios", "generatePortfolioMappings",
+		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
+			name := extractField(item, "name")
+			desc := extractField(item, "description")
+
+			portfolio, err := e.CloudAPI.Enterprises.CreatePortfolio(ctx, cloud.CreatePortfolioParams{
+				EnterpriseID: entID,
+				Name:         name,
+				Description:  desc,
+				Selection:    "projects",
+			})
+			if err != nil {
+				// Portfolio lookup on re-run is not supported — the enterprise API
+				// does not expose a list/search endpoint for portfolios.
+				e.Logger.Warn("createPortfolios: create failed", "name", name, "err", err)
+				return nil
+			}
+
+			result := common.EnrichRaw(item, map[string]any{
+				"cloud_portfolio_id": portfolio.ID,
+			})
+			return w.WriteOne(result)
+		})
+}
+
+// resolveEnterpriseID reads the getEnterprises task output and returns the UUID
+// for the enterprise matching e.EntKey. The API expects the UUID, not the key.
+func resolveEnterpriseID(e *Executor) (string, error) {
+	items, err := e.Store.ReadAll("getEnterprises")
+	if err != nil {
+		return "", fmt.Errorf("resolveEnterpriseID: reading getEnterprises: %w", err)
+	}
+	for _, item := range items {
+		// getEnterprises stores the raw API response which is an array of enterprises.
+		var enterprises []json.RawMessage
+		if json.Unmarshal(item, &enterprises) == nil {
+			for _, ent := range enterprises {
+				if extractField(ent, "key") == e.EntKey {
+					return extractField(ent, "id"), nil
+				}
+			}
+		}
+		// Also try as a flat enterprise object.
+		if extractField(item, "key") == e.EntKey {
+			return extractField(item, "id"), nil
+		}
+	}
+	return "", fmt.Errorf("resolveEnterpriseID: no enterprise found with key %q", e.EntKey)
+}
+
+// extractAnyStr extracts a value as string, handling numeric types.
+func extractAnyStr(raw json.RawMessage, key string) string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	val, ok := obj[key]
+	if !ok {
+		return ""
+	}
+	// Try string first.
+	var s string
+	if err := json.Unmarshal(val, &s); err == nil {
+		return s
+	}
+	// Try number.
+	var n float64
+	if err := json.Unmarshal(val, &n); err == nil {
+		return strconv.FormatFloat(n, 'f', -1, 64)
+	}
+	return ""
+}

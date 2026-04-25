@@ -1,0 +1,82 @@
+package structure
+
+import (
+	"crypto/md5"
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
+)
+
+// MapPortfolios maps portfolios, deduplicating by project composition.
+func MapPortfolios(directory string, mapping ExtractMapping) []Portfolio {
+	items, _ := ReadExtractData(directory, mapping, "getPortfolioProjects")
+
+	// Collect portfolio projects and details.
+	portfolioProjects := make(map[string]map[string]bool) // uniqueKey → set of refKeys
+	portfolioDetails := make(map[string]portfolioDetail)
+
+	for _, item := range items {
+		portfolioKey := common.ExtractField(item.Data, "portfolioKey")
+		refKey := common.ExtractField(item.Data, "refKey")
+		uniqueKey := item.ServerURL + portfolioKey
+
+		if portfolioProjects[uniqueKey] == nil {
+			portfolioProjects[uniqueKey] = make(map[string]bool)
+		}
+		portfolioProjects[uniqueKey][refKey] = true
+
+		var p map[string]any
+		json.Unmarshal(item.Data, &p)
+		portfolioDetails[uniqueKey] = portfolioDetail{
+			SourcePortfolioKey: portfolioKey,
+			Name:               getString(p, "portfolioName"),
+			ServerURL:          item.ServerURL,
+			Description:        getString(p, "description"),
+		}
+	}
+
+	// Deduplicate portfolios by project composition hash.
+	uniquePortfolios := make(map[string]portfolioDetail)
+	for key, projects := range portfolioProjects {
+		projectList := make([]string, 0, len(projects))
+		for p := range projects {
+			projectList = append(projectList, p)
+		}
+		hashID := generateHashID(projectList)
+		uniquePortfolios[hashID] = portfolioDetails[key]
+	}
+
+	result := make([]Portfolio, 0, len(uniquePortfolios))
+	for _, p := range uniquePortfolios {
+		result = append(result, Portfolio{
+			SourcePortfolioKey: p.SourcePortfolioKey,
+			Name:               p.Name,
+			ServerURL:          p.ServerURL,
+			Description:        p.Description,
+		})
+	}
+	return result
+}
+
+type portfolioDetail struct {
+	SourcePortfolioKey string
+	Name               string
+	ServerURL          string
+	Description        string
+}
+
+// generateHashID generates a consistent UUID-formatted string from a list of strings.
+// MD5 of JSON-sorted list → UUID format.
+func generateHashID(data []string) string {
+	sort.Strings(data)
+	jsonBytes, _ := json.Marshal(data)
+	hash := md5.Sum(jsonBytes)
+	hex := fmt.Sprintf("%x", hash)
+	// Format as UUID: 8-4-4-4-12
+	return strings.Join([]string{
+		hex[0:8], hex[8:12], hex[12:16], hex[16:20], hex[20:32],
+	}, "-")
+}

@@ -1,4 +1,0 @@
-key,name,sonarqube_org_key,projects,description
-portfolio-frontend,Frontend Portfolio,org-alpha,"[""project-1"", ""project-3""]",All frontend projects
-portfolio-backend,Backend Portfolio,org-alpha,"[""project-2""]",Backend services
-portfolio-all-beta,All Beta Projects,org-beta,"[""project-4"", ""project-5"", ""project-6""]",Complete beta organization portfolio
