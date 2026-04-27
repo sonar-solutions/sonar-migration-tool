@@ -21,4 +21,6 @@ require (
 	golang.org/x/text v0.36.0 // indirect
 )
 
+exclude github.com/yuin/goldmark v1.4.13
+
 replace github.com/sonar-solutions/sq-api-go => ../lib/sq-api-go

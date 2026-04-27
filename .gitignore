@@ -12,6 +12,12 @@
 *.so
 *.dylib
 coverage.out
+coverage.sonar.out
+go/sonar-migration-tool
+
+# Claude Code
+.claude/
+CLAUDE.md
 
 # Environment / secrets
 .env

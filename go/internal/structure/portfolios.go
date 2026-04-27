@@ -1,7 +1,7 @@
 package structure
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -69,12 +69,12 @@ type portfolioDetail struct {
 }
 
 // generateHashID generates a consistent UUID-formatted string from a list of strings.
-// MD5 of JSON-sorted list → UUID format.
+// SHA-256 of JSON-sorted list → UUID format (first 16 bytes).
 func generateHashID(data []string) string {
 	sort.Strings(data)
 	jsonBytes, _ := json.Marshal(data)
-	hash := md5.Sum(jsonBytes)
-	hex := fmt.Sprintf("%x", hash)
+	hash := sha256.Sum256(jsonBytes)
+	hex := fmt.Sprintf("%x", hash[:16])
 	// Format as UUID: 8-4-4-4-12
 	return strings.Join([]string{
 		hex[0:8], hex[8:12], hex[12:16], hex[16:20], hex[20:32],
