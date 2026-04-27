@@ -35,6 +35,7 @@ type WizardState struct {
 	ValidationPassed   bool        `json:"validation_passed"`
 	MigrationRunID     *string     `json:"migration_run_id"`
 	SkippedProjects    []string    `json:"skipped_projects,omitempty"`
+	IncludeScanHistory bool        `json:"include_scan_history,omitempty"`
 }
 
 // NewWizardState returns a WizardState initialized to the INIT phase.

@@ -182,7 +182,7 @@ func mockMappings(err error) func() {
 
 func mockMigrate(err error) func() {
 	orig := runMigrateFn
-	runMigrateFn = func(_ context.Context, _ migrate.MigrateConfig) error { return err }
+	runMigrateFn = func(_ context.Context, _ migrate.MigrateConfig) (string, error) { return "test-run-01", err }
 	return func() { runMigrateFn = orig }
 }
 
@@ -427,8 +427,9 @@ func TestRunFullWizardMocked(t *testing.T) {
 			true, // cloud credentials review
 		},
 		ConfirmResponses: []bool{
-			true, // migrate org-1
-			true, // proceed with migration
+			false, // include scan history
+			true,  // migrate org-1
+			true,  // proceed with migration
 		},
 	}
 

@@ -59,6 +59,15 @@ var urlEntityMap = map[string]string{
 // entityNameFields is the priority order for extracting entity names from request bodies.
 var entityNameFields = []string{"name", "project", "projectKey", "gateName", "groupName", "key", "language"}
 
+// ParseRequestsLog parses requests.log and returns report rows without writing CSV.
+func ParseRequestsLog(runDir string) ([]ReportRow, error) {
+	logPath := filepath.Join(runDir, "requests.log")
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		return nil, nil
+	}
+	return parseLogFile(logPath)
+}
+
 // GenerateReport parses requests.log in runDirectory and writes final_analysis_report.csv
 // to the same directory. Returns the parsed rows.
 func GenerateReport(runDirectory string) ([]ReportRow, error) {

@@ -62,12 +62,18 @@ func RegisterAll() []TaskDef {
 	all = append(all, portfolioTasks()...)
 	all = append(all, ruleTasks()...)
 	all = append(all, deleteTasks()...)
+	all = append(all, scanHistoryTasks()...)
 	return all
+}
+
+// migrateScanHistoryTasks lists task names that require the --include-scan-history flag.
+var migrateScanHistoryTasks = map[string]bool{
+	"importScanHistory": true,
 }
 
 // MigrateTargetTasks determines which tasks to run.
 // Default: all tasks NOT starting with "get", "delete", or "reset".
-func MigrateTargetTasks(reg map[string]*TaskDef, targetTask string, skipProfiles bool) []string {
+func MigrateTargetTasks(reg map[string]*TaskDef, targetTask string, skipProfiles, includeScanHistory bool) []string {
 	if targetTask != "" {
 		return []string{targetTask}
 	}
@@ -85,6 +91,9 @@ func MigrateTargetTasks(reg map[string]*TaskDef, targetTask string, skipProfiles
 			continue
 		}
 		if skipProfiles && (strings.Contains(name, "Profile") || strings.Contains(name, "profile")) {
+			continue
+		}
+		if migrateScanHistoryTasks[name] && !includeScanHistory {
 			continue
 		}
 		tasks = append(tasks, name)

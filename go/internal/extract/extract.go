@@ -28,7 +28,8 @@ type ExtractConfig struct {
 	Concurrency     int
 	Timeout         int
 	ExtractID       string
-	TargetTask      string
+	TargetTask         string
+	IncludeScanHistory bool
 }
 
 // Executor is the runtime context passed to every task function.
@@ -119,7 +120,12 @@ func RunExtract(ctx context.Context, cfg ExtractConfig) ([]string, error) {
 	registry := BuildRegistry(allDefs)
 	registry = FilterByEdition(registry, edition)
 
-	targets := TargetTasks(registry, cfg.TargetTask, cfg.ExtractType)
+	var targets []string
+	if cfg.IncludeScanHistory {
+		targets = TargetTasksWithScanHistory(registry, cfg.TargetTask, cfg.ExtractType)
+	} else {
+		targets = TargetTasks(registry, cfg.TargetTask, cfg.ExtractType)
+	}
 	taskSet := ResolveDependencies(targets, registry)
 	if taskSet == nil {
 		return nil, fmt.Errorf("cannot resolve dependencies for target tasks")
