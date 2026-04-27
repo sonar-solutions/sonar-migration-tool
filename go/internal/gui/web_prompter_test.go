@@ -1,0 +1,371 @@
+package gui
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/sonar-solutions/sonar-migration-tool/internal/wizard"
+)
+
+// collectMessages returns a sendFn that appends messages to a thread-safe slice.
+func collectMessages() (func(ServerMessage), *[]ServerMessage) {
+	var mu sync.Mutex
+	var msgs []ServerMessage
+	return func(msg ServerMessage) {
+		mu.Lock()
+		msgs = append(msgs, msg)
+		mu.Unlock()
+	}, &msgs
+}
+
+func TestPromptURLBlocksAndReturns(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	var result string
+	var err error
+	done := make(chan struct{})
+
+	go func() {
+		result, err = wp.PromptURL("Server URL:", true)
+		close(done)
+	}()
+
+	// Wait for the prompt to be sent.
+	time.Sleep(20 * time.Millisecond)
+	if len(*msgs) != 1 {
+		t.Fatalf("expected 1 message sent, got %d", len(*msgs))
+	}
+	sent := (*msgs)[0]
+	if sent.Type != TypePromptURL {
+		t.Fatalf("expected type %q, got %q", TypePromptURL, sent.Type)
+	}
+	if sent.ID == "" {
+		t.Fatal("prompt ID should not be empty")
+	}
+
+	// Respond.
+	wp.HandleResponse(ClientMessage{
+		Type:  TypePromptResponse,
+		ID:    sent.ID,
+		Value: "https://sonar.example.com/",
+	})
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("PromptURL did not return in time")
+	}
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "https://sonar.example.com/" {
+		t.Errorf("got %q, want %q", result, "https://sonar.example.com/")
+	}
+}
+
+func TestPromptTextWithDefault(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	done := make(chan struct{})
+	var result string
+
+	go func() {
+		result, _ = wp.PromptText("Enterprise key:", "default-key")
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	sent := (*msgs)[0]
+	if sent.Default != "default-key" {
+		t.Errorf("default: got %v, want %q", sent.Default, "default-key")
+	}
+
+	wp.HandleResponse(ClientMessage{ID: sent.ID, Value: "my-key"})
+	<-done
+
+	if result != "my-key" {
+		t.Errorf("got %q, want %q", result, "my-key")
+	}
+}
+
+func TestPromptPasswordMasked(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	done := make(chan struct{})
+	var result string
+
+	go func() {
+		result, _ = wp.PromptPassword("Token:")
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	sent := (*msgs)[0]
+	if sent.Type != TypePromptPassword {
+		t.Fatalf("type: got %q", sent.Type)
+	}
+
+	wp.HandleResponse(ClientMessage{ID: sent.ID, Value: "secret-token"})
+	<-done
+
+	if result != "secret-token" {
+		t.Errorf("got %q", result)
+	}
+}
+
+func TestConfirmReturnsBool(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	done := make(chan struct{})
+	var result bool
+
+	go func() {
+		result, _ = wp.Confirm("Proceed?", false)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	wp.HandleResponse(ClientMessage{ID: (*msgs)[0].ID, Value: true})
+	<-done
+
+	if !result {
+		t.Error("expected true")
+	}
+}
+
+func TestConfirmReviewSendsDetails(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	details := []wizard.KV{
+		{Key: "URL", Value: "https://example.com"},
+		{Key: "Token", Value: "********"},
+	}
+
+	done := make(chan struct{})
+	var result bool
+
+	go func() {
+		result, _ = wp.ConfirmReview("Review Credentials", details)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	sent := (*msgs)[0]
+	if sent.Type != TypePromptConfirmReview {
+		t.Fatalf("type: got %q", sent.Type)
+	}
+	if sent.Title != "Review Credentials" {
+		t.Errorf("title: got %q", sent.Title)
+	}
+	if len(sent.Details) != 2 {
+		t.Fatalf("details: got %d, want 2", len(sent.Details))
+	}
+
+	wp.HandleResponse(ClientMessage{ID: sent.ID, Value: false})
+	<-done
+
+	if result {
+		t.Error("expected false")
+	}
+}
+
+func TestContextCancellation(t *testing.T) {
+	sendFn, _ := collectMessages()
+	ctx, cancel := context.WithCancel(context.Background())
+	wp := NewWebPrompter(ctx, sendFn)
+
+	done := make(chan struct{})
+	var err error
+
+	go func() {
+		_, err = wp.PromptURL("URL:", false)
+		close(done)
+	}()
+
+	// Cancel before responding.
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("PromptURL did not return after cancel")
+	}
+
+	if err != context.Canceled {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestContextCancellationCleansPending(t *testing.T) {
+	sendFn, _ := collectMessages()
+	ctx, cancel := context.WithCancel(context.Background())
+	wp := NewWebPrompter(ctx, sendFn)
+
+	done := make(chan struct{})
+	go func() {
+		wp.PromptURL("URL:", false)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+
+	wp.mu.Lock()
+	pending := len(wp.pending)
+	wp.mu.Unlock()
+
+	if pending != 0 {
+		t.Errorf("expected 0 pending, got %d", pending)
+	}
+}
+
+func TestDisplayMethodsAreFineAndForget(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	wp.DisplayWelcome()
+	wp.DisplayPhaseProgress(wizard.PhaseExtract)
+	wp.DisplayMessage("hello")
+	wp.DisplayError("bad")
+	wp.DisplayWarning("careful")
+	wp.DisplaySuccess("done")
+	wp.DisplaySummary("Stats", []wizard.KV{{Key: "A", Value: "1"}})
+	wp.DisplayResumeInfo(&wizard.WizardState{Phase: wizard.PhaseExtract})
+	wp.DisplayWizardComplete()
+
+	if len(*msgs) != 9 {
+		t.Errorf("expected 9 display messages, got %d", len(*msgs))
+	}
+
+	expectedTypes := []string{
+		TypeDisplayWelcome, TypeDisplayPhaseProgress, TypeDisplayMessage,
+		TypeDisplayError, TypeDisplayWarning, TypeDisplaySuccess,
+		TypeDisplaySummary, TypeDisplayResumeInfo, TypeDisplayWizardComplete,
+	}
+	for i, want := range expectedTypes {
+		if (*msgs)[i].Type != want {
+			t.Errorf("msg %d: got %q, want %q", i, (*msgs)[i].Type, want)
+		}
+	}
+}
+
+func TestDisplayPhaseProgressFields(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	wp.DisplayPhaseProgress(wizard.PhaseStructure)
+	msg := (*msgs)[0]
+
+	if msg.Phase != string(wizard.PhaseStructure) {
+		t.Errorf("phase: got %q", msg.Phase)
+	}
+	if msg.Index != 2 {
+		t.Errorf("index: got %d, want 2", msg.Index)
+	}
+	if msg.Total != 6 {
+		t.Errorf("total: got %d, want 6", msg.Total)
+	}
+	if msg.Name != "Structure" {
+		t.Errorf("name: got %q", msg.Name)
+	}
+}
+
+func TestDisplayResumeInfoWithNilPointers(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	// All pointer fields nil.
+	wp.DisplayResumeInfo(&wizard.WizardState{Phase: wizard.PhaseOrgMapping})
+	msg := (*msgs)[0]
+
+	if msg.SourceURL != "" || msg.TargetURL != "" || msg.ExtractID != "" {
+		t.Errorf("nil pointers should produce empty strings: source=%q target=%q extract=%q",
+			msg.SourceURL, msg.TargetURL, msg.ExtractID)
+	}
+}
+
+func TestHandleResponseIgnoresUnknownID(t *testing.T) {
+	sendFn, _ := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	// Should not panic or block.
+	wp.HandleResponse(ClientMessage{ID: "nonexistent", Value: "test"})
+}
+
+func TestMultiplePromptsSequential(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	for i := 0; i < 3; i++ {
+		done := make(chan string)
+		go func() {
+			result, _ := wp.PromptText("Q:", "")
+			done <- result
+		}()
+
+		time.Sleep(20 * time.Millisecond)
+		wp.HandleResponse(ClientMessage{ID: (*msgs)[i].ID, Value: "answer"})
+		<-done
+	}
+
+	wp.mu.Lock()
+	pending := len(wp.pending)
+	wp.mu.Unlock()
+
+	if pending != 0 {
+		t.Errorf("expected 0 pending after all resolved, got %d", pending)
+	}
+}
+
+func TestToBoolStringCoercion(t *testing.T) {
+	tests := []struct {
+		input any
+		want  bool
+	}{
+		{true, true},
+		{false, false},
+		{"true", true},
+		{"false", false},
+		{"", false},
+		{nil, false},
+		{42, false},
+	}
+	for _, tt := range tests {
+		got := toBool(tt.input)
+		if got != tt.want {
+			t.Errorf("toBool(%v) = %v, want %v", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestToStringCoercion(t *testing.T) {
+	if got := toString("hello"); got != "hello" {
+		t.Errorf("toString(string) = %q", got)
+	}
+	if got := toString(42); got != "42" {
+		t.Errorf("toString(int) = %q", got)
+	}
+	if got := toString(nil); got != "<nil>" {
+		t.Errorf("toString(nil) = %q", got)
+	}
+}
