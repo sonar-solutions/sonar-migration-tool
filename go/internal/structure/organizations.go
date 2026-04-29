@@ -10,6 +10,7 @@ func MapOrganizationStructure(bindings []Binding) []Organization {
 		orgs = append(orgs, Organization{
 			SonarQubeOrgKey:  b.Key,
 			SonarCloudOrgKey: "",
+			BindingKey:       b.BindingKey,
 			ServerURL:        b.ServerURL,
 			ALM:              b.ALM,
 			URL:              b.URL,

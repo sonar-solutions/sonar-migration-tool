@@ -126,6 +126,7 @@ func TestOrgsFromMaps(t *testing.T) {
 		{
 			"sonarqube_org_key":  "org-1",
 			"sonarcloud_org_key": "cloud-1",
+			"binding_key":        "binding-1",
 			"server_url":         testServerURLSlash,
 			"alm":                "github",
 			"url":                "https://github.com/org",
@@ -135,6 +136,7 @@ func TestOrgsFromMaps(t *testing.T) {
 		{
 			"sonarqube_org_key":  "org-2",
 			"sonarcloud_org_key": SkippedOrgSentinel,
+			"binding_key":        "",
 			"server_url":         "https://sq2.example.com/",
 			"alm":                "",
 			"url":                "",
@@ -151,6 +153,7 @@ func TestOrgsFromMaps(t *testing.T) {
 	assertOrg(t, orgs[0], structure.Organization{
 		SonarQubeOrgKey:  "org-1",
 		SonarCloudOrgKey: "cloud-1",
+		BindingKey:       "binding-1",
 		ServerURL:        testServerURLSlash,
 		ALM:              "github",
 		URL:              "https://github.com/org",
@@ -170,6 +173,9 @@ func assertOrg(t *testing.T, got, want structure.Organization) {
 	}
 	if got.SonarCloudOrgKey != want.SonarCloudOrgKey {
 		t.Errorf("SonarCloudOrgKey: %q != %q", got.SonarCloudOrgKey, want.SonarCloudOrgKey)
+	}
+	if got.BindingKey != want.BindingKey {
+		t.Errorf("BindingKey: %q != %q", got.BindingKey, want.BindingKey)
 	}
 	if got.ServerURL != want.ServerURL {
 		t.Errorf("ServerURL: %q != %q", got.ServerURL, want.ServerURL)

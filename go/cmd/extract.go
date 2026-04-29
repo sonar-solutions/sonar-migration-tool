@@ -48,6 +48,7 @@ func init() {
 	f.Int("timeout", 0, "Number of seconds before a request will timeout")
 	f.String("extract_id", "", "ID of an extract to resume in case of failures")
 	f.String("target_task", "", "Target task to complete; all dependent tasks will be included")
+	f.Bool("include_scan_history", false, "Extract full issue data, source code, and SCM blame for scan history migration")
 }
 
 func buildExtractConfig(cmd *cobra.Command, args []string) (extract.ExtractConfig, error) {
@@ -83,6 +84,9 @@ func buildExtractConfig(cmd *cobra.Command, args []string) (extract.ExtractConfi
 	overrideString(cmd, "target_task", &cfg.TargetTask)
 	overrideInt(cmd, "concurrency", &cfg.Concurrency)
 	overrideInt(cmd, "timeout", &cfg.Timeout)
+	if cmd.Flags().Changed("include_scan_history") {
+		cfg.IncludeScanHistory, _ = cmd.Flags().GetBool("include_scan_history")
+	}
 
 	return cfg, nil
 }

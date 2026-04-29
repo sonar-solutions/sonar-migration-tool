@@ -9,6 +9,7 @@ import (
 	"github.com/sonar-solutions/sonar-migration-tool/internal/analysis"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/extract"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/migrate"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/report/summary"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 )
 
@@ -17,7 +18,7 @@ var (
 	runExtractFn = func(ctx context.Context, cfg extract.ExtractConfig) ([]string, error) { return extract.RunExtract(ctx, cfg) }
 	runStructureFn = func(exportDir string) error { return structure.RunStructure(exportDir) }
 	runMappingsFn  = func(exportDir string) error { return structure.RunMappings(exportDir) }
-	runMigrateFn = func(ctx context.Context, cfg migrate.MigrateConfig) error { return migrate.RunMigrate(ctx, cfg) }
+	runMigrateFn = func(ctx context.Context, cfg migrate.MigrateConfig) (string, error) { return migrate.RunMigrate(ctx, cfg) }
 )
 
 // CSV file names used across phases.
@@ -44,6 +45,12 @@ func phaseExtract(ctx context.Context, p Prompter, state *WizardState, exportDir
 	if err != nil {
 		return err
 	}
+
+	includeScan, err := p.Confirm("Include scan history? (extracts issues, source code, and SCM data for import to SonarQube Cloud)", false)
+	if err != nil {
+		return err
+	}
+	state.IncludeScanHistory = includeScan
 
 	certCfg, err := runExtractWithRetry(ctx, p, state, exportDir, sourceURL, token)
 	if err != nil {
@@ -88,14 +95,15 @@ func runExtractWithRetry(ctx context.Context, p Prompter, state *WizardState, ex
 	for {
 		extractID := generateRunID(exportDir)
 		cfg := extract.ExtractConfig{
-			URL:             sourceURL,
-			Token:           token,
-			ExportDirectory: exportDir,
-			ExtractID:       extractID,
-			Timeout:         120,
-			PEMFilePath:     cert.pemFile,
-			KeyFilePath:     cert.keyFile,
-			CertPassword:    cert.password,
+			URL:                sourceURL,
+			Token:              token,
+			ExportDirectory:    exportDir,
+			ExtractID:          extractID,
+			Timeout:            120,
+			PEMFilePath:        cert.pemFile,
+			KeyFilePath:        cert.keyFile,
+			CertPassword:       cert.password,
+			IncludeScanHistory: state.IncludeScanHistory,
 		}
 
 		skipped, err := runExtractFn(ctx, cfg)
@@ -270,7 +278,7 @@ func processOrgMapping(p Prompter, org map[string]any, index, total int) error {
 
 	p.DisplaySummary(fmt.Sprintf("Organization %d/%d", index, total), []KV{
 		{"Organization Key", orgKey},
-		{"Server URL", mapStr(org, "server_url")},
+		{"Integration Key", mapStr(org, "binding_key")},
 		{"ALM", mapStr(org, "alm")},
 		{"DevOps URL", mapStr(org, "url")},
 		{"Projects", strconv.Itoa(mapInt(org, "project_count"))},
@@ -406,14 +414,18 @@ func runMigrateWithRetry(ctx context.Context, p Prompter, state *WizardState, ex
 	for {
 		runID := generateRunID(exportDir)
 		cfg := migrate.MigrateConfig{
-			Token:           token,
-			EnterpriseKey:   ptrStr(state.EnterpriseKey),
-			URL:             ptrStr(state.TargetURL),
-			ExportDirectory: exportDir,
+			Token:              token,
+			EnterpriseKey:      ptrStr(state.EnterpriseKey),
+			URL:                ptrStr(state.TargetURL),
+			ExportDirectory:    exportDir,
+			IncludeScanHistory: state.IncludeScanHistory,
 		}
 
-		err := runMigrateFn(ctx, cfg)
+		resultID, err := runMigrateFn(ctx, cfg)
 		if err == nil {
+			if resultID != "" {
+				runID = resultID
+			}
 			state.MigrationRunID = strPtr(runID)
 			state.Phase = nextPhase(PhaseMigrate)
 			p.DisplaySuccess(fmt.Sprintf("Migration complete: %s", runID))
@@ -442,5 +454,12 @@ func generateAnalysisReport(p Prompter, exportDir, runID string) {
 	if len(rows) > 0 {
 		p.DisplayMessage(fmt.Sprintf("Analysis report: %d entries written to %s/final_analysis_report.csv", len(rows), runID))
 	}
+
+	pdfPath, pdfErr := summary.GeneratePDFReport(runDir, exportDir)
+	if pdfErr != nil {
+		p.DisplayWarning("Could not generate PDF summary: " + pdfErr.Error())
+		return
+	}
+	p.DisplayMessage(fmt.Sprintf("PDF summary report: %s", pdfPath))
 }
 

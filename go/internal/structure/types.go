@@ -4,6 +4,7 @@ package structure
 type Organization struct {
 	SonarQubeOrgKey  string `csv:"sonarqube_org_key" json:"sonarqube_org_key"`
 	SonarCloudOrgKey string `csv:"sonarcloud_org_key" json:"sonarcloud_org_key"`
+	BindingKey       string `csv:"binding_key" json:"binding_key"`
 	ServerURL        string `csv:"server_url" json:"server_url"`
 	ALM              string `csv:"alm" json:"alm"`
 	URL              string `csv:"url" json:"url"`
@@ -82,6 +83,7 @@ type Portfolio struct {
 // Binding is an intermediate struct for unique DevOps bindings.
 type Binding struct {
 	Key          string
+	BindingKey   string
 	ALM          string
 	URL          string
 	ServerURL    string

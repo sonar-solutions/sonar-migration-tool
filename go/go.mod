@@ -4,9 +4,12 @@ go 1.25.0
 
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
+	github.com/go-pdf/fpdf v0.9.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/sonar-solutions/sq-api-go v0.0.0
 	github.com/spf13/cobra v1.8.1
 	golang.org/x/sync v0.20.0
+	google.golang.org/protobuf v1.36.11
 )
 
 require (

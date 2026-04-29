@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/migrate"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/report/summary"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +26,15 @@ organization keys to organizations.csv.`,
 		if cfg.Token == "" || cfg.EnterpriseKey == "" {
 			return fmt.Errorf("TOKEN and ENTERPRISE_KEY are required (either as arguments or in config file)")
 		}
-		return migrate.RunMigrate(cmd.Context(), cfg)
+		runID, err := migrate.RunMigrate(cmd.Context(), cfg)
+		if err != nil {
+			return err
+		}
+		runDir := filepath.Join(cfg.ExportDirectory, runID)
+		if pdfPath, pdfErr := summary.GeneratePDFReport(runDir, cfg.ExportDirectory); pdfErr == nil {
+			fmt.Printf("PDF summary report: %s\n", pdfPath)
+		}
+		return nil
 	},
 }
 
@@ -38,6 +48,7 @@ func init() {
 	f.String("export_directory", "", "Root directory containing all SonarQube exports")
 	f.String("target_task", "", "Name of a specific migration task to complete")
 	f.Bool("skip_profiles", false, "Skip quality profile migration/provisioning in SonarQube Cloud")
+	f.Bool("include_scan_history", false, "Import scan history (issues, metrics) into SonarQube Cloud projects")
 }
 
 func buildMigrateConfig(cmd *cobra.Command, args []string) (migrate.MigrateConfig, error) {
@@ -72,6 +83,9 @@ func buildMigrateConfig(cmd *cobra.Command, args []string) (migrate.MigrateConfi
 	overrideInt(cmd, "concurrency", &cfg.Concurrency)
 	if cmd.Flags().Changed("skip_profiles") {
 		cfg.SkipProfiles, _ = cmd.Flags().GetBool("skip_profiles")
+	}
+	if cmd.Flags().Changed("include_scan_history") {
+		cfg.IncludeScanHistory, _ = cmd.Flags().GetBool("include_scan_history")
 	}
 
 	return cfg, nil

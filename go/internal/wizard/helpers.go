@@ -151,6 +151,7 @@ func orgsFromMaps(rows []map[string]any) []structure.Organization {
 		org := structure.Organization{
 			SonarQubeOrgKey:  mapStr(row, "sonarqube_org_key"),
 			SonarCloudOrgKey: mapStr(row, "sonarcloud_org_key"),
+			BindingKey:       mapStr(row, "binding_key"),
 			ServerURL:        mapStr(row, "server_url"),
 			ALM:              mapStr(row, "alm"),
 			URL:              mapStr(row, "url"),
