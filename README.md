@@ -1,16 +1,16 @@
 # SonarQube Migration Tool
 
-Migrates SonarQube Server configurations to SonarQube Cloud — quality gates, quality profiles, groups, permissions, projects, and portfolios.
+Migrates SonarQube Server configurations to SonarQube Cloud — quality gates, quality profiles, groups, permissions, projects, portfolios, and scan history.
 
 Built in Go as a single static binary. Download a pre-built binary from [GitHub Releases](https://github.com/sonar-solutions/sonar-migration-tool/releases) or build from source.
 
 ## Migration Workflow
 
 ```
-┌─────────────┐    ┌─────────────┐    ┌──────────────┐    ┌─────────────┐
-│   EXTRACT   │───►│  STRUCTURE  │───►│   MAPPINGS   │───►│   MIGRATE   │
-│   Phase 1   │    │   Phase 2   │    │   Phase 3    │    │   Phase 4   │
-└─────────────┘    └─────────────┘    └──────────────┘    └─────────────┘
+┌───────────┐   ┌───────────┐   ┌───────────┐   ┌──────────┐   ┌──────────┐   ┌─────────┐
+│  EXTRACT  │──►│ STRUCTURE │──►│ ORG MAP   │──►│ MAPPINGS │──►│ VALIDATE │──►│ MIGRATE │
+│  Phase 1  │   │  Phase 2  │   │  Phase 3  │   │ Phase 4  │   │ Phase 5  │   │ Phase 6 │
+└───────────┘   └───────────┘   └───────────┘   └──────────┘   └──────────┘   └─────────┘
 ```
 
 ---
@@ -44,9 +44,10 @@ go run . <command> [args]
 
 | Migrated | NOT Migrated |
 |----------|-------------|
-| Projects, Quality Gates, Quality Profiles | Historical analysis data |
-| Groups, Permissions, Permission Templates | Issues and their history |
-| Portfolios | Source code (re-scan after migration) |
+| Projects, Quality Gates, Quality Profiles | Issues and their history |
+| Groups, Permissions, Permission Templates | Source code (re-scan after migration) |
+| Portfolios | |
+| Scan History (optional) | |
 
 ---
 
@@ -62,16 +63,53 @@ cd go && go run . wizard --export_directory ./files/
 sonar-migration-tool wizard --export_directory ./files/
 ```
 
-The wizard guides you through all five phases with prompts. Key features:
+The wizard guides you through all six phases with prompts:
+
+1. **Extract** — connects to SonarQube Server and extracts configuration
+2. **Structure** — organizes extracted data into organizations and projects
+3. **Org Mapping** — maps each Server organization to a SonarQube Cloud organization
+4. **Mappings** — generates mapping files for gates, profiles, groups, templates, and portfolios
+5. **Validate** — confirms all organizations are mapped and required files exist
+6. **Migrate** — applies the configuration to SonarQube Cloud
+
+Key features:
 - **Resume support** — saves state and picks up from the last completed phase if interrupted
 - **mTLS support** — prompts for client certificate details when needed
-- **Validation** — confirms all organizations are mapped before migrating
+- **Scan history import** — optionally extracts and imports historical analysis data
+
+---
+
+## Browser-Based GUI
+
+> **Same wizard workflow with a visual interface. Opens in your default browser.**
+
+```bash
+# From source
+cd go && go run . gui --export_directory ./files/
+
+# Built binary
+sonar-migration-tool gui --export_directory ./files/
+```
+
+| Flag | Description |
+|------|-------------|
+| `--export_directory` | Output directory (default: `/app/files/`) |
+| `--addr` | Address to bind HTTP server (default: `localhost:0` — auto-assigns port) |
+| `--no-browser` | Don't automatically open the browser |
+
+The GUI provides:
+- Interactive wizard stepper with real-time progress
+- Event log showing all operations as they happen
+- Run history to browse and review past migrations
+- CSV viewers for mapping files
+- Migration and maturity report viewers
+- Dark/light theme toggle
 
 ---
 
 ## Manual CLI Method
 
-> For scripting, automation, or advanced users. Most users should use the wizard above.
+> For scripting, automation, or advanced users. Most users should use the wizard or GUI above.
 
 All examples below show both forms. Use whichever matches your setup:
 - **From source:** `cd go && go run . <command> [args]`
@@ -100,6 +138,7 @@ sonar-migration-tool extract <URL> <TOKEN> --export_directory ./files/ [--concur
 | `--timeout` | Request timeout in seconds |
 | `--extract_type` | Type of extract to run |
 | `--export_directory` | Output directory (default: `/app/files/` — override when running natively) |
+| `--include_scan_history` | Extract full issue data, source code, and SCM blame for scan history import |
 | `--pem_file_path` | Client certificate PEM file (mTLS) |
 | `--key_file_path` | Client certificate key file (mTLS) |
 | `--cert_password` | Client certificate password (mTLS) |
@@ -188,7 +227,7 @@ sonar-migration-tool reset <TOKEN> <ENTERPRISE_KEY> --export_directory ./files/
 
 1. Verify projects appear in SonarQube Cloud and are linked to repositories
 2. Verify quality gates and profiles are correct
-3. Re-scan all projects — historical data does not transfer
+3. Re-scan all projects — unless scan history was imported, historical data does not transfer
 4. Update CI/CD pipelines to point to SonarQube Cloud (`SONAR_TOKEN` and `SONAR_HOST_URL`)
 
 ---
