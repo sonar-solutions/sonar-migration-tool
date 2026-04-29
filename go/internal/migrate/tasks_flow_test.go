@@ -552,7 +552,7 @@ func TestRunMigrateIntegration(t *testing.T) {
 		TargetTask:      "createProjects", // Only run one task + deps.
 	}
 
-	err := RunMigrate(context.Background(), cfg)
+	_, err := RunMigrate(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("RunMigrate: %v", err)
 	}

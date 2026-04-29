@@ -28,7 +28,8 @@ type ExtractConfig struct {
 	Concurrency     int
 	Timeout         int
 	ExtractID       string
-	TargetTask      string
+	TargetTask         string
+	IncludeScanHistory bool
 }
 
 // Executor is the runtime context passed to every task function.
@@ -79,58 +80,21 @@ func (e *Executor) SkippedProjectKeys() []string {
 func RunExtract(ctx context.Context, cfg ExtractConfig) ([]string, error) {
 	cfg.applyDefaults()
 
-	// Create sqapi client with optional mTLS and timeout.
-	var opts []sqapi.Option
-	opts = append(opts, sqapi.WithTimeout(cfg.Timeout))
-	if cfg.PEMFilePath != "" {
-		opts = append(opts, sqapi.WithClientCert(cfg.PEMFilePath, cfg.KeyFilePath, cfg.CertPassword))
-	}
-
-	// Detect server version.
-	version, err := detectVersion(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("detecting server version: %w", err)
-	}
-
-	client := sqapi.NewServerClient(cfg.URL, cfg.Token, version, opts...)
-	if client.CertErr() != nil {
-		return nil, fmt.Errorf("certificate error: %w", client.CertErr())
-	}
-
-	// Detect edition via /api/system/info.
-	raw := NewRawClient(client.HTTPClient(), client.BaseURL())
-	edition, err := detectEdition(ctx, raw)
-	if err != nil {
-		return nil, fmt.Errorf("detecting edition: %w", err)
-	}
-
-	// Generate extract ID.
-	extractID := cfg.ExtractID
-	if extractID == "" {
-		extractID = generateRunID(cfg.ExportDirectory)
-	}
-	extractDir := filepath.Join(cfg.ExportDirectory, extractID)
-	if err := os.MkdirAll(extractDir, 0o755); err != nil {
-		return nil, fmt.Errorf("creating extract dir: %w", err)
-	}
-
-	// Build task registry and plan.
-	allDefs := RegisterAll()
-	registry := BuildRegistry(allDefs)
-	registry = FilterByEdition(registry, edition)
-
-	targets := TargetTasks(registry, cfg.TargetTask, cfg.ExtractType)
-	taskSet := ResolveDependencies(targets, registry)
-	if taskSet == nil {
-		return nil, fmt.Errorf("cannot resolve dependencies for target tasks")
-	}
-
-	plan, err := PlanPhases(taskSet, registry)
+	client, raw, version, edition, err := initClient(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	// Write extract.json metadata.
+	extractID, extractDir, err := prepareExtractDir(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	registry, plan, targets, err := buildPlan(cfg, edition)
+	if err != nil {
+		return nil, err
+	}
+
 	meta := extractMeta{
 		Plan: plan, RunID: extractID, Version: version,
 		Edition: edition, URL: cfg.URL, Targets: targets, Registry: registry,
@@ -139,34 +103,103 @@ func RunExtract(ctx context.Context, cfg ExtractConfig) ([]string, error) {
 		return nil, err
 	}
 
-	// Filter out completed tasks (resumability).
 	store := NewDataStore(extractDir)
 	plan = filterCompleted(plan, store)
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	executor := &Executor{
-		Raw:       raw,
-		Store:     store,
-		ServerURL: client.BaseURL(),
-		Edition:   edition,
-		Version:   version,
-		Sem:       make(chan struct{}, cfg.Concurrency),
-		Logger:    logger,
+	executor := newExecutor(raw, store, client.BaseURL(), edition, version, cfg.Concurrency)
+	if err := executePhases(ctx, executor, plan, registry, store); err != nil {
+		return nil, err
 	}
 
-	// Execute phases.
+	fmt.Printf("Extract Complete: %s\n", extractID)
+	return executor.SkippedProjectKeys(), nil
+}
+
+func initClient(ctx context.Context, cfg ExtractConfig) (*sqapi.Client, *RawClient, float64, Edition, error) {
+	var opts []sqapi.Option
+	opts = append(opts, sqapi.WithTimeout(cfg.Timeout))
+	if cfg.PEMFilePath != "" {
+		opts = append(opts, sqapi.WithClientCert(cfg.PEMFilePath, cfg.KeyFilePath, cfg.CertPassword))
+	}
+
+	version, err := detectVersion(ctx, cfg)
+	if err != nil {
+		return nil, nil, 0, "", fmt.Errorf("detecting server version: %w", err)
+	}
+
+	client := sqapi.NewServerClient(cfg.URL, cfg.Token, version, opts...)
+	if client.CertErr() != nil {
+		return nil, nil, 0, "", fmt.Errorf("certificate error: %w", client.CertErr())
+	}
+
+	raw := NewRawClient(client.HTTPClient(), client.BaseURL())
+	edition, err := detectEdition(ctx, raw)
+	if err != nil {
+		return nil, nil, 0, "", fmt.Errorf("detecting edition: %w", err)
+	}
+
+	return client, raw, version, edition, nil
+}
+
+func prepareExtractDir(cfg ExtractConfig) (string, string, error) {
+	extractID := cfg.ExtractID
+	if extractID == "" {
+		extractID = generateRunID(cfg.ExportDirectory)
+	}
+	extractDir := filepath.Join(cfg.ExportDirectory, extractID)
+	if err := os.MkdirAll(extractDir, 0o755); err != nil {
+		return "", "", fmt.Errorf("creating extract dir: %w", err)
+	}
+	return extractID, extractDir, nil
+}
+
+func buildPlan(cfg ExtractConfig, edition Edition) (map[string]*TaskDef, [][]string, []string, error) {
+	allDefs := RegisterAll()
+	registry := BuildRegistry(allDefs)
+	registry = FilterByEdition(registry, edition)
+
+	var targets []string
+	if cfg.IncludeScanHistory {
+		targets = TargetTasksWithScanHistory(registry, cfg.TargetTask, cfg.ExtractType)
+	} else {
+		targets = TargetTasks(registry, cfg.TargetTask, cfg.ExtractType)
+	}
+	taskSet := ResolveDependencies(targets, registry)
+	if taskSet == nil {
+		return nil, nil, nil, fmt.Errorf("cannot resolve dependencies for target tasks")
+	}
+
+	plan, err := PlanPhases(taskSet, registry)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return registry, plan, targets, nil
+}
+
+func newExecutor(raw *RawClient, store *DataStore, baseURL string, edition Edition, version float64, concurrency int) *Executor {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	return &Executor{
+		Raw:       raw,
+		Store:     store,
+		ServerURL: baseURL,
+		Edition:   edition,
+		Version:   version,
+		Sem:       make(chan struct{}, concurrency),
+		Logger:    logger,
+	}
+}
+
+func executePhases(ctx context.Context, executor *Executor, plan [][]string, registry map[string]*TaskDef, store *DataStore) error {
 	for i, phase := range plan {
-		logger.Info("starting phase", "phase", i+1, "tasks", len(phase))
+		executor.Logger.Info("starting phase", "phase", i+1, "tasks", len(phase))
 		if err := runPhase(ctx, executor, phase, registry); err != nil {
-			return nil, fmt.Errorf("phase %d: %w", i+1, err)
+			return fmt.Errorf("phase %d: %w", i+1, err)
 		}
 		for _, taskName := range phase {
 			store.MarkComplete(taskName)
 		}
 	}
-
-	fmt.Printf("Extract Complete: %s\n", extractID)
-	return executor.SkippedProjectKeys(), nil
+	return nil
 }
 
 func runPhase(ctx context.Context, e *Executor, taskNames []string, registry map[string]*TaskDef) error {

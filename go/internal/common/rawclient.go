@@ -55,6 +55,11 @@ func (r *RawClient) BaseURL() string {
 	return r.baseURL
 }
 
+// HTTPClient returns the underlying *http.Client.
+func (r *RawClient) HTTPClient() *http.Client {
+	return r.httpClient
+}
+
 // Get performs a GET request and returns the full response body as raw JSON.
 func (r *RawClient) Get(ctx context.Context, path string, params url.Values) (json.RawMessage, error) {
 	body, err := r.doGet(ctx, path, params)

@@ -21,6 +21,7 @@ func init() {
 func addCommands() {
 	rootCmd.AddCommand(
 		wizardCmd,
+		guiCmd,
 		extractCmd,
 		reportCmd,
 		structureCmd,

@@ -85,11 +85,29 @@ func RegisterAll() []TaskDef {
 	all = append(all, viewTasks()...)
 	all = append(all, webhookTasks()...)
 	all = append(all, miscTasks()...)
+	all = append(all, scanHistoryTasks()...)
 	return all
+}
+
+// scanHistoryTaskNames lists task names that require the --include-scan-history flag.
+var scanHistoryTaskNames = map[string]bool{
+	"getProjectIssuesFull":    true,
+	"getProjectComponentTree": true,
+	"getProjectSourceCode":    true,
+	"getProjectSCMData":       true,
 }
 
 // TargetTasks determines which tasks to extract based on config.
 func TargetTasks(reg map[string]*TaskDef, targetTask, extractType string) []string {
+	return targetTasks(reg, targetTask, extractType, false)
+}
+
+// TargetTasksWithScanHistory is like TargetTasks but includes scan history tasks.
+func TargetTasksWithScanHistory(reg map[string]*TaskDef, targetTask, extractType string) []string {
+	return targetTasks(reg, targetTask, extractType, true)
+}
+
+func targetTasks(reg map[string]*TaskDef, targetTask, extractType string, includeScanHistory bool) []string {
 	if targetTask != "" {
 		return []string{targetTask}
 	}
@@ -97,6 +115,9 @@ func TargetTasks(reg map[string]*TaskDef, targetTask, extractType string) []stri
 	var tasks []string
 	for name := range reg {
 		if len(name) > 3 && name[:3] == "get" {
+			if scanHistoryTaskNames[name] && !includeScanHistory {
+				continue
+			}
 			tasks = append(tasks, name)
 		}
 	}

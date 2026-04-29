@@ -62,33 +62,42 @@ func RegisterAll() []TaskDef {
 	all = append(all, portfolioTasks()...)
 	all = append(all, ruleTasks()...)
 	all = append(all, deleteTasks()...)
+	all = append(all, scanHistoryTasks()...)
 	return all
+}
+
+// migrateScanHistoryTasks lists task names that require the --include-scan-history flag.
+var migrateScanHistoryTasks = map[string]bool{
+	"importScanHistory": true,
 }
 
 // MigrateTargetTasks determines which tasks to run.
 // Default: all tasks NOT starting with "get", "delete", or "reset".
-func MigrateTargetTasks(reg map[string]*TaskDef, targetTask string, skipProfiles bool) []string {
+func MigrateTargetTasks(reg map[string]*TaskDef, targetTask string, skipProfiles, includeScanHistory bool) []string {
 	if targetTask != "" {
 		return []string{targetTask}
 	}
-	excludePrefixes := []string{"get", "delete", "reset"}
 	var tasks []string
 	for name := range reg {
-		skip := false
-		for _, prefix := range excludePrefixes {
-			if strings.HasPrefix(name, prefix) {
-				skip = true
-				break
-			}
-		}
-		if skip {
-			continue
-		}
-		if skipProfiles && (strings.Contains(name, "Profile") || strings.Contains(name, "profile")) {
+		if isExcludedTask(name, skipProfiles, includeScanHistory) {
 			continue
 		}
 		tasks = append(tasks, name)
 	}
 	slices.Sort(tasks)
 	return tasks
+}
+
+var excludePrefixes = []string{"get", "delete", "reset"}
+
+func isExcludedTask(name string, skipProfiles, includeScanHistory bool) bool {
+	for _, prefix := range excludePrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	if skipProfiles && (strings.Contains(name, "Profile") || strings.Contains(name, "profile")) {
+		return true
+	}
+	return migrateScanHistoryTasks[name] && !includeScanHistory
 }
