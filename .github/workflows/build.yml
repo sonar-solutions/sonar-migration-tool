@@ -36,8 +36,6 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@v7
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          # ORIGIN: remove SONAR_HOST_URL before pushing to origin (defaults to sonarcloud.io)
-          SONAR_HOST_URL: https://sc-staging.io
 
   release:
     name: Release Binaries
