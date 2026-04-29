@@ -128,7 +128,7 @@ func projectSourceCodeTask() func(ctx context.Context, e *Executor) error {
 				raw, err := e.Raw.GetRaw(ctx, "api/sources/raw", params)
 				if err != nil {
 					if isNonFatalHTTPErr(err) {
-						e.Logger.Warn("getProjectSourceCode skipped", "file", fileKey, "err", err)
+						e.Logger.Debug("getProjectSourceCode skipped", "file", fileKey, "err", err)
 						return nil
 					}
 					return err
@@ -166,7 +166,7 @@ func projectSCMDataTask() func(ctx context.Context, e *Executor) error {
 				raw, err := e.Raw.Get(ctx, "api/sources/scm", params)
 				if err != nil {
 					if isNonFatalHTTPErr(err) {
-						e.Logger.Warn("getProjectSCMData skipped", "file", fileKey, "err", err)
+						e.Logger.Debug("getProjectSCMData skipped", "file", fileKey, "err", err)
 						return nil
 					}
 					return err

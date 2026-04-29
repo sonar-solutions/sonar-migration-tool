@@ -20,9 +20,9 @@
 	}
 </script>
 
-<div class="prompt">
+<div id="prompt-text" class="prompt">
 	<label for="text-input">{prompt.message}</label>
-	<div class="input-row">
+	<div id="prompt-text-input-row" class="input-row">
 		<input
 			id="text-input"
 			type="text"

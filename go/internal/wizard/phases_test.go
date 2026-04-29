@@ -100,9 +100,9 @@ func TestPhaseOrgMappingAlreadyMapped(t *testing.T) {
 func TestPhaseValidateAllPresent(t *testing.T) {
 	dir := t.TempDir()
 
-	orgHeaders := []string{"sonarqube_org_key", "sonarcloud_org_key", "server_url", "alm", "url", "is_cloud", "project_count"}
+	orgHeaders := []string{"sonarqube_org_key", "sonarcloud_org_key", "binding_key", "server_url", "alm", "url", "is_cloud", "project_count"}
 	writeCSV(t, dir, fileOrganizations, orgHeaders, [][]string{
-		{"org-1", testCloudOrgKey, testSQServerURL, "github", "https://github.com/o1", "true", "3"},
+		{"org-1", testCloudOrgKey, "binding-1", testSQServerURL, "github", "https://github.com/o1", "true", "3"},
 	})
 	writeCSV(t, dir, fileProjects, []string{"key", "name"}, [][]string{{"p1", "Project 1"}})
 	writeCSV(t, dir, fileTemplates, []string{"name"}, [][]string{{"t1"}})

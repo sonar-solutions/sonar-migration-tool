@@ -73,8 +73,8 @@
 		font-size: 0.75rem;
 		font-weight: 500;
 	}
-	.badge-yes { background: #f0fdf4; color: var(--color-success); }
-	.badge-no { background: #f8f9fa; color: var(--color-text-muted); }
+	.badge-yes { background: var(--color-badge-success-bg); color: var(--color-success); }
+	.badge-no { background: var(--color-badge-muted-bg); color: var(--color-text-muted); }
 	.btn-link {
 		color: var(--color-primary);
 		text-decoration: none;

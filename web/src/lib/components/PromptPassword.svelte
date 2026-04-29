@@ -20,9 +20,9 @@
 	}
 </script>
 
-<div class="prompt">
+<div id="prompt-password" class="prompt">
 	<label for="password-input">{prompt.message}</label>
-	<div class="input-row">
+	<div id="prompt-password-input-row" class="input-row">
 		<input
 			id="password-input"
 			type="password"

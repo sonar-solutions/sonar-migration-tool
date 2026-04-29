@@ -20,7 +20,7 @@
 	}
 </script>
 
-<div class="log" bind:this={logEl}>
+<div id="event-log" class="log" bind:this={logEl}>
 	{#each entries as entry}
 		<div class="entry {msgClass(entry.type)}">
 			<span class="time">{entry.timestamp.toLocaleTimeString()}</span>
@@ -34,12 +34,13 @@
 
 <style>
 	.log {
-		max-height: 300px;
+		flex: 1;
+		min-height: 100px;
 		overflow-y: auto;
 		font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
 		font-size: 0.8rem;
 		padding: 0.75rem;
-		background: #fafafa;
+		background: var(--color-bg);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius);
 	}

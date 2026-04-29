@@ -28,11 +28,11 @@
 	}
 </script>
 
-<div class="history-page">
-	<div class="card">
-		<div class="header-row">
+<div id="history-page" class="history-page">
+	<div id="history-runs-card" class="card">
+		<div id="history-header" class="header-row">
 			<h2>Run History</h2>
-			<div class="report-buttons">
+			<div id="report-buttons" class="report-buttons">
 				<button
 					class="btn-secondary"
 					class:active={activeReport === 'migration'}
@@ -58,7 +58,7 @@
 	</div>
 
 	{#if activeReport}
-		<div class="card">
+		<div id="report-viewer-card" class="card">
 			<h3>{activeReport === 'migration' ? 'Migration' : 'Maturity'} Report</h3>
 			{#if reportLoading}
 				<p class="text-muted">Generating report...</p>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -295,12 +296,16 @@ func loadExtractedComponents(e *Executor, serverURL, serverKey, branch string) [
 		if extractField(item.Data, "branch") != branch {
 			continue
 		}
+		lines := extractInt32Field(item.Data, "lines")
+		if lines == 0 {
+			lines = extractMeasureInt32(item.Data, "ncloc")
+		}
 		components = append(components, scanreport.ComponentInput{
 			Key:      extractField(item.Data, "key"),
 			Name:     extractField(item.Data, "name"),
 			Path:     extractField(item.Data, "path"),
 			Language: extractField(item.Data, "language"),
-			Lines:    extractInt32Field(item.Data, "lines"),
+			Lines:    lines,
 		})
 	}
 	return components
@@ -398,6 +403,10 @@ func toExtractedIssues(issues []scanreport.IssueInput, e *Executor) []scanreport
 		dateStr := extractField(item.Data, "creationDate")
 		if key != "" && dateStr != "" {
 			t, err := time.Parse(time.RFC3339, dateStr)
+			if err != nil {
+				// SonarQube often returns -0500 instead of -05:00
+				t, err = time.Parse("2006-01-02T15:04:05-0700", dateStr)
+			}
 			if err == nil {
 				dateMap[key] = t
 			}
@@ -479,5 +488,32 @@ func extractInt32Field(data json.RawMessage, key string) int32 {
 	var v int32
 	json.Unmarshal(raw, &v)
 	return v
+}
+
+// extractMeasureInt32 reads a numeric value from the "measures" array by metric key.
+// The measures array format is: [{"metric":"ncloc","value":"50"}, ...]
+func extractMeasureInt32(data json.RawMessage, metricKey string) int32 {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return 0
+	}
+	raw, ok := obj["measures"]
+	if !ok {
+		return 0
+	}
+	var measures []struct {
+		Metric string `json:"metric"`
+		Value  string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &measures); err != nil {
+		return 0
+	}
+	for _, m := range measures {
+		if m.Metric == metricKey {
+			v, _ := strconv.ParseInt(m.Value, 10, 32)
+			return int32(v)
+		}
+	}
+	return 0
 }
 

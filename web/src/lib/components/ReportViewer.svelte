@@ -5,7 +5,7 @@
 	let html = $derived(marked(markdown));
 </script>
 
-<div class="report-content">
+<div id="report-content" class="report-content">
 	{@html html}
 </div>
 
@@ -41,7 +41,7 @@
 		font-size: 0.85em;
 	}
 	.report-content :global(pre) {
-		background: #f1f3f5;
+		background: var(--color-code-bg);
 		padding: 0.75rem 1rem;
 		border-radius: var(--radius);
 		overflow-x: auto;

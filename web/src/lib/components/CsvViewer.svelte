@@ -43,13 +43,13 @@
 {#if rows.length === 0}
 	<p class="text-muted">No analysis data available.</p>
 {:else}
-	<div class="summary-bar">
+	<div id="csv-summary-bar" class="summary-bar">
 		<span>Total: <strong>{summary().total}</strong></span>
 		<span class="text-success">Success: <strong>{summary().success}</strong></span>
 		<span class="text-error">Failure: <strong>{summary().failure}</strong></span>
 	</div>
 
-	<div class="table-wrap">
+	<div id="csv-table-wrap" class="table-wrap">
 		<table>
 			<thead>
 				<tr>
@@ -123,8 +123,8 @@
 		font-size: 0.75rem;
 		font-weight: 500;
 	}
-	.outcome.success { background: #f0fdf4; color: var(--color-success); }
-	.outcome.failure { background: #fef2f2; color: var(--color-error); }
+	.outcome.success { background: var(--color-badge-success-bg); color: var(--color-success); }
+	.outcome.failure { background: var(--color-badge-error-bg); color: var(--color-error); }
 	.error-col {
 		max-width: 200px;
 		overflow: hidden;

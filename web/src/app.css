@@ -11,6 +11,28 @@
 	--color-success: #16a34a;
 	--radius: 8px;
 	--shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+	--color-badge-success-bg: #f0fdf4;
+	--color-badge-error-bg: #fef2f2;
+	--color-badge-muted-bg: #f8f9fa;
+	--color-code-bg: #f1f3f5;
+}
+
+[data-theme="dark"] {
+	--color-bg: #0f172a;
+	--color-surface: #1e293b;
+	--color-primary: #6389ff;
+	--color-primary-hover: #7c9eff;
+	--color-text: #e2e8f0;
+	--color-text-muted: #94a3b8;
+	--color-border: #334155;
+	--color-error: #f87171;
+	--color-warning: #fbbf24;
+	--color-success: #4ade80;
+	--shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+	--color-badge-success-bg: rgba(74, 222, 128, 0.1);
+	--color-badge-error-bg: rgba(248, 113, 113, 0.1);
+	--color-badge-muted-bg: rgba(148, 163, 184, 0.1);
+	--color-code-bg: #1e293b;
 }
 
 * {
@@ -24,10 +46,11 @@ body {
 	background: var(--color-bg);
 	color: var(--color-text);
 	line-height: 1.6;
+	transition: background-color 0.2s, color 0.2s;
 }
 
 .container {
-	max-width: 960px;
+	max-width: 1400px;
 	margin: 0 auto;
 	padding: 0 1.5rem;
 }
@@ -89,6 +112,8 @@ input[type="url"] {
 	font-size: 0.9rem;
 	outline: none;
 	transition: border-color 0.15s;
+	background: var(--color-surface);
+	color: var(--color-text);
 }
 input:focus {
 	border-color: var(--color-primary);

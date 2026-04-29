@@ -38,9 +38,9 @@
 	}
 </script>
 
-<div class="prompt">
+<div id="prompt-url" class="prompt">
 	<label for="url-input">{prompt.message}</label>
-	<div class="input-row">
+	<div id="prompt-url-input-row" class="input-row">
 		<input
 			id="url-input"
 			type="url"

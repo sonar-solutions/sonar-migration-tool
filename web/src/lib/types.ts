@@ -77,10 +77,10 @@ export interface WizardState {
 
 // Phase display info.
 export const PHASES = [
-	{ key: 'extract', name: 'Extract', index: 1 },
-	{ key: 'structure', name: 'Structure', index: 2 },
-	{ key: 'org_mapping', name: 'Org Map', index: 3 },
-	{ key: 'mappings', name: 'Mappings', index: 4 },
-	{ key: 'validate', name: 'Validate', index: 5 },
-	{ key: 'migrate', name: 'Migrate', index: 6 }
+	{ key: 'extract', name: 'Extract', index: 1, description: 'Connect to source instance and extract configuration' },
+	{ key: 'structure', name: 'Structure', index: 2, description: 'Configure target SonarQube Cloud organization' },
+	{ key: 'org_mapping', name: 'Org Map', index: 3, description: 'Map source organizations to target' },
+	{ key: 'mappings', name: 'Mappings', index: 4, description: 'Review and configure project mappings' },
+	{ key: 'validate', name: 'Validate', index: 5, description: 'Validate configuration before migration' },
+	{ key: 'migrate', name: 'Migrate', index: 6, description: 'Execute the migration to SonarQube Cloud' }
 ] as const;

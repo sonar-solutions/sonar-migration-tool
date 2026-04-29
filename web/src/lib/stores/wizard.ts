@@ -17,6 +17,32 @@ export const currentPhase = readonly(_currentPhase);
 const _pendingPrompt = writable<ServerMessage | null>(null);
 export const pendingPrompt = readonly(_pendingPrompt);
 
+// Latest display message (shown alongside spinner when processing).
+const _latestDisplayMessage = writable<string>('');
+export const latestDisplayMessage = readonly(_latestDisplayMessage);
+
+// True when wizard is running but no prompt is pending (backend is working).
+export const isProcessing = derived(
+	[_status, _pendingPrompt],
+	([$s, $p]) => $s === 'running' && $p === null
+);
+
+// Latest summary data (shown alongside confirm prompts).
+export interface SummaryData {
+	title: string;
+	stats: Array<{ key: string; value: string }>;
+}
+const _latestSummary = writable<SummaryData | null>(null);
+export const latestSummary = readonly(_latestSummary);
+
+// Collected user inputs per phase (displayed in the phases panel).
+export interface PhaseInput {
+	label: string;
+	value: string;
+}
+const _phaseInputs = writable<Record<string, PhaseInput[]>>({});
+export const phaseInputs = readonly(_phaseInputs);
+
 // Event log — all display messages.
 export interface LogEntry {
 	type: string;
@@ -28,7 +54,9 @@ export const eventLog = readonly(_eventLog);
 
 // Subscribe to incoming WebSocket messages and dispatch.
 lastMessage.subscribe((msg) => {
-	if (!msg) return;
+	if (!msg) {
+		return;
+	}
 	handleMessage(msg);
 });
 
@@ -36,6 +64,7 @@ function handleMessage(msg: ServerMessage) {
 	// Prompts.
 	if (isPromptMessage(msg)) {
 		_pendingPrompt.set(msg);
+		_latestDisplayMessage.set('');
 		return;
 	}
 
@@ -44,6 +73,9 @@ function handleMessage(msg: ServerMessage) {
 			_status.set('running');
 			_eventLog.set([]);
 			_currentPhase.set(null);
+			_latestDisplayMessage.set('');
+			_phaseInputs.set({});
+			_latestSummary.set(null);
 			break;
 
 		case 'wizard_finished':
@@ -60,6 +92,7 @@ function handleMessage(msg: ServerMessage) {
 				total: msg.total || 6,
 				name: msg.name || ''
 			});
+			_latestDisplayMessage.set(`Phase ${msg.index}/${msg.total}: ${msg.name}`);
 			addLog(msg.type, `Phase ${msg.index}/${msg.total}: ${msg.name}`);
 			break;
 
@@ -72,6 +105,10 @@ function handleMessage(msg: ServerMessage) {
 			break;
 
 		case 'display_message':
+			_latestDisplayMessage.set(msg.message || '');
+			addLog(msg.type, msg.message || '');
+			break;
+
 		case 'display_error':
 		case 'display_warning':
 		case 'display_success':
@@ -80,6 +117,10 @@ function handleMessage(msg: ServerMessage) {
 
 		case 'display_summary':
 			if (msg.stats) {
+				_latestSummary.set({
+					title: msg.title || '',
+					stats: msg.stats.map((s) => ({ key: s.key, value: s.value }))
+				});
 				const lines = msg.stats.map((s) => `${s.key}: ${s.value}`).join(', ');
 				addLog(msg.type, `${msg.title} — ${lines}`);
 			}
@@ -113,7 +154,37 @@ export function respondToPrompt(value: string | boolean) {
 	_pendingPrompt.subscribe((p) => (currentPrompt = p))();
 
 	if (currentPrompt && currentPrompt.id) {
+		capturePhaseInput(currentPrompt, value);
 		send({ type: 'prompt_response', id: currentPrompt.id, value });
 		_pendingPrompt.set(null);
+		_latestSummary.set(null);
 	}
+}
+
+function capturePhaseInput(prompt: ServerMessage, value: string | boolean) {
+	let phase: { phase: string } | null = null;
+	_currentPhase.subscribe((p) => (phase = p))();
+	if (!phase) {
+		return;
+	}
+
+	const label = prompt.message || prompt.title || '';
+	if (!label) {
+		return;
+	}
+
+	let displayValue: string;
+	if (prompt.type === 'prompt_password') {
+		displayValue = '********';
+	} else if (typeof value === 'boolean') {
+		displayValue = value ? 'Yes' : 'No';
+	} else {
+		displayValue = value;
+	}
+
+	const key = phase.phase;
+	_phaseInputs.update((inputs) => {
+		const existing = inputs[key] || [];
+		return { ...inputs, [key]: [...existing, { label, value: displayValue }] };
+	});
 }

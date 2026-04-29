@@ -21,10 +21,10 @@
 	});
 </script>
 
-<div class="run-detail-page">
+<div id="run-detail-page" class="run-detail-page">
 	<a href="/history" class="back-link">&#8592; Back to History</a>
 
-	<div class="card">
+	<div id="run-metadata-card" class="card">
 		<h2>Run: {runId}</h2>
 		{#if loading}
 			<p class="text-muted">Loading...</p>
@@ -44,7 +44,7 @@
 		{/if}
 	</div>
 
-	<div class="card">
+	<div id="run-analysis-card" class="card">
 		<h3>Analysis Report</h3>
 		{#if loading}
 			<p class="text-muted">Loading analysis...</p>

@@ -5,7 +5,7 @@
 	let { prompt }: { prompt: ServerMessage } = $props();
 </script>
 
-<div class="prompt">
+<div id="prompt-confirm-review" class="prompt">
 	<h3>{prompt.title}</h3>
 	<table class="review-table">
 		<tbody>
@@ -18,7 +18,7 @@
 		</tbody>
 	</table>
 	<p class="confirm-label">Are these values correct?</p>
-	<div class="button-row">
+	<div id="prompt-confirm-review-buttons" class="button-row">
 		<button class="btn-primary" onclick={() => respondToPrompt(true)}>Yes, continue</button>
 		<button class="btn-secondary" onclick={() => respondToPrompt(false)}>No, re-enter</button>
 	</div>

@@ -278,7 +278,7 @@ func processOrgMapping(p Prompter, org map[string]any, index, total int) error {
 
 	p.DisplaySummary(fmt.Sprintf("Organization %d/%d", index, total), []KV{
 		{"Organization Key", orgKey},
-		{"Server URL", mapStr(org, "server_url")},
+		{"Integration Key", mapStr(org, "binding_key")},
 		{"ALM", mapStr(org, "alm")},
 		{"DevOps URL", mapStr(org, "url")},
 		{"Projects", strconv.Itoa(mapInt(org, "project_count"))},
