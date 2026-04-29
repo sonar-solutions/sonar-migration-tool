@@ -14,46 +14,58 @@ import (
 	"testing"
 )
 
-func TestSubmitReport(t *testing.T) {
-	var gotContentType string
-	var gotFields map[string]string
-	var gotFileSize int
+type submitCapture struct {
+	contentType string
+	fields      map[string]string
+	fileSize    int
+}
 
+func newSubmitServer(t *testing.T) (*httptest.Server, *submitCapture) {
+	t.Helper()
+	cap := &submitCapture{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/ce/submit" {
 			w.WriteHeader(404)
 			return
 		}
-		gotContentType = r.Header.Get("Content-Type")
-
-		mediaType, params, _ := mime.ParseMediaType(gotContentType)
-		if mediaType != "multipart/form-data" {
-			t.Errorf("expected multipart/form-data, got %s", mediaType)
-		}
-
-		gotFields = make(map[string]string)
-		mr := multipart.NewReader(r.Body, params["boundary"])
-		for {
-			part, err := mr.NextPart()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				t.Fatalf("reading part: %v", err)
-			}
-			data, _ := io.ReadAll(part)
-			name := part.FormName()
-			if name == "report" {
-				gotFileSize = len(data)
-			} else {
-				gotFields[name] = string(data)
-			}
-			part.Close()
-		}
-
+		cap.contentType = r.Header.Get("Content-Type")
+		cap.fields, cap.fileSize = parseMultipart(t, cap.contentType, r.Body)
 		w.WriteHeader(200)
 		json.NewEncoder(w).Encode(map[string]string{"taskId": "AX-123"})
 	}))
+	return srv, cap
+}
+
+func parseMultipart(t *testing.T, ct string, body io.Reader) (map[string]string, int) {
+	t.Helper()
+	mediaType, params, _ := mime.ParseMediaType(ct)
+	if mediaType != "multipart/form-data" {
+		t.Errorf("expected multipart/form-data, got %s", mediaType)
+	}
+	fields := make(map[string]string)
+	var fileSize int
+	mr := multipart.NewReader(body, params["boundary"])
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("reading part: %v", err)
+		}
+		data, _ := io.ReadAll(part)
+		if part.FormName() == "report" {
+			fileSize = len(data)
+		} else {
+			fields[part.FormName()] = string(data)
+		}
+		part.Close()
+	}
+	return fields, fileSize
+}
+
+func TestSubmitReport(t *testing.T) {
+	srv, cap := newSubmitServer(t)
 	defer srv.Close()
 
 	cfg := SubmitConfig{
@@ -70,17 +82,17 @@ func TestSubmitReport(t *testing.T) {
 	if result.TaskID != "AX-123" {
 		t.Errorf("expected taskId AX-123, got %s", result.TaskID)
 	}
-	if gotFileSize != len("fake-zip-data") {
-		t.Errorf("expected file size %d, got %d", len("fake-zip-data"), gotFileSize)
+	if cap.fileSize != len("fake-zip-data") {
+		t.Errorf("expected file size %d, got %d", len("fake-zip-data"), cap.fileSize)
 	}
-	if gotFields["projectKey"] != "my-proj" {
-		t.Errorf("expected projectKey my-proj, got %s", gotFields["projectKey"])
+	if cap.fields["projectKey"] != "my-proj" {
+		t.Errorf("expected projectKey my-proj, got %s", cap.fields["projectKey"])
 	}
-	if gotFields["organization"] != "my-org" {
-		t.Errorf("expected organization my-org, got %s", gotFields["organization"])
+	if cap.fields["organization"] != "my-org" {
+		t.Errorf("expected organization my-org, got %s", cap.fields["organization"])
 	}
-	if !strings.Contains(gotFields["properties"], "sonar.projectKey=my-proj") {
-		t.Errorf("expected properties to contain projectKey, got %s", gotFields["properties"])
+	if !strings.Contains(cap.fields["properties"], "sonar.projectKey=my-proj") {
+		t.Errorf("expected properties to contain projectKey, got %s", cap.fields["properties"])
 	}
 }
 

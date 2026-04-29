@@ -77,27 +77,27 @@ func MigrateTargetTasks(reg map[string]*TaskDef, targetTask string, skipProfiles
 	if targetTask != "" {
 		return []string{targetTask}
 	}
-	excludePrefixes := []string{"get", "delete", "reset"}
 	var tasks []string
 	for name := range reg {
-		skip := false
-		for _, prefix := range excludePrefixes {
-			if strings.HasPrefix(name, prefix) {
-				skip = true
-				break
-			}
-		}
-		if skip {
-			continue
-		}
-		if skipProfiles && (strings.Contains(name, "Profile") || strings.Contains(name, "profile")) {
-			continue
-		}
-		if migrateScanHistoryTasks[name] && !includeScanHistory {
+		if isExcludedTask(name, skipProfiles, includeScanHistory) {
 			continue
 		}
 		tasks = append(tasks, name)
 	}
 	slices.Sort(tasks)
 	return tasks
+}
+
+var excludePrefixes = []string{"get", "delete", "reset"}
+
+func isExcludedTask(name string, skipProfiles, includeScanHistory bool) bool {
+	for _, prefix := range excludePrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	if skipProfiles && (strings.Contains(name, "Profile") || strings.Contains(name, "profile")) {
+		return true
+	}
+	return migrateScanHistoryTasks[name] && !includeScanHistory
 }

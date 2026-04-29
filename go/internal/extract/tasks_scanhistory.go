@@ -116,37 +116,34 @@ func projectSourceCodeTask() func(ctx context.Context, e *Executor) error {
 	return func(ctx context.Context, e *Executor) error {
 		return forEachDep(ctx, e, "getProjectSourceCode", "getProjectComponentTree",
 			func(ctx context.Context, item json.RawMessage, w *ChunkWriter) error {
-				fileKey := extractField(item, "key")
-				branch := extractField(item, "branch")
-				if fileKey == "" {
-					return nil
-				}
-				params := url.Values{"key": {fileKey}}
-				if branch != "" {
-					params.Set("branch", branch)
-				}
-				raw, err := e.Raw.GetRaw(ctx, "api/sources/raw", params)
-				if err != nil {
-					if isNonFatalHTTPErr(err) {
-						e.Logger.Debug("getProjectSourceCode skipped", "file", fileKey, "err", err)
-						return nil
-					}
-					return err
-				}
-				record := map[string]any{
-					"key":        fileKey,
-					"branch":     branch,
-					"projectKey": extractField(item, "projectKey"),
-					"source":     string(raw),
-					"serverUrl":  e.ServerURL,
-				}
-				b, err := json.Marshal(record)
-				if err != nil {
-					return err
-				}
-				return w.WriteOne(b)
+				return fetchSourceCode(ctx, e, item, w)
 			})
 	}
+}
+
+func fetchSourceCode(ctx context.Context, e *Executor, item json.RawMessage, w *ChunkWriter) error {
+	fileKey := extractField(item, "key")
+	branch := extractField(item, "branch")
+	if fileKey == "" {
+		return nil
+	}
+	params := fileParams(fileKey, branch)
+	raw, err := e.Raw.GetRaw(ctx, "api/sources/raw", params)
+	if err != nil {
+		return handleNonFatal(e, "getProjectSourceCode", fileKey, err)
+	}
+	record := map[string]any{
+		"key":        fileKey,
+		"branch":     branch,
+		"projectKey": extractField(item, "projectKey"),
+		"source":     string(raw),
+		"serverUrl":  e.ServerURL,
+	}
+	b, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return w.WriteOne(b)
 }
 
 // projectSCMDataTask extracts SCM blame data for each file component.
@@ -154,31 +151,27 @@ func projectSCMDataTask() func(ctx context.Context, e *Executor) error {
 	return func(ctx context.Context, e *Executor) error {
 		return forEachDep(ctx, e, "getProjectSCMData", "getProjectComponentTree",
 			func(ctx context.Context, item json.RawMessage, w *ChunkWriter) error {
-				fileKey := extractField(item, "key")
-				branch := extractField(item, "branch")
-				if fileKey == "" {
-					return nil
-				}
-				params := url.Values{"key": {fileKey}}
-				if branch != "" {
-					params.Set("branch", branch)
-				}
-				raw, err := e.Raw.Get(ctx, "api/sources/scm", params)
-				if err != nil {
-					if isNonFatalHTTPErr(err) {
-						e.Logger.Debug("getProjectSCMData skipped", "file", fileKey, "err", err)
-						return nil
-					}
-					return err
-				}
-				return w.WriteOne(EnrichRaw(raw, map[string]any{
-					"key":        fileKey,
-					"branch":     branch,
-					"projectKey": extractField(item, "projectKey"),
-					"serverUrl":  e.ServerURL,
-				}))
+				return fetchSCMData(ctx, e, item, w)
 			})
 	}
+}
+
+func fetchSCMData(ctx context.Context, e *Executor, item json.RawMessage, w *ChunkWriter) error {
+	fileKey := extractField(item, "key")
+	branch := extractField(item, "branch")
+	if fileKey == "" {
+		return nil
+	}
+	raw, err := e.Raw.Get(ctx, "api/sources/scm", fileParams(fileKey, branch))
+	if err != nil {
+		return handleNonFatal(e, "getProjectSCMData", fileKey, err)
+	}
+	return w.WriteOne(EnrichRaw(raw, map[string]any{
+		"key":        fileKey,
+		"branch":     branch,
+		"projectKey": extractField(item, "projectKey"),
+		"serverUrl":  e.ServerURL,
+	}))
 }
 
 // forEachProjectBranch iterates over all projects and their branches,
@@ -195,7 +188,6 @@ func forEachProjectBranch(ctx context.Context, e *Executor, taskName string,
 		return fmt.Errorf("%s: reading branches: %w", taskName, err)
 	}
 
-	// Build a lookup of project -> branch names.
 	branchMap := buildBranchMap(branches)
 
 	w, err := e.Store.Writer(taskName)
@@ -208,19 +200,28 @@ func forEachProjectBranch(ctx context.Context, e *Executor, taskName string,
 		if projectKey == "" || e.IsSkipped(projectKey) {
 			continue
 		}
-		projBranches := branchMap[projectKey]
-		if len(projBranches) == 0 {
-			projBranches = []string{"main"}
+		if err := iterateBranches(ctx, e, w, taskName, projectKey, branchMap[projectKey], fn); err != nil {
+			return err
 		}
-		for _, branch := range projBranches {
-			if err := acquireSem(ctx, e.Sem); err != nil {
-				return err
-			}
-			err := fn(ctx, projectKey, branch, w)
-			<-e.Sem
-			if err != nil {
-				return fmt.Errorf("%s [%s/%s]: %w", taskName, projectKey, branch, err)
-			}
+	}
+	return nil
+}
+
+func iterateBranches(ctx context.Context, e *Executor, w *ChunkWriter,
+	taskName, projectKey string, branches []string,
+	fn func(ctx context.Context, projectKey, branch string, w *ChunkWriter) error) error {
+
+	if len(branches) == 0 {
+		branches = []string{"main"}
+	}
+	for _, branch := range branches {
+		if err := acquireSem(ctx, e.Sem); err != nil {
+			return err
+		}
+		err := fn(ctx, projectKey, branch, w)
+		<-e.Sem
+		if err != nil {
+			return fmt.Errorf("%s [%s/%s]: %w", taskName, projectKey, branch, err)
 		}
 	}
 	return nil
@@ -243,4 +244,22 @@ func buildBranchMap(branches []json.RawMessage) map[string][]string {
 		result[projectKey] = append(result[projectKey], name)
 	}
 	return result
+}
+
+// fileParams builds url.Values for a file key with optional branch.
+func fileParams(fileKey, branch string) url.Values {
+	params := url.Values{"key": {fileKey}}
+	if branch != "" {
+		params.Set("branch", branch)
+	}
+	return params
+}
+
+// handleNonFatal returns nil for 403/404 errors (logging them), or the original error.
+func handleNonFatal(e *Executor, task, key string, err error) error {
+	if isNonFatalHTTPErr(err) {
+		e.Logger.Debug(task+" skipped", "file", key, "err", err)
+		return nil
+	}
+	return err
 }
