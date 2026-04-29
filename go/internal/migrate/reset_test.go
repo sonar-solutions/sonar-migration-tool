@@ -22,7 +22,7 @@ func TestRunResetIntegration(t *testing.T) {
 		Concurrency: 5, ExportDirectory: dir,
 		TargetTask: "createProjects",
 	}
-	if err := RunMigrate(context.Background(), migCfg); err != nil {
+	if _, err := RunMigrate(context.Background(), migCfg); err != nil {
 		t.Fatalf("RunMigrate setup: %v", err)
 	}
 

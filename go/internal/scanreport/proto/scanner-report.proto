@@ -1,0 +1,353 @@
+// SonarQube, open source software quality management tool.
+// Copyright (C) 2008-2016 SonarSource
+// mailto:contact AT sonarsource DOT com
+//
+// SonarQube is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+//
+// SonarQube is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program; if not, write to the Free Software Foundation,
+// Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+syntax = "proto3";
+
+package scanreport;
+
+import "constants.proto";
+
+option go_package = "github.com/sonar-solutions/sonar-migration-tool/internal/scanreport/proto";
+
+option optimize_for = SPEED;
+
+message Metadata {
+  int64 analysis_date = 1;
+  string organization_key = 2;
+  string project_key = 3;
+  reserved 4;
+  int32 root_component_ref = 5;
+  bool cross_project_duplication_activated = 6;
+  map<string, QProfile> qprofiles_per_language = 7;
+  map<string, Plugin> plugins_by_key = 8;
+  string branch_name = 9;
+  BranchType branch_type = 10;
+  string reference_branch_name = 11;
+  string relative_path_from_scm_root = 12;
+  string scm_revision_id = 13;
+  string pull_request_key = 14;
+  reserved 15;
+  string projectVersion = 16;
+  string buildString = 17;
+  string target_branch_name = 18;
+  reserved 19;
+  reserved 20;
+  string new_code_reference_branch = 21;
+  map<string, int32> analyzed_indexed_file_count_per_type = 22;
+  map<string, int32> not_analyzed_indexed_file_count_per_type = 23;
+
+  message QProfile {
+    string key = 1;
+    string name = 2;
+    string language = 3;
+    int64 rulesUpdatedAt = 4;
+  }
+
+  message Plugin {
+    string key = 1;
+    int64 updatedAt = 2;
+  }
+
+  enum BranchType {
+    UNSET = 0;
+    BRANCH = 1;
+    PULL_REQUEST = 2;
+  }
+}
+
+message ContextProperty {
+  string key = 1;
+  string value = 2;
+}
+
+message ActiveRule {
+  string rule_repository = 1;
+  string rule_key = 2;
+  Severity severity = 3;
+  map<string, string> params_by_key = 4;
+  int64 createdAt = 5;
+  int64 updatedAt = 6;
+  string q_profile_key = 7;
+  repeated Impact impacts = 8;
+}
+
+message Component {
+  int32 ref = 1;
+  string name = 3;
+  ComponentType type = 4;
+  bool is_test = 5;
+  string language = 6;
+  repeated int32 child_ref = 7 [packed = true];
+  repeated ComponentLink link = 8;
+  string key = 10;
+  int32 lines = 11;
+  string description = 12;
+  FileStatus status = 13;
+  string project_relative_path = 14;
+  bool markedAsUnchanged = 15;
+  string old_relative_file_path = 16;
+
+  enum ComponentType {
+    UNSET = 0;
+    PROJECT = 1;
+    MODULE = 2 [deprecated = true];
+    DIRECTORY = 3 [deprecated = true];
+    FILE = 4;
+  }
+
+  enum FileStatus {
+    UNAVAILABLE = 0;
+    SAME = 1;
+    CHANGED = 2;
+    ADDED = 3;
+  }
+}
+
+message ComponentLink {
+  ComponentLinkType type = 1;
+  string href = 2;
+
+  enum ComponentLinkType {
+    UNSET = 0;
+    HOME = 1;
+    SCM = 2;
+    IGNORED_SCM_DEV = 3;
+    ISSUE = 4;
+    CI = 5;
+  }
+}
+
+message Measure {
+  string metric_key = 1;
+  oneof value {
+    BoolValue boolean_value = 2;
+    IntValue int_value = 3;
+    LongValue long_value = 4;
+    DoubleValue double_value = 5;
+    StringValue string_value = 6;
+  }
+
+  message BoolValue {
+    bool value = 1;
+    string data = 2;
+  }
+
+  message IntValue {
+    int32 value = 1;
+    string data = 2;
+  }
+
+  message LongValue {
+    int64 value = 1;
+    string data = 2;
+  }
+
+  message DoubleValue {
+    double value = 1;
+    string data = 2;
+  }
+
+  message StringValue {
+    string value = 1;
+  }
+}
+
+message Issue {
+  string rule_repository = 1;
+  string rule_key = 2;
+  string msg = 3;
+  optional Severity overriddenSeverity = 4;
+  double gap = 5;
+  TextRange text_range = 6;
+  repeated Flow flow = 7;
+  bool quickFixAvailable = 8;
+  optional string ruleDescriptionContextKey = 9;
+  repeated MessageFormatting msgFormatting = 10;
+  repeated string codeVariants = 11;
+  repeated Impact overriddenImpacts = 12;
+  repeated string internal_tags = 13;
+}
+
+message ExternalIssue {
+  string engine_id = 1;
+  string rule_id = 2;
+  string msg = 3;
+  optional Severity severity = 4;
+  int64 effort = 5;
+  TextRange text_range = 6;
+  repeated Flow flow = 7;
+  optional IssueType type = 8;
+  repeated MessageFormatting msgFormatting = 9;
+  repeated Impact impacts = 10;
+  optional CleanCodeAttribute cleanCodeAttribute = 11;
+}
+
+message AdHocRule {
+  string engine_id = 1;
+  string rule_id = 2;
+  string name = 3;
+  string description = 4;
+  optional Severity severity = 5;
+  optional IssueType type = 6;
+  optional CleanCodeAttribute cleanCodeAttribute = 7;
+  repeated Impact defaultImpacts = 8;
+}
+
+enum CleanCodeAttribute {
+  CLEAN_CODE_ATTRIBUTE_UNSPECIFIED = 0;
+  CONVENTIONAL = 1;
+  FORMATTED = 2;
+  IDENTIFIABLE = 3;
+  CLEAR = 4;
+  COMPLETE = 5;
+  EFFICIENT = 6;
+  LOGICAL = 7;
+  DISTINCT = 8;
+  FOCUSED = 9;
+  MODULAR = 10;
+  TESTED = 11;
+  LAWFUL = 12;
+  RESPECTFUL = 13;
+  TRUSTWORTHY = 14;
+}
+
+enum IssueType {
+  ISSUE_TYPE_UNSET = 0;
+  CODE_SMELL = 1;
+  BUG = 2;
+  VULNERABILITY = 3;
+  SECURITY_HOTSPOT = 4;
+}
+
+message IssueLocation {
+  int32 component_ref = 1;
+  TextRange text_range = 2;
+  string msg = 3;
+  repeated MessageFormatting msgFormatting = 4;
+}
+
+message MessageFormatting {
+  int32 start = 1;
+  int32 end = 2;
+  MessageFormattingType type = 3;
+}
+
+enum MessageFormattingType {
+  CODE = 0;
+}
+
+message Flow {
+  repeated IssueLocation location = 1;
+  string description = 2;
+  FlowType type = 3;
+}
+
+enum FlowType {
+  UNDEFINED = 0;
+  DATA = 1;
+  EXECUTION = 2;
+}
+
+message Changesets {
+  int32 component_ref = 1;
+  bool copy_from_previous = 2;
+  repeated Changeset changeset = 3;
+  repeated int32 changesetIndexByLine = 4 [packed = true];
+
+  message Changeset {
+    string revision = 1;
+    string author = 2;
+    int64 date = 3;
+  }
+}
+
+message Duplicate {
+  int32 other_file_ref = 1;
+  TextRange range = 2;
+}
+
+message Duplication {
+  TextRange origin_position = 1;
+  repeated Duplicate duplicate = 2;
+}
+
+message TextRange {
+  int32 start_line = 1;
+  int32 end_line = 2;
+  int32 start_offset = 3;
+  int32 end_offset = 4;
+}
+
+message Symbol {
+  TextRange declaration = 1;
+  repeated TextRange reference = 2;
+}
+
+message LineCoverage {
+  int32 line = 1;
+  int32 conditions = 2;
+  oneof has_hits {
+    bool hits = 3;
+  }
+  oneof has_covered_conditions {
+    int32 covered_conditions = 5;
+  }
+}
+
+message SyntaxHighlightingRule {
+  TextRange range = 1;
+  HighlightingType type = 2;
+
+  enum HighlightingType {
+    UNSET = 0;
+    ANNOTATION = 1;
+    CONSTANT = 2;
+    COMMENT = 3;
+    STRUCTURED_COMMENT = 5;
+    KEYWORD = 6;
+    HIGHLIGHTING_STRING = 7;
+    KEYWORD_LIGHT = 8;
+    PREPROCESS_DIRECTIVE = 9;
+  }
+}
+
+message AnalysisWarning {
+  string text = 1;
+  int64 timestamp = 2;
+}
+
+message Impact {
+  SoftwareQuality software_quality = 1;
+  ImpactSeverity severity = 2;
+}
+
+enum ImpactSeverity {
+  ImpactSeverity_UNKNOWN_IMPACT_SEVERITY = 0;
+  ImpactSeverity_LOW = 1;
+  ImpactSeverity_MEDIUM = 2;
+  ImpactSeverity_HIGH = 3;
+  ImpactSeverity_INFO = 4;
+  ImpactSeverity_BLOCKER = 5;
+}
+
+enum SoftwareQuality {
+  UNKNOWN_IMPACT_QUALITY = 0;
+  MAINTAINABILITY = 1;
+  RELIABILITY = 2;
+  SECURITY = 3;
+}

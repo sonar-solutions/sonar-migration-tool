@@ -27,7 +27,8 @@ type MigrateConfig struct {
 	Concurrency     int
 	ExportDirectory string
 	TargetTask      string
-	SkipProfiles    bool
+	SkipProfiles       bool
+	IncludeScanHistory bool
 }
 
 // Executor is the runtime context passed to every migrate task function.
@@ -49,7 +50,8 @@ type Executor struct {
 }
 
 // RunMigrate is the main entry point for the migrate command.
-func RunMigrate(ctx context.Context, cfg MigrateConfig) error {
+// Returns the run ID on success.
+func RunMigrate(ctx context.Context, cfg MigrateConfig) (string, error) {
 	cfg.applyDefaults()
 
 	cloudURL := cfg.URL
@@ -68,7 +70,7 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) error {
 	// Resolve extract mapping.
 	mapping, err := structure.GetUniqueExtracts(cfg.ExportDirectory)
 	if err != nil {
-		return fmt.Errorf("scanning extracts: %w", err)
+		return "", fmt.Errorf("scanning extracts: %w", err)
 	}
 
 	// Determine edition.
@@ -82,7 +84,7 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) error {
 	}
 	runDir := filepath.Join(cfg.ExportDirectory, runID)
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		return fmt.Errorf("creating run dir: %w", err)
+		return "", fmt.Errorf("creating run dir: %w", err)
 	}
 
 	// Build task registry and plan.
@@ -90,21 +92,21 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) error {
 	registry := BuildMigrateRegistry(allDefs)
 	registry = FilterByEdition(registry, edition)
 
-	targets := MigrateTargetTasks(registry, cfg.TargetTask, cfg.SkipProfiles)
+	targets := MigrateTargetTasks(registry, cfg.TargetTask, cfg.SkipProfiles, cfg.IncludeScanHistory)
 	taskSet := ResolveDependencies(targets, registry)
 	if taskSet == nil {
-		return fmt.Errorf("cannot resolve dependencies for target tasks")
+		return "", fmt.Errorf("cannot resolve dependencies for target tasks")
 	}
 
 	plan, err := PlanPhases(taskSet, registry)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Write or load plan metadata.
 	if createPlan {
 		if err := writeMigrateMeta(runDir, plan, runID, edition, cloudURL, targets, registry); err != nil {
-			return err
+			return "", err
 		}
 	}
 
@@ -134,7 +136,7 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) error {
 	for i, phase := range plan {
 		logger.Info("starting phase", "phase", i+1, "tasks", len(phase))
 		if err := runPhase(ctx, executor, phase, registry); err != nil {
-			return fmt.Errorf("phase %d: %w", i+1, err)
+			return "", fmt.Errorf("phase %d: %w", i+1, err)
 		}
 		for _, taskName := range phase {
 			store.MarkComplete(taskName)
@@ -142,7 +144,7 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) error {
 	}
 
 	fmt.Printf("Migration Complete: %s\n", runID)
-	return nil
+	return runID, nil
 }
 
 func runPhase(ctx context.Context, e *Executor, taskNames []string, registry map[string]*TaskDef) error {

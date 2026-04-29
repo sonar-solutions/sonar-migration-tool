@@ -168,11 +168,12 @@ func MapProjectStructure(directory string, mapping ExtractMapping) ([]Binding, [
 
 		if uniqueBindings[uniqueBindingKey] == nil {
 			uniqueBindings[uniqueBindingKey] = &Binding{
-				Key:       uniqueBindingKey,
-				ALM:       bindingALM,
-				URL:       bindingURL,
-				ServerURL: item.ServerURL,
-				IsCloud:   IsCloudBinding(bindingURL),
+				Key:        uniqueBindingKey,
+				BindingKey: bindingKeyStr,
+				ALM:        bindingALM,
+				URL:        bindingURL,
+				ServerURL:  item.ServerURL,
+				IsCloud:    IsCloudBinding(bindingURL),
 			}
 		}
 		uniqueBindings[uniqueBindingKey].ProjectCount++
