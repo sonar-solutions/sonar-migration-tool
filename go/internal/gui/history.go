@@ -15,6 +15,8 @@ import (
 	"github.com/sonar-solutions/sonar-migration-tool/internal/wizard"
 )
 
+const headerContentType = "Content-Type"
+
 // runIDPattern matches date-based run IDs like "04-27-2026-01".
 var runIDPattern = regexp.MustCompile(`^\d{2}-\d{2}-\d{4}-\d{2}$`)
 
@@ -75,7 +77,7 @@ func RunDetailHandler(exportDir string) http.HandlerFunc {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "run not found"})
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(headerContentType, "application/json")
 		w.Write(data)
 	}
 }
@@ -119,7 +121,7 @@ func GenerateReportHandler(exportDir string) http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.Header().Set(headerContentType, "text/markdown; charset=utf-8")
 		w.Write([]byte(md))
 	}
 }
@@ -139,7 +141,7 @@ func WizardStateHandler(exportDir string) http.HandlerFunc {
 // --- helpers ---
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
 }

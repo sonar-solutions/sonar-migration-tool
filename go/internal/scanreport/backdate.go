@@ -174,38 +174,38 @@ func groupIssuesIntoBatches(issues []ExtractedIssue) [][]ExtractedIssue {
 // For overlapping lines, the oldest date wins (prevents CE MAX inflation).
 func buildFileLineDates(issues []ExtractedIssue, overrides map[string]int64, fallbackMs int64) map[string]map[int32]int64 {
 	result := make(map[string]map[int32]int64)
-
 	for _, iss := range issues {
-		dateMs := overrides[iss.Key]
-		if dateMs == 0 {
-			dateMs = issueDateMs(iss, fallbackMs)
-		}
-
-		startLine := iss.StartLine
-		endLine := iss.EndLine
-		if endLine == 0 {
-			endLine = startLine
-		}
-		if startLine <= 0 {
-			continue
-		}
-		if iss.Component == "" {
-			continue
-		}
-
-		lineDateMap, ok := result[iss.Component]
-		if !ok {
-			lineDateMap = make(map[int32]int64)
-			result[iss.Component] = lineDateMap
-		}
-
-		for ln := startLine; ln <= endLine; ln++ {
-			if existing, ok := lineDateMap[ln]; !ok || dateMs < existing {
-				lineDateMap[ln] = dateMs
-			}
-		}
+		applyIssueDates(iss, overrides, fallbackMs, result)
 	}
 	return result
+}
+
+func applyIssueDates(iss ExtractedIssue, overrides map[string]int64, fallbackMs int64, result map[string]map[int32]int64) {
+	startLine := iss.StartLine
+	endLine := iss.EndLine
+	if endLine == 0 {
+		endLine = startLine
+	}
+	if startLine <= 0 || iss.Component == "" {
+		return
+	}
+
+	dateMs := overrides[iss.Key]
+	if dateMs == 0 {
+		dateMs = issueDateMs(iss, fallbackMs)
+	}
+
+	lineDateMap, ok := result[iss.Component]
+	if !ok {
+		lineDateMap = make(map[int32]int64)
+		result[iss.Component] = lineDateMap
+	}
+
+	for ln := startLine; ln <= endLine; ln++ {
+		if existing, ok := lineDateMap[ln]; !ok || dateMs < existing {
+			lineDateMap[ln] = dateMs
+		}
+	}
 }
 
 // issueDateMs returns the issue creation date as epoch milliseconds,

@@ -36,7 +36,6 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@v7
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          # ORIGIN: remove SONAR_HOST_URL before pushing to origin (defaults to sonarcloud.io)
           SONAR_HOST_URL: https://sc-staging.io
 
   release:
@@ -69,6 +68,13 @@ jobs:
             suffix: windows-arm64.exe
     steps:
       - uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build frontend
+        working-directory: web
+        run: npm ci && npm run build
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

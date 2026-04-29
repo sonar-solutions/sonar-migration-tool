@@ -12,6 +12,19 @@ import (
 )
 
 func TestPackageReportMinimal(t *testing.T) {
+	zipBytes := packageMinimalReport(t)
+
+	t.Run("zip structure", func(t *testing.T) {
+		verifyZipStructure(t, zipBytes)
+	})
+
+	t.Run("issues and sources", func(t *testing.T) {
+		verifyIssuesAndSources(t, zipBytes)
+	})
+}
+
+func packageMinimalReport(t *testing.T) []byte {
+	t.Helper()
 	root, files, cr := BuildComponents("proj", "My Project", []ComponentInput{
 		{Key: "proj:main.go", Name: "main.go", Path: "main.go", Language: "go", Lines: 5},
 	})
@@ -40,12 +53,14 @@ func TestPackageReportMinimal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PackageReport: %v", err)
 	}
-
 	if len(zipBytes) == 0 {
 		t.Fatal("expected non-empty zip")
 	}
+	return zipBytes
+}
 
-	// Verify ZIP structure
+func verifyZipStructure(t *testing.T, zipBytes []byte) {
+	t.Helper()
 	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
 	if err != nil {
 		t.Fatalf("reading zip: %v", err)
@@ -68,8 +83,15 @@ func TestPackageReportMinimal(t *testing.T) {
 			t.Errorf("missing expected file: %s", name)
 		}
 	}
+}
 
-	// Check that issues and source files exist.
+func verifyIssuesAndSources(t *testing.T, zipBytes []byte) {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		t.Fatalf("reading zip: %v", err)
+	}
+
 	hasIssues := false
 	hasSource := false
 	for _, f := range zr.File {

@@ -14,7 +14,8 @@ import (
 // Prompt methods block on a per-request channel until the browser responds.
 // Display methods are fire-and-forget.
 type WebPrompter struct {
-	ctx     context.Context
+	done    <-chan struct{}
+	doneErr func() error
 	sendFn  func(ServerMessage)
 	mu      sync.Mutex
 	pending map[string]chan ClientMessage
@@ -24,7 +25,8 @@ type WebPrompter struct {
 // and respects cancellation from ctx.
 func NewWebPrompter(ctx context.Context, sendFn func(ServerMessage)) *WebPrompter {
 	return &WebPrompter{
-		ctx:     ctx,
+		done:    ctx.Done(),
+		doneErr: ctx.Err,
 		sendFn:  sendFn,
 		pending: make(map[string]chan ClientMessage),
 	}
@@ -183,11 +185,11 @@ func (wp *WebPrompter) prompt(msg ServerMessage) (ClientMessage, error) {
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-wp.ctx.Done():
+	case <-wp.done:
 		wp.mu.Lock()
 		delete(wp.pending, id)
 		wp.mu.Unlock()
-		return ClientMessage{}, wp.ctx.Err()
+		return ClientMessage{}, wp.doneErr()
 	}
 }
 
