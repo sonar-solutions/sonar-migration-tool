@@ -74,7 +74,7 @@ jobs:
           node-version: '22'
       - name: Build frontend
         working-directory: web
-        run: npm ci && npm run build
+        run: npm install --ignore-scripts --registry=https://registry.npmjs.org/ && npm run build
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
