@@ -52,6 +52,26 @@ func (s *WizardState) Save(directory string) error {
 	return os.WriteFile(filepath.Join(directory, stateFileName), data, 0644)
 }
 
+// resetPhaseState clears state fields written by the given phase so the
+// phase handler will re-prompt the user for that information.
+func resetPhaseState(state *WizardState, phase WizardPhase) {
+	switch phase {
+	case PhaseExtract:
+		state.SourceURL = nil
+		state.ExtractID = nil
+		state.SkippedProjects = nil
+		state.IncludeScanHistory = false
+	case PhaseOrgMapping:
+		state.TargetURL = nil
+		state.EnterpriseKey = nil
+		state.OrganizationsMapped = false
+	case PhaseValidate:
+		state.ValidationPassed = false
+	case PhaseMigrate:
+		state.MigrationRunID = nil
+	}
+}
+
 // Load reads a WizardState from .wizard_state.json in the given directory.
 // If the file does not exist, it returns a new state at the INIT phase.
 func Load(directory string) (*WizardState, error) {

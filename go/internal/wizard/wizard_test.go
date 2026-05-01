@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	testOKTrue     = "expected ok=true"
-	testSQCloudURL = "https://sonarcloud.io/"
+	testOKTrue        = "expected ok=true"
+	testSQCloudURL    = "https://sonarcloud.io/"
+	errExpectExtract  = "expected PhaseExtract, got %s"
 )
 
 // MockPrompter supplies pre-programmed responses for tests.
@@ -24,10 +25,11 @@ type MockPrompter struct {
 	PasswordResponses []string
 	ConfirmResponses  []bool
 	ReviewResponses   []bool
+	ChoiceResponses   []int
 
 	Messages []string // captures DisplayMessage, DisplayError, etc.
 
-	urlIdx, textIdx, passIdx, confirmIdx, reviewIdx int
+	urlIdx, textIdx, passIdx, confirmIdx, reviewIdx, choiceIdx int
 }
 
 func (m *MockPrompter) PromptURL(msg string, validate bool) (string, error) {
@@ -75,6 +77,15 @@ func (m *MockPrompter) ConfirmReview(title string, details []KV) (bool, error) {
 	return r, nil
 }
 
+func (m *MockPrompter) PromptChoice(msg string, options []string) (int, error) {
+	if m.choiceIdx >= len(m.ChoiceResponses) {
+		return 0, nil
+	}
+	r := m.ChoiceResponses[m.choiceIdx]
+	m.choiceIdx++
+	return r, nil
+}
+func (m *MockPrompter) SetBackEnabled(bool)                     { /* no-op for tests */ }
 func (m *MockPrompter) DisplayWelcome()                        { /* no-op for tests */ }
 func (m *MockPrompter) DisplayPhaseProgress(phase WizardPhase) { /* no-op for tests */ }
 func (m *MockPrompter) DisplayMessage(msg string)              { m.Messages = append(m.Messages, msg) }
@@ -159,7 +170,7 @@ func TestDetermineStartingPhaseInit(t *testing.T) {
 		t.Fatal(testOKTrue)
 	}
 	if phase != PhaseExtract {
-		t.Errorf("expected PhaseExtract, got %s", phase)
+		t.Errorf(errExpectExtract, phase)
 	}
 }
 
@@ -174,7 +185,7 @@ func TestDetermineStartingPhaseComplete(t *testing.T) {
 		t.Fatal(testOKTrue)
 	}
 	if phase != PhaseExtract {
-		t.Errorf("expected PhaseExtract, got %s", phase)
+		t.Errorf(errExpectExtract, phase)
 	}
 }
 
@@ -261,8 +272,8 @@ func TestRunPhaseHandlerMigrateCancel(t *testing.T) {
 	p := &MockPrompter{ConfirmResponses: []bool{false}}
 
 	err := runPhaseHandler(context.Background(), p, state, dir, PhaseMigrate)
-	if err != nil {
-		t.Fatalf("runPhaseHandler migrate cancel: %v", err)
+	if err == nil {
+		t.Fatal("expected error when user declines migration")
 	}
 }
 
@@ -334,7 +345,7 @@ func TestRunFreshStartFailsOnExtract(t *testing.T) {
 		URLResponses:      []string{testServerURLSlash},
 		PasswordResponses: []string{"token123"},
 		ReviewResponses:   []bool{true},
-		ConfirmResponses:  []bool{false, false}, // scan history: no, retry: no
+		ConfirmResponses:  []bool{false, false, false}, // scan history: no, retry: no, restart: no
 	}
 
 	err := Run(context.Background(), p, dir)
@@ -348,6 +359,124 @@ func TestRunFreshStartFailsOnExtract(t *testing.T) {
 	}
 	if loaded.Phase != PhaseInit {
 		t.Errorf("expected INIT (extract failed before advancing), got %s", loaded.Phase)
+	}
+}
+
+// --- offerPhaseRestart tests ---
+
+func TestOfferPhaseRestartAccepted(t *testing.T) {
+	p := &MockPrompter{
+		ConfirmResponses: []bool{true},
+		ChoiceResponses:  []int{0},
+	}
+	phase, ok := offerPhaseRestart(p, PhaseOrgMapping)
+	if !ok {
+		t.Fatal(testOKTrue)
+	}
+	if phase != PhaseExtract {
+		t.Errorf(errExpectExtract, phase)
+	}
+}
+
+func TestOfferPhaseRestartPickLater(t *testing.T) {
+	p := &MockPrompter{
+		ConfirmResponses: []bool{true},
+		ChoiceResponses:  []int{2},
+	}
+	phase, ok := offerPhaseRestart(p, PhaseMigrate)
+	if !ok {
+		t.Fatal(testOKTrue)
+	}
+	if phase != PhaseOrgMapping {
+		t.Errorf("expected PhaseOrgMapping, got %s", phase)
+	}
+}
+
+func TestOfferPhaseRestartDeclined(t *testing.T) {
+	p := &MockPrompter{
+		ConfirmResponses: []bool{false},
+	}
+	_, ok := offerPhaseRestart(p, PhaseMappings)
+	if ok {
+		t.Fatal("expected ok=false when user declines restart")
+	}
+}
+
+// --- Run cancel paths ---
+
+func TestRunCancelledAtResume(t *testing.T) {
+	dir := t.TempDir()
+	state := &WizardState{Phase: PhaseStructure}
+	state.Save(dir)
+
+	p := &MockPrompter{
+		ConfirmResponses: []bool{false, false},
+	}
+
+	err := Run(context.Background(), p, dir)
+	if err != nil {
+		t.Fatalf("expected nil (user cancelled at resume), got %v", err)
+	}
+}
+
+func TestRunCancelledAtDeterminePhase(t *testing.T) {
+	dir := t.TempDir()
+	state := &WizardState{Phase: PhaseComplete}
+	state.Save(dir)
+
+	p := &MockPrompter{
+		ConfirmResponses: []bool{true, false},
+	}
+
+	err := Run(context.Background(), p, dir)
+	if err != nil {
+		t.Fatalf("expected nil (user cancelled at determine phase), got %v", err)
+	}
+}
+
+// --- Skipped projects display ---
+
+func TestRunWithSkippedProjects(t *testing.T) {
+	restoreMig := mockMigrate(nil)
+	defer restoreMig()
+
+	dir := t.TempDir()
+
+	orgHeaders := []string{"sonarqube_org_key", "sonarcloud_org_key"}
+	writeCSV(t, dir, fileOrganizations, orgHeaders, [][]string{{"org-1", "cloud-1"}})
+	writeCSV(t, dir, fileProjects, []string{"key"}, [][]string{{"p1"}})
+	writeCSV(t, dir, fileTemplates, []string{"name"}, [][]string{{"t1"}})
+	writeCSV(t, dir, fileProfiles, []string{"name"}, [][]string{{"pr1"}})
+	writeCSV(t, dir, fileGates, []string{"name"}, [][]string{{"g1"}})
+	writeCSV(t, dir, fileGroups, []string{"name"}, [][]string{{"gr1"}})
+
+	state := &WizardState{
+		Phase:           PhaseValidate,
+		TargetURL:       strPtr(testSQCloudURL),
+		EnterpriseKey:   strPtr(testEntKey),
+		SkippedProjects: []string{"proj-a", "proj-b"},
+	}
+	state.Save(dir)
+
+	p := &MockPrompter{
+		ConfirmResponses:  []bool{true, true},
+		PasswordResponses: []string{"token"},
+	}
+
+	err := Run(context.Background(), p, dir)
+	if err != nil {
+		t.Fatalf("Run with skipped projects: %v", err)
+	}
+
+	hasSkipWarning := false
+	for _, msg := range p.Messages {
+		if len(msg) > 4 && msg[:5] == "WARN:" {
+			hasSkipWarning = true
+			break
+		}
+	}
+	if !hasSkipWarning {
+		t.Error("expected warning about skipped projects")
 	}
 }
 

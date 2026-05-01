@@ -82,6 +82,22 @@ func (p *CLIPrompter) ConfirmReview(title string, details []KV) (bool, error) {
 	return p.Confirm("Are these values correct?", false)
 }
 
+func (p *CLIPrompter) PromptChoice(message string, options []string) (int, error) {
+	var result string
+	prompt := &survey.Select{Message: message, Options: options}
+	if err := survey.AskOne(prompt, &result); err != nil {
+		return 0, err
+	}
+	for i, opt := range options {
+		if opt == result {
+			return i, nil
+		}
+	}
+	return 0, nil
+}
+
+func (p *CLIPrompter) SetBackEnabled(bool) { /* no-op for CLI */ }
+
 // Display methods.
 
 func (p *CLIPrompter) DisplayWelcome() {

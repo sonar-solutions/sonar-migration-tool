@@ -1,0 +1,902 @@
+{{define "title"}}Wizard - SQ Migration{{end}}
+
+{{define "content"}}
+<div id="wizard-page" class="wizard-layout">
+	<!-- Left panel: phases + controls -->
+	<div id="phases-card" class="card phases-card">
+		<h3>Migration Phases</h3>
+		<div id="wizard-stepper" class="stepper-vertical">
+			<!-- Phases rendered by JS on load -->
+		</div>
+		<div id="wizard-controls" class="wizard-controls">
+			<button id="start-btn" class="btn-primary" onclick="Wizard.start()">Start Wizard</button>
+			<button id="cancel-btn" class="btn-danger hidden" onclick="Wizard.cancel()">Cancel</button>
+			<button id="report-btn" class="btn-secondary hidden" onclick="window.open('/api/report/pdf','_blank')">View Report</button>
+			<button id="cloud-btn" class="btn-secondary hidden" onclick="Wizard.openCloud()">Open SonarQube Cloud</button>
+			<span id="status-msg" class="status-msg"></span>
+		</div>
+	</div>
+
+	<!-- Right panel: prompt + event log -->
+	<div id="wizard-main">
+		<div class="card" id="prompt-card">
+			<div id="prompt-area">
+				<p class="text-muted">Click "Start Wizard" to begin the migration process.</p>
+			</div>
+			<div id="processing" class="hidden" style="display:flex;align-items:center;gap:0.5rem;">
+				<span class="spinner"></span>
+				<span id="processing-text">Processing...</span>
+			</div>
+		</div>
+
+		<div id="event-log-card" class="card mt-2">
+			<div class="event-log" id="event-log">
+				<div class="event-entry text-muted">No events yet. Start the wizard to begin.</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<style>
+.spinner {
+	display: inline-block;
+	width: 16px;
+	height: 16px;
+	border: 2px solid var(--color-border);
+	border-top-color: var(--color-primary);
+	border-radius: 50%;
+	animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.prompt .input-row {
+	display: flex;
+	gap: 0.5rem;
+	margin-top: 0.5rem;
+}
+.prompt .input-row input,
+.prompt .input-row select {
+	flex: 1;
+}
+.prompt .button-row {
+	display: flex;
+	gap: 0.5rem;
+	margin-top: 0.75rem;
+}
+.review-table {
+	width: 100%;
+	border-collapse: collapse;
+	margin: 0.75rem 0;
+}
+.review-table td {
+	padding: 0.375rem 0.75rem;
+	border-bottom: 1px solid var(--color-border);
+	font-size: 0.875rem;
+}
+.review-table td:first-child {
+	font-weight: 500;
+	white-space: nowrap;
+	width: 1%;
+}
+</style>
+
+<script>
+var Wizard = (function() {
+	'use strict';
+
+	// --- Constants ---
+	const HIDDEN = 'hidden';
+	const ID_PROMPT_AREA = 'prompt-area';
+	const ID_PROMPT_INPUT = 'prompt-input';
+
+	const EYE_SVG = `<svg xmlns="http://www.w3.org/2000/svg"
+		viewBox="0 0 24 24" fill="currentColor"><path
+		d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11
+		7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76
+		0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66
+		0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>`;
+
+	// --- State ---
+	let ws = null;
+	let reconnectTimer = null;
+	let reconnectDelay = 1000;
+	let status = 'idle';
+	let pendingPromptId = null;
+	let pendingPromptMsg = null;
+	let currentPhase = null;
+	let phaseInputs = {};
+	let latestSummary = null;
+
+	const PHASES = [
+		{ key: 'extract', name: 'Extract', index: 1,
+			description: 'Connect to source instance and extract configuration' },
+		{ key: 'structure', name: 'Structure', index: 2,
+			description: 'Configure target SonarQube Cloud organization' },
+		{ key: 'org_mapping', name: 'Org Map', index: 3,
+			description: 'Map source organizations to target' },
+		{ key: 'mappings', name: 'Mappings', index: 4,
+			description: 'Review and configure project mappings' },
+		{ key: 'validate', name: 'Validate', index: 5,
+			description: 'Validate configuration before migration' },
+		{ key: 'migrate', name: 'Migrate', index: 6,
+			description: 'Execute the migration to SonarQube Cloud' }
+	];
+
+	// --- Initialize stepper HTML ---
+	function initStepper() {
+		const container = document.getElementById('wizard-stepper');
+		let html = '';
+		for (const p of PHASES) {
+			html += `<div id="phase-${p.key}" class="phase-row" data-phase="${p.key}">`;
+			html += `<div id="phase-${p.key}-indicator" class="phase-indicator">`;
+			html += `<div id="phase-${p.key}-circle" class="phase-circle">${p.index}</div>`;
+			if (p.index < PHASES.length) {
+				html += `<div id="phase-${p.key}-line" class="phase-line"></div>`;
+			}
+			html += '</div>';
+			html += `<div id="phase-${p.key}-content" class="phase-content">`;
+			html += `<div id="phase-${p.key}-header" class="phase-header">`;
+			html += `<span class="phase-name">${p.name}</span>`;
+			html += `<span id="phase-${p.key}-badge" class="phase-badge">Pending</span>`;
+			html += '</div>';
+			html += `<p class="phase-desc">${p.description}</p>`;
+			html += `<div id="phase-${p.key}-inputs" class="phase-inputs"></div>`;
+			html += '</div></div>';
+		}
+		container.innerHTML = html;
+	}
+
+	function connect() {
+		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+		ws = new WebSocket(`${proto}//${location.host}/ws`);
+		updateConnectionDot('connecting');
+
+		ws.onopen = function() {
+			updateConnectionDot('connected');
+			reconnectDelay = 1000;
+		};
+
+		ws.onclose = function() {
+			updateConnectionDot('disconnected');
+			scheduleReconnect();
+		};
+
+		ws.onmessage = function(evt) {
+			try {
+				handleMessage(JSON.parse(evt.data));
+			} catch (e) {
+				console.error('ws parse error:', e);
+			}
+		};
+	}
+
+	function scheduleReconnect() {
+		if (reconnectTimer) {
+			return;
+		}
+		reconnectTimer = setTimeout(function() {
+			reconnectTimer = null;
+			connect();
+		}, reconnectDelay);
+		reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+	}
+
+	function send(msg) {
+		if (ws && ws.readyState === WebSocket.OPEN) {
+			ws.send(JSON.stringify(msg));
+		}
+	}
+
+	function updateConnectionDot(state) {
+		const dot = document.getElementById('connection-dot');
+		if (!dot) {
+			return;
+		}
+		dot.className = state === 'connected'
+			? 'connection-dot connected'
+			: 'connection-dot disconnected';
+	}
+
+	function handleMessage(msg) {
+		switch (msg.type) {
+		case 'wizard_started':
+			onWizardStarted();
+			break;
+		case 'wizard_finished':
+			onWizardFinished(msg);
+			break;
+		case 'display_phase_progress':
+			onPhaseProgress(msg);
+			break;
+		case 'display_message':
+			showProcessing(msg.message);
+			addLogEntry(msg.message, msg.type);
+			break;
+		case 'display_error':
+			addLogEntry(msg.message, msg.type);
+			break;
+		case 'display_warning':
+			addLogEntry(msg.message, msg.type);
+			break;
+		case 'display_success':
+			addLogEntry(msg.message, msg.type);
+			break;
+		case 'display_welcome':
+			addLogEntry(msg.message || 'Welcome to the SonarQube Migration Tool', msg.type);
+			break;
+		case 'display_wizard_complete':
+			addLogEntry('Migration wizard complete!', msg.type);
+			break;
+		case 'display_summary':
+			onSummary(msg);
+			addLogEntry(msg.title || 'Summary', msg.type);
+			break;
+		case 'display_resume_info':
+			onResumeInfo(msg);
+			break;
+		case 'prompt_url':
+		case 'prompt_text':
+		case 'prompt_password':
+		case 'prompt_confirm':
+		case 'prompt_confirm_review':
+		case 'prompt_choice':
+			onPrompt(msg);
+			break;
+		}
+	}
+
+	// --- Wizard lifecycle ---
+
+	function onWizardStarted() {
+		status = 'running';
+		currentPhase = null;
+		phaseInputs = {};
+		clearEventLog();
+		resetStepper();
+		showControls(true);
+		showProcessing('Starting wizard...');
+		addLogEntry('Wizard started', 'display_message');
+	}
+
+	function onWizardFinished(msg) {
+		hideProcessing();
+		hidePrompt();
+		const error = msg.error;
+		if (error) {
+			status = 'error';
+			setStatusMsg('Wizard encountered an error.', 'text-error');
+			addLogEntry(`Wizard failed: ${error}`, 'display_error');
+		} else {
+			status = 'finished';
+			setStatusMsg('Migration complete!', 'text-success');
+		}
+		showControls(false);
+		showPostMigrationButtons(!error, msg.target_url);
+		renderStepper();
+	}
+
+	function onPhaseProgress(msg) {
+		currentPhase = {
+			phase: msg.phase, index: msg.index,
+			total: msg.total, name: msg.name
+		};
+		renderStepper();
+		const text = `Phase ${msg.index}/${msg.total}: ${msg.name}`;
+		showProcessing(text);
+		addLogEntry(text, 'display_phase_progress');
+	}
+
+	// --- Phase input capture ---
+
+	function capturePhaseInput(prompt, value) {
+		if (!currentPhase) {
+			return;
+		}
+		let label = prompt.message || prompt.title || '';
+		if (!label) {
+			return;
+		}
+
+		let displayValue;
+		if (prompt.type === 'prompt_password') {
+			displayValue = '********';
+		} else if (typeof value === 'boolean') {
+			displayValue = value ? 'Yes' : 'No';
+		} else {
+			displayValue = String(value);
+		}
+
+		if (prompt.type === 'prompt_confirm' && latestSummary && latestSummary.stats) {
+			const orgLabel = findStat(latestSummary.stats, 'Integration Key') ||
+				findStat(latestSummary.stats, 'Organization Key') || label;
+			label = orgLabel;
+			displayValue = value ? 'Migrate' : 'Skipped';
+		}
+
+		const key = currentPhase.phase;
+		if (!phaseInputs[key]) {
+			phaseInputs[key] = [];
+		}
+		phaseInputs[key].push({ label: label, value: displayValue });
+		renderPhaseInputs(key);
+	}
+
+	function findStat(stats, key) {
+		for (const stat of stats) {
+			if (stat.key === key) {
+				return stat.value;
+			}
+		}
+		return '';
+	}
+
+	function renderPhaseInputs(phaseKey) {
+		const container = document.getElementById(`phase-${phaseKey}-inputs`);
+		if (!container) {
+			return;
+		}
+		const items = phaseInputs[phaseKey] || [];
+		let html = '';
+		for (const item of items) {
+			html += `<div class="phase-input-item">`;
+			html += `<span class="input-label">${escapeHTML(item.label)}</span>`;
+			html += ` <span class="input-value">${escapeHTML(item.value)}</span>`;
+			html += '</div>';
+		}
+		container.innerHTML = html;
+	}
+
+	// --- Stepper rendering ---
+
+	function phaseBadgeText(state) {
+		if (state === 'active') {
+			return 'In Progress';
+		}
+		if (state === 'complete') {
+			return 'Complete';
+		}
+		return 'Pending';
+	}
+
+	function getPhaseState(p) {
+		if (!currentPhase || status === 'idle') {
+			return 'pending';
+		}
+		if (status === 'finished') {
+			return 'complete';
+		}
+		if (currentPhase.phase === p.key) {
+			return 'active';
+		}
+		if (p.index < currentPhase.index) {
+			return 'complete';
+		}
+		return 'pending';
+	}
+
+	function updatePhaseRow(p) {
+		const state = getPhaseState(p);
+		const row = document.getElementById(`phase-${p.key}`);
+		if (!row) {
+			return;
+		}
+
+		const circle = document.getElementById(`phase-${p.key}-circle`);
+		const badge = document.getElementById(`phase-${p.key}-badge`);
+		const line = document.getElementById(`phase-${p.key}-line`);
+
+		row.className = 'phase-row';
+		if (state === 'active') {
+			row.className += ' active';
+		}
+		if (state === 'complete') {
+			row.className += ' complete';
+		}
+
+		circle.innerHTML = state === 'complete' ? '&#10003;' : String(p.index);
+
+		badge.className = 'phase-badge';
+		if (state === 'active') {
+			badge.className += ' badge-active';
+		}
+		if (state === 'complete') {
+			badge.className += ' badge-complete';
+		}
+		badge.textContent = phaseBadgeText(state);
+
+		if (line) {
+			line.className = state === 'complete'
+				? 'phase-line complete' : 'phase-line';
+		}
+	}
+
+	function renderStepper() {
+		for (const p of PHASES) {
+			updatePhaseRow(p);
+		}
+	}
+
+	function resetStepper() {
+		phaseInputs = {};
+		for (const p of PHASES) {
+			const circle = document.getElementById(`phase-${p.key}-circle`);
+			const badge = document.getElementById(`phase-${p.key}-badge`);
+			const row = document.getElementById(`phase-${p.key}`);
+			const line = document.getElementById(`phase-${p.key}-line`);
+			const inputs = document.getElementById(`phase-${p.key}-inputs`);
+			if (row) {
+				row.className = 'phase-row';
+			}
+			if (circle) {
+				circle.innerHTML = String(p.index);
+			}
+			if (badge) {
+				badge.className = 'phase-badge';
+				badge.textContent = 'Pending';
+			}
+			if (line) {
+				line.className = 'phase-line';
+			}
+			if (inputs) {
+				inputs.innerHTML = '';
+			}
+		}
+	}
+
+	// --- Prompts ---
+
+	function onSummary(msg) {
+		latestSummary = msg;
+	}
+
+	function onResumeInfo(msg) {
+		const parts = ['Previous session detected'];
+		if (msg.phase) {
+			parts.push(`Phase: ${msg.phase}`);
+		}
+		if (msg.source_url) {
+			parts.push(`Source: ${msg.source_url}`);
+		}
+		addLogEntry(parts.join(' | '), 'display_message');
+	}
+
+	function onPrompt(msg) {
+		pendingPromptId = msg.id;
+		pendingPromptMsg = msg;
+		hideProcessing();
+		const area = document.getElementById(ID_PROMPT_AREA);
+		area.innerHTML = renderPrompt(msg);
+		area.classList.remove(HIDDEN);
+
+		const firstInput = area.querySelector('input, select');
+		if (firstInput) {
+			firstInput.focus();
+		}
+	}
+
+	function backButton(msg) {
+		if (!msg.back_enabled) {
+			return '';
+		}
+		return '<button class="btn-secondary" onclick="Wizard.goBack()">&larr; Back</button>';
+	}
+
+	function renderPrompt(msg) {
+		switch (msg.type) {
+		case 'prompt_url': return renderPromptURL(msg);
+		case 'prompt_text': return renderPromptText(msg);
+		case 'prompt_password': return renderPromptPassword(msg);
+		case 'prompt_confirm': return renderPromptConfirm(msg);
+		case 'prompt_confirm_review': return renderPromptConfirmReview(msg);
+		case 'prompt_choice': return renderPromptChoice(msg);
+		default: return `<p>Unknown prompt type: ${escapeHTML(msg.type)}</p>`;
+		}
+	}
+
+	function isCloudURLPrompt(msg) {
+		return msg.message && msg.message.toLowerCase().indexOf('cloud url') >= 0;
+	}
+
+	function renderPromptURL(msg) {
+		if (isCloudURLPrompt(msg)) {
+			return renderPromptCloudURL(msg);
+		}
+		return `<div class="prompt">
+			<label class="prompt-label">${escapeHTML(msg.message)}</label>
+			<div class="input-row">
+				${backButton(msg)}
+				<input type="url" id="${ID_PROMPT_INPUT}" placeholder="https://"
+					onkeydown="Wizard.onInputKey(event)">
+				<button class="btn-primary"
+					onclick="Wizard.submitInput()">Submit</button>
+			</div>
+			<div id="prompt-error" class="text-error mt-1"></div>
+		</div>`;
+	}
+
+	function renderPromptCloudURL(msg) {
+		return `<div class="prompt">
+			<label class="prompt-label">${escapeHTML(msg.message)}</label>
+			<div class="input-row">
+				${backButton(msg)}
+				<select id="cloud-url-select"
+					onchange="Wizard.onCloudSelect()">
+					<option value="https://sonarcloud.io">
+						SonarQube Cloud (sonarcloud.io)</option>
+					<option value="https://sonarqube.us">
+						SonarQube Cloud US (sonarqube.us)</option>
+					<option value="other">Other</option>
+				</select>
+				<button id="cloud-url-submit" class="btn-primary"
+					onclick="Wizard.submitCloudURL()">Submit</button>
+			</div>
+			<div id="cloud-url-custom" class="input-row ${HIDDEN}">
+				<input type="url" id="${ID_PROMPT_INPUT}"
+					placeholder="https://custom-instance.example.com"
+					onkeydown="Wizard.onInputKey(event)">
+			</div>
+			<div id="prompt-error" class="text-error mt-1"></div>
+		</div>`;
+	}
+
+	function renderPromptText(msg) {
+		const defaultVal = msg['default'] || '';
+		return `<div class="prompt">
+			<label class="prompt-label">${escapeHTML(msg.message)}</label>
+			<div class="input-row">
+				${backButton(msg)}
+				<input type="text" id="${ID_PROMPT_INPUT}"
+					value="${escapeAttr(defaultVal)}"
+					onkeydown="Wizard.onInputKey(event)">
+				<button class="btn-primary"
+					onclick="Wizard.submitInput()">Submit</button>
+			</div>
+		</div>`;
+	}
+
+	function renderPromptPassword(msg) {
+		return `<div class="prompt">
+			<label class="prompt-label">${escapeHTML(msg.message)}</label>
+			<div class="input-row">
+				${backButton(msg)}
+				<div class="password-wrapper">
+					<input type="password" id="${ID_PROMPT_INPUT}"
+						autocomplete="off"
+						onkeydown="Wizard.onInputKey(event)">
+					<button type="button" class="btn-eye"
+						onmousedown="document.getElementById('${ID_PROMPT_INPUT}').type='text'"
+						onmouseup="document.getElementById('${ID_PROMPT_INPUT}').type='password'"
+						onmouseleave="document.getElementById('${ID_PROMPT_INPUT}').type='password'"
+						ontouchstart="document.getElementById('${ID_PROMPT_INPUT}').type='text'"
+						ontouchend="document.getElementById('${ID_PROMPT_INPUT}').type='password'">
+						${EYE_SVG}
+					</button>
+				</div>
+				<button class="btn-primary"
+					onclick="Wizard.submitInput()">Submit</button>
+			</div>
+		</div>`;
+	}
+
+	function renderPromptConfirm(msg) {
+		let html = '<div class="prompt">';
+		if (latestSummary && latestSummary.stats) {
+			html += renderSummaryTable(latestSummary);
+		}
+		html += `<p class="prompt-label">${escapeHTML(msg.message)}</p>`;
+		html += `<div class="button-row">
+			${backButton(msg)}
+			<button class="btn-primary"
+				onclick="Wizard.respond(true)">Yes</button>
+			<button class="btn-secondary"
+				onclick="Wizard.respond(false)">No</button>
+		</div></div>`;
+		return html;
+	}
+
+	function renderPromptConfirmReview(msg) {
+		let html = '<div class="prompt">';
+		if (msg.title) {
+			html += `<h3>${escapeHTML(msg.title)}</h3>`;
+		}
+		if (msg.details && msg.details.length) {
+			html += '<table class="review-table"><tbody>';
+			for (const detail of msg.details) {
+				html += `<tr><td>${escapeHTML(detail.key)}</td>`;
+				html += `<td>${escapeHTML(detail.value)}</td></tr>`;
+			}
+			html += '</tbody></table>';
+		}
+		html += `<p class="prompt-label">Are these values correct?</p>
+			<div class="button-row">
+				${backButton(msg)}
+				<button class="btn-primary"
+					onclick="Wizard.respond(true)">Yes, continue</button>
+				<button class="btn-secondary"
+					onclick="Wizard.respond(false)">No, re-enter</button>
+			</div></div>`;
+		return html;
+	}
+
+	function renderPromptChoice(msg) {
+		let html = `<div class="prompt">
+			<label class="prompt-label">${escapeHTML(msg.message)}</label>
+			<div class="input-row">`;
+		if (msg.options && msg.options.length) {
+			html += '<select id="choice-select">';
+			for (let i = 0; i < msg.options.length; i++) {
+				html += `<option value="${i}">${escapeHTML(msg.options[i])}</option>`;
+			}
+			html += '</select>';
+		}
+		html += `<button class="btn-primary"
+			onclick="Wizard.submitChoice()">Select</button>
+		</div></div>`;
+		return html;
+	}
+
+	function renderSummaryTable(summary) {
+		if (!summary.stats || !summary.stats.length) {
+			return '';
+		}
+		let html = '';
+		if (summary.title) {
+			html += `<h4>${escapeHTML(summary.title)}</h4>`;
+		}
+		html += '<table class="summary-table"><tbody>';
+		for (const stat of summary.stats) {
+			html += `<tr><th>${escapeHTML(stat.key)}</th>`;
+			html += `<td>${escapeHTML(stat.value)}</td></tr>`;
+		}
+		html += '</tbody></table>';
+		return html;
+	}
+
+	// --- Cloud URL helpers ---
+
+	function onCloudSelect() {
+		const sel = document.getElementById('cloud-url-select');
+		const custom = document.getElementById('cloud-url-custom');
+		if (sel.value === 'other') {
+			custom.classList.remove(HIDDEN);
+			custom.style.display = 'flex';
+			const input = document.getElementById(ID_PROMPT_INPUT);
+			if (input) {
+				input.focus();
+			}
+		} else {
+			custom.classList.add(HIDDEN);
+			custom.style.display = 'none';
+		}
+	}
+
+	function submitCloudURL() {
+		const sel = document.getElementById('cloud-url-select');
+		let val;
+		if (sel.value === 'other') {
+			const input = document.getElementById(ID_PROMPT_INPUT);
+			if (!input) {
+				return;
+			}
+			val = input.value.trim();
+			if (!val || !isValidURL(val)) {
+				const errEl = document.getElementById('prompt-error');
+				if (errEl) {
+					errEl.textContent = 'Please enter a valid HTTP or HTTPS URL';
+				}
+				return;
+			}
+		} else {
+			val = sel.value;
+		}
+		respond(val);
+	}
+
+	// --- Response handling ---
+
+	function submitInput() {
+		const input = document.getElementById(ID_PROMPT_INPUT);
+		if (!input) {
+			return;
+		}
+		const val = input.value.trim();
+		if (!val) {
+			return;
+		}
+
+		const errEl = document.getElementById('prompt-error');
+		if (input.type === 'url' && errEl) {
+			if (!isValidURL(val)) {
+				errEl.textContent = 'Please enter a valid HTTP or HTTPS URL';
+				return;
+			}
+			errEl.textContent = '';
+		}
+
+		respond(val);
+	}
+
+	function respond(value) {
+		if (!pendingPromptId) {
+			return;
+		}
+		if (pendingPromptMsg) {
+			capturePhaseInput(pendingPromptMsg, value);
+		}
+		send({ type: 'prompt_response', id: pendingPromptId, value: value });
+		pendingPromptId = null;
+		pendingPromptMsg = null;
+		latestSummary = null;
+		hidePrompt();
+		showProcessing('Processing...');
+	}
+
+	function isValidURL(str) {
+		try {
+			const u = new URL(str);
+			return u.protocol === 'http:' || u.protocol === 'https:';
+		} catch (e) {
+			return false;
+		}
+	}
+
+	// --- DOM helpers ---
+
+	function addLogEntry(message, type) {
+		const log = document.getElementById('event-log');
+		const emptyMsg = log.querySelector('.text-muted');
+		if (emptyMsg && emptyMsg.textContent.indexOf('No events') >= 0) {
+			log.innerHTML = '';
+		}
+
+		const cls = logClass(type);
+		const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+		const entry = document.createElement('div');
+		entry.className = cls ? `event-entry ${cls}` : 'event-entry';
+		entry.innerHTML = `<span class="event-time">[${time}]</span>${escapeHTML(message)}`;
+		log.appendChild(entry);
+		log.scrollTop = log.scrollHeight;
+	}
+
+	function logClass(type) {
+		if (type === 'display_error') {
+			return 'text-error';
+		}
+		if (type === 'display_warning') {
+			return 'text-warning';
+		}
+		if (type === 'display_success' || type === 'display_wizard_complete') {
+			return 'text-success';
+		}
+		if (type === 'display_phase_progress') {
+			return 'text-phase';
+		}
+		return '';
+	}
+
+	function clearEventLog() {
+		document.getElementById('event-log').innerHTML = '';
+	}
+
+	function showProcessing(text) {
+		document.getElementById(ID_PROMPT_AREA).classList.add(HIDDEN);
+		const proc = document.getElementById('processing');
+		proc.classList.remove(HIDDEN);
+		proc.style.display = 'flex';
+		document.getElementById('processing-text').textContent = text;
+	}
+
+	function hideProcessing() {
+		const proc = document.getElementById('processing');
+		proc.classList.add(HIDDEN);
+		proc.style.display = 'none';
+	}
+
+	function hidePrompt() {
+		const area = document.getElementById(ID_PROMPT_AREA);
+		area.innerHTML = '';
+		area.classList.add(HIDDEN);
+	}
+
+	function showControls(running) {
+		document.getElementById('start-btn').classList.toggle(HIDDEN, running);
+		document.getElementById('cancel-btn').classList.toggle(HIDDEN, !running);
+		document.getElementById('report-btn').classList.add(HIDDEN);
+		document.getElementById('cloud-btn').classList.add(HIDDEN);
+		setStatusMsg('', '');
+		const btn = document.getElementById('start-btn');
+		btn.textContent = (status === 'idle') ? 'Start Wizard' : 'Start New Wizard';
+	}
+
+	function showPostMigrationButtons(success, targetURL) {
+		document.getElementById('report-btn').classList.toggle(HIDDEN, !success);
+		const cloudBtn = document.getElementById('cloud-btn');
+		cloudBtn.classList.toggle(HIDDEN, !success || !targetURL);
+		if (targetURL) {
+			cloudBtn._targetURL = targetURL;
+		}
+	}
+
+	function setStatusMsg(text, cls) {
+		const el = document.getElementById('status-msg');
+		el.textContent = text;
+		el.className = cls ? `status-msg ${cls}` : 'status-msg';
+	}
+
+	// --- Escaping ---
+
+	function escapeHTML(str) {
+		if (str == null) {
+			return '';
+		}
+		const div = document.createElement('div');
+		div.appendChild(document.createTextNode(String(str)));
+		return div.innerHTML;
+	}
+
+	function escapeAttr(str) {
+		return escapeHTML(str).replace(/"/g, '&quot;');
+	}
+
+	// --- Init & public API ---
+	initStepper();
+	connect();
+
+	return {
+		start: function() {
+			if (status === 'running') {
+				return;
+			}
+			status = 'running';
+			send({ type: 'start_wizard' });
+		},
+		cancel: function() {
+			send({ type: 'cancel_wizard' });
+		},
+		submitInput: submitInput,
+		submitCloudURL: submitCloudURL,
+		submitChoice: function() {
+			const sel = document.getElementById('choice-select');
+			if (sel) {
+				respond(parseInt(sel.value, 10));
+			}
+		},
+		onCloudSelect: onCloudSelect,
+		respond: respond,
+		goBack: function() {
+			if (!pendingPromptId) {
+				return;
+			}
+			if (currentPhase) {
+				const key = currentPhase.phase;
+				if (phaseInputs[key] && phaseInputs[key].length > 0) {
+					phaseInputs[key].pop();
+					renderPhaseInputs(key);
+				}
+			}
+			send({
+				type: 'prompt_response',
+				id: pendingPromptId,
+				value: '__back__'
+			});
+			pendingPromptId = null;
+			pendingPromptMsg = null;
+			latestSummary = null;
+			hidePrompt();
+			showProcessing('Processing...');
+		},
+		openCloud: function() {
+			const btn = document.getElementById('cloud-btn');
+			if (btn._targetURL) {
+				window.open(btn._targetURL, '_blank');
+			}
+		},
+		onInputKey: function(e) {
+			if (e.key === 'Enter') {
+				submitInput();
+			}
+		}
+	};
+})();
+</script>
+{{end}}

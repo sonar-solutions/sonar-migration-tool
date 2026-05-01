@@ -9,6 +9,7 @@ const (
 	TypePromptPassword      = "prompt_password"
 	TypePromptConfirm       = "prompt_confirm"
 	TypePromptConfirmReview = "prompt_confirm_review"
+	TypePromptChoice        = "prompt_choice"
 
 	TypeDisplayWelcome        = "display_welcome"
 	TypeDisplayPhaseProgress  = "display_phase_progress"
@@ -54,7 +55,9 @@ type ServerMessage struct {
 	SourceURL string   `json:"source_url,omitempty"`
 	TargetURL string   `json:"target_url,omitempty"`
 	ExtractID string   `json:"extract_id,omitempty"`
-	Error     *string  `json:"error"`
+	Error       *string  `json:"error"`
+	BackEnabled bool     `json:"back_enabled,omitempty"`
+	Options     []string `json:"options,omitempty"`
 }
 
 // ClientMessage is sent from the browser to the Go server.

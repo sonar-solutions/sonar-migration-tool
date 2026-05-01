@@ -12,6 +12,8 @@ require (
 	google.golang.org/protobuf v1.36.11
 )
 
+require github.com/yuin/goldmark v1.8.2
+
 require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
@@ -24,7 +26,5 @@ require (
 	golang.org/x/term v0.42.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 )
-
-exclude github.com/yuin/goldmark v1.4.13
 
 replace github.com/sonar-solutions/sq-api-go => ../lib/sq-api-go

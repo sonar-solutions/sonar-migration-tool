@@ -2,77 +2,19 @@ package gui
 
 import (
 	"context"
-	"io/fs"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
-	"testing/fstest"
 	"time"
 )
-
-func TestSPAHandlerServesStaticFile(t *testing.T) {
-	frontend := fstest.MapFS{
-		"index.html":      {Data: []byte("<html>app</html>")},
-		"assets/style.css": {Data: []byte("body{}")},
-	}
-
-	handler := spaHandler(frontend)
-	req := httptest.NewRequest("GET", "/assets/style.css", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: %d", w.Code)
-	}
-	if w.Body.String() != "body{}" {
-		t.Errorf("body: %q", w.Body.String())
-	}
-}
-
-func TestSPAHandlerFallsBackToIndex(t *testing.T) {
-	frontend := fstest.MapFS{
-		"index.html": {Data: []byte("<html>app</html>")},
-	}
-
-	handler := spaHandler(frontend)
-	req := httptest.NewRequest("GET", "/history/04-20-2026-01", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: %d", w.Code)
-	}
-	if w.Body.String() != "<html>app</html>" {
-		t.Errorf("body: %q", w.Body.String())
-	}
-}
-
-func TestSPAHandlerServesRoot(t *testing.T) {
-	frontend := fstest.MapFS{
-		"index.html": {Data: []byte("<html>root</html>")},
-	}
-
-	handler := spaHandler(frontend)
-	req := httptest.NewRequest("GET", "/", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: %d", w.Code)
-	}
-}
 
 func TestServerStartAndShutdown(t *testing.T) {
 	wp := NewWebPrompter(context.Background(), func(ServerMessage) {})
 	hub := NewHub(wp)
+	tmpl := mustParseTemplates(t)
 
-	frontend := fstest.MapFS{
-		"index.html": {Data: []byte("<html>test</html>")},
-	}
-
-	srv := NewServer("localhost:0", t.TempDir(), hub, frontend)
+	srv := NewServer("localhost:0", t.TempDir(), hub, tmpl)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -93,7 +35,7 @@ func TestServerStartAndShutdown(t *testing.T) {
 		t.Fatal("URL should not be empty after ready")
 	}
 
-	// Verify it serves requests.
+	// Verify it serves the wizard page.
 	resp, err := http.Get(url + "/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
@@ -119,6 +61,7 @@ func TestServerStartAndShutdown(t *testing.T) {
 func TestServerAPIRoutes(t *testing.T) {
 	wp := NewWebPrompter(context.Background(), func(ServerMessage) {})
 	hub := NewHub(wp)
+	tmpl := mustParseTemplates(t)
 
 	exportDir := t.TempDir()
 
@@ -128,11 +71,7 @@ func TestServerAPIRoutes(t *testing.T) {
 	os.WriteFile(filepath.Join(runDir, "extract.json"),
 		[]byte(`{"url":"https://test.com/"}`), 0o644)
 
-	frontend := fstest.MapFS{
-		"index.html": {Data: []byte("<html>test</html>")},
-	}
-
-	srv := NewServer("localhost:0", exportDir, hub, frontend)
+	srv := NewServer("localhost:0", exportDir, hub, tmpl)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -159,11 +98,63 @@ func TestServerAPIRoutes(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("/api/state status: %d", resp.StatusCode)
 	}
+
+	// Test /api/report/pdf (no PDF exists, expect 404).
+	resp, err = http.Get(base + "/api/report/pdf")
+	if err != nil {
+		t.Fatalf("GET /api/report/pdf: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("/api/report/pdf status: got %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestServerPageRoutes(t *testing.T) {
+	wp := NewWebPrompter(context.Background(), func(ServerMessage) {})
+	hub := NewHub(wp)
+	tmpl := mustParseTemplates(t)
+
+	exportDir := t.TempDir()
+
+	runDir := filepath.Join(exportDir, "04-20-2026-01")
+	os.MkdirAll(runDir, 0o755)
+	os.WriteFile(filepath.Join(runDir, "extract.json"),
+		[]byte(`{"url":"https://test.com/"}`), 0o644)
+
+	srv := NewServer("localhost:0", exportDir, hub, tmpl)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go srv.Start(ctx)
+	<-srv.Ready()
+	base := srv.URL()
+
+	routes := []struct {
+		path       string
+		wantStatus int
+	}{
+		{"/", http.StatusOK},
+		{"/history", http.StatusOK},
+		{"/history/04-20-2026-01", http.StatusOK},
+		{"/static/app.css", http.StatusOK},
+		{"/static/htmx.min.js", http.StatusOK},
+	}
+
+	for _, r := range routes {
+		resp, err := http.Get(base + r.path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", r.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != r.wantStatus {
+			t.Errorf("GET %s status = %d, want %d", r.path, resp.StatusCode, r.wantStatus)
+		}
+	}
 }
 
 func TestServerURLBeforeReady(t *testing.T) {
-	frontend, _ := fs.Sub(fstest.MapFS{"index.html": {Data: []byte("")}}, ".")
-	srv := NewServer("localhost:0", t.TempDir(), nil, frontend)
+	srv := NewServer("localhost:0", t.TempDir(), nil, nil)
 	if url := srv.URL(); url != "" {
 		t.Errorf("URL before start should be empty, got %q", url)
 	}

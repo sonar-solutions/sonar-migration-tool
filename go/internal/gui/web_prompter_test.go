@@ -369,3 +369,150 @@ func TestToStringCoercion(t *testing.T) {
 		t.Errorf("toString(nil) = %q", got)
 	}
 }
+
+func TestPromptChoiceNumericResponse(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	done := make(chan struct{})
+	var result int
+
+	go func() {
+		result, _ = wp.PromptChoice("Pick one:", []string{"A", "B", "C"})
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	sent := (*msgs)[0]
+	if sent.Type != TypePromptChoice {
+		t.Fatalf("type: got %q", sent.Type)
+	}
+	if len(sent.Options) != 3 {
+		t.Fatalf("options: got %d, want 3", len(sent.Options))
+	}
+
+	// Respond with float64 (as JSON numbers decode).
+	wp.HandleResponse(ClientMessage{ID: sent.ID, Value: float64(2)})
+	<-done
+
+	if result != 2 {
+		t.Errorf("got %d, want 2", result)
+	}
+}
+
+func TestPromptChoiceStringResponse(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	done := make(chan struct{})
+	var result int
+
+	go func() {
+		result, _ = wp.PromptChoice("Pick:", []string{"alpha", "beta", "gamma"})
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	sent := (*msgs)[0]
+
+	// Respond with string matching an option.
+	wp.HandleResponse(ClientMessage{ID: sent.ID, Value: "beta"})
+	<-done
+
+	if result != 1 {
+		t.Errorf("got %d, want 1 (beta)", result)
+	}
+}
+
+func TestPromptChoiceUnknownStringResponse(t *testing.T) {
+	sendFn, msgs := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	done := make(chan struct{})
+	var result int
+
+	go func() {
+		result, _ = wp.PromptChoice("Pick:", []string{"alpha", "beta"})
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	sent := (*msgs)[0]
+
+	// Respond with a string that doesn't match any option.
+	wp.HandleResponse(ClientMessage{ID: sent.ID, Value: "unknown"})
+	<-done
+
+	if result != 0 {
+		t.Errorf("got %d, want 0 for unmatched string", result)
+	}
+}
+
+func TestSetBackEnabled(t *testing.T) {
+	sendFn, _ := collectMessages()
+	ctx := context.Background()
+	wp := NewWebPrompter(ctx, sendFn)
+
+	wp.SetBackEnabled(true)
+	wp.mu.Lock()
+	enabled := wp.backEnabled
+	wp.mu.Unlock()
+	if !enabled {
+		t.Error("expected backEnabled to be true")
+	}
+
+	wp.SetBackEnabled(false)
+	wp.mu.Lock()
+	enabled = wp.backEnabled
+	wp.mu.Unlock()
+	if enabled {
+		t.Error("expected backEnabled to be false")
+	}
+}
+
+func TestPromptChoiceCancelled(t *testing.T) {
+	sendFn, _ := collectMessages()
+	ctx, cancel := context.WithCancel(context.Background())
+	wp := NewWebPrompter(ctx, sendFn)
+
+	done := make(chan struct{})
+	var err error
+
+	go func() {
+		_, err = wp.PromptChoice("Pick:", []string{"A", "B"})
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+
+	if err != context.Canceled {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestConfirmReviewCancelled(t *testing.T) {
+	sendFn, _ := collectMessages()
+	ctx, cancel := context.WithCancel(context.Background())
+	wp := NewWebPrompter(ctx, sendFn)
+
+	done := make(chan struct{})
+	var err error
+
+	go func() {
+		_, err = wp.ConfirmReview("Review", nil)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+
+	if err != context.Canceled {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+}

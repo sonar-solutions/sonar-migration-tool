@@ -152,8 +152,8 @@ func TestPhaseMigrateUserCancels(t *testing.T) {
 	}
 
 	err := phaseMigrate(context.Background(), p, state, dir)
-	if err != nil {
-		t.Fatalf("expected no error on cancel, got %v", err)
+	if err == nil {
+		t.Fatal("expected error when user declines migration")
 	}
 	if state.Phase != PhaseMigrate {
 		t.Errorf("expected phase unchanged, got %s", state.Phase)
@@ -689,5 +689,70 @@ func TestDisplaySkippedProjectsEmpty(t *testing.T) {
 
 	if len(p.Messages) != 0 {
 		t.Errorf("expected no messages for empty skipped, got %d", len(p.Messages))
+	}
+}
+
+func TestGenerateAnalysisReportNoData(t *testing.T) {
+	p := &MockPrompter{}
+	// Call with a valid temp dir but no run data — exercises the function
+	// regardless of whether analysis.GenerateReport errors or returns empty.
+	generateAnalysisReport(p, t.TempDir(), "nonexistent-run")
+}
+
+func TestPhaseMigrateDecline(t *testing.T) {
+	dir := t.TempDir()
+	state := &WizardState{
+		Phase:     PhaseMigrate,
+		TargetURL: strPtr(testSQCloudURL),
+	}
+	p := &MockPrompter{
+		ConfirmResponses: []bool{false},
+	}
+
+	err := phaseMigrate(context.Background(), p, state, dir)
+	if err == nil {
+		t.Fatal("expected error when user declines migration")
+	}
+}
+
+func TestRunMigrateWithRetryRetryThenSucceed(t *testing.T) {
+	callCount := 0
+	origFn := runMigrateFn
+	runMigrateFn = func(_ context.Context, cfg migrate.MigrateConfig) (string, error) {
+		callCount++
+		if callCount == 1 {
+			return "", fmt.Errorf("transient error")
+		}
+		return "retry-run-01", nil
+	}
+	defer func() { runMigrateFn = origFn }()
+
+	dir := t.TempDir()
+	state := &WizardState{
+		TargetURL:     strPtr(testSQCloudURL),
+		EnterpriseKey: strPtr(testEntKey),
+	}
+	p := &MockPrompter{
+		ConfirmResponses: []bool{true},
+	}
+
+	err := runMigrateWithRetry(context.Background(), p, state, dir, "token")
+	if err != nil {
+		t.Fatalf("expected success after retry, got %v", err)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 calls, got %d", callCount)
+	}
+}
+
+func TestProcessOrgMappingAlreadyMapped(t *testing.T) {
+	org := map[string]any{
+		"sonarqube_org_key":  "org-1",
+		"sonarcloud_org_key": "already-mapped",
+	}
+	p := &MockPrompter{}
+	err := processOrgMapping(p, org, 1, 1)
+	if err != nil {
+		t.Fatalf("expected nil for already-mapped org, got %v", err)
 	}
 }

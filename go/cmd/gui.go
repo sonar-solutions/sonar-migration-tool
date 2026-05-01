@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"log"
 	"os"
 	"os/signal"
@@ -36,18 +35,14 @@ func runGUI(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Create hub with a nil prompter initially (set when wizard starts).
-	hub := gui.NewHub(nil)
-
-	// Frontend filesystem: strip the "frontend" prefix from embedded FS.
-	frontend, err := fs.Sub(gui.FrontendDist, "frontend")
+	tmpl, err := gui.ParseTemplates()
 	if err != nil {
-		return fmt.Errorf("embedded frontend: %w", err)
+		return fmt.Errorf("parse templates: %w", err)
 	}
 
-	srv := gui.NewServer(addr, exportDir, hub, frontend)
+	hub := gui.NewHub(nil)
+	srv := gui.NewServer(addr, exportDir, hub, tmpl)
 
-	// Wizard lifecycle.
 	var (
 		wizMu     sync.Mutex
 		wizCancel context.CancelFunc
@@ -73,20 +68,7 @@ func runGUI(cmd *cobra.Command, args []string) error {
 		hub.SetPrompter(prompter)
 		hub.Send(gui.ServerMessage{Type: gui.TypeWizardStarted})
 
-		go func() {
-			err := wizard.Run(wizCtx, prompter, exportDir)
-
-			wizMu.Lock()
-			wizActive = false
-			wizMu.Unlock()
-
-			msg := gui.ServerMessage{Type: gui.TypeWizardFinished}
-			if err != nil && wizCtx.Err() == nil {
-				errStr := err.Error()
-				msg.Error = &errStr
-			}
-			hub.Send(msg)
-		}()
+		go runWizardAsync(wizCtx, prompter, hub, exportDir, &wizMu, &wizActive)
 	}
 
 	hub.OnCancelWizard = func() {
@@ -97,26 +79,45 @@ func runGUI(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Start server in a goroutine so we can open the browser after binding.
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- srv.Start(ctx)
 	}()
 
-	// Wait for the listener to bind, then open browser.
 	if !noBrowser {
-		go func() {
-			select {
-			case <-srv.Ready():
-				u := srv.URL()
-				log.Printf("gui: opening browser at %s", u)
-				if err := gui.OpenBrowser(u); err != nil {
-					log.Printf("gui: could not open browser: %v (open %s manually)", err, u)
-				}
-			case <-ctx.Done():
-			}
-		}()
+		go openBrowserWhenReady(ctx, srv)
 	}
 
 	return <-errCh
+}
+
+func runWizardAsync(ctx context.Context, prompter *gui.WebPrompter, hub *gui.Hub, exportDir string, mu *sync.Mutex, active *bool) {
+	err := wizard.Run(ctx, prompter, exportDir)
+
+	mu.Lock()
+	*active = false
+	mu.Unlock()
+
+	msg := gui.ServerMessage{Type: gui.TypeWizardFinished}
+	if err != nil && ctx.Err() == nil {
+		errStr := err.Error()
+		msg.Error = &errStr
+	} else if err == nil {
+		if state, stateErr := wizard.Load(exportDir); stateErr == nil && state.TargetURL != nil {
+			msg.TargetURL = *state.TargetURL
+		}
+	}
+	hub.Send(msg)
+}
+
+func openBrowserWhenReady(ctx context.Context, srv *gui.Server) {
+	select {
+	case <-srv.Ready():
+		u := srv.URL()
+		log.Printf("gui: opening browser at %s", u)
+		if err := gui.OpenBrowser(u); err != nil {
+			log.Printf("gui: could not open browser: %v (open %s manually)", err, u)
+		}
+	case <-ctx.Done():
+	}
 }

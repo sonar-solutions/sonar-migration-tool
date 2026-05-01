@@ -118,3 +118,116 @@ func TestSaveCreatesFile(t *testing.T) {
 		t.Errorf("state file not created: %v", err)
 	}
 }
+
+func TestLoadInvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, stateFileName), []byte("{invalid json}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil {
+		t.Error("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestLoadReadError(t *testing.T) {
+	dir := t.TempDir()
+	// Create a directory where the state file should be, causing a read error.
+	if err := os.Mkdir(filepath.Join(dir, stateFileName), 0755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(dir)
+	if err == nil {
+		t.Error("expected error when state file is a directory")
+	}
+}
+
+func TestResetPhaseStateExtract(t *testing.T) {
+	s := fullyPopulatedState()
+	resetPhaseState(s, PhaseExtract)
+
+	if s.SourceURL != nil {
+		t.Error("SourceURL should be nil after reset")
+	}
+	if s.ExtractID != nil {
+		t.Error("ExtractID should be nil after reset")
+	}
+	if s.SkippedProjects != nil {
+		t.Error("SkippedProjects should be nil after reset")
+	}
+	if s.IncludeScanHistory {
+		t.Error("IncludeScanHistory should be false after reset")
+	}
+	// Unrelated fields should remain.
+	if s.TargetURL == nil {
+		t.Error("TargetURL should be untouched")
+	}
+}
+
+func TestResetPhaseStateOrgMapping(t *testing.T) {
+	s := fullyPopulatedState()
+	resetPhaseState(s, PhaseOrgMapping)
+
+	if s.TargetURL != nil {
+		t.Error("TargetURL should be nil after reset")
+	}
+	if s.EnterpriseKey != nil {
+		t.Error("EnterpriseKey should be nil after reset")
+	}
+	if s.OrganizationsMapped {
+		t.Error("OrganizationsMapped should be false after reset")
+	}
+	// Unrelated fields should remain.
+	if s.SourceURL == nil {
+		t.Error("SourceURL should be untouched")
+	}
+}
+
+func TestResetPhaseStateValidate(t *testing.T) {
+	s := fullyPopulatedState()
+	resetPhaseState(s, PhaseValidate)
+
+	if s.ValidationPassed {
+		t.Error("ValidationPassed should be false after reset")
+	}
+	if s.SourceURL == nil {
+		t.Error("SourceURL should be untouched")
+	}
+}
+
+func TestResetPhaseStateMigrate(t *testing.T) {
+	s := fullyPopulatedState()
+	resetPhaseState(s, PhaseMigrate)
+
+	if s.MigrationRunID != nil {
+		t.Error("MigrationRunID should be nil after reset")
+	}
+	if s.SourceURL == nil {
+		t.Error("SourceURL should be untouched")
+	}
+}
+
+func TestResetPhaseStateNoOp(t *testing.T) {
+	s := fullyPopulatedState()
+	resetPhaseState(s, PhaseStructure)
+
+	// PhaseStructure is not handled, nothing should change.
+	if s.SourceURL == nil || s.TargetURL == nil {
+		t.Error("unhandled phase should not clear fields")
+	}
+}
+
+func fullyPopulatedState() *WizardState {
+	return &WizardState{
+		Phase:               PhaseComplete,
+		SourceURL:           strPtr("https://source"),
+		ExtractID:           strPtr("extract-1"),
+		TargetURL:           strPtr("https://target"),
+		EnterpriseKey:       strPtr("ent-1"),
+		OrganizationsMapped: true,
+		ValidationPassed:    true,
+		MigrationRunID:      strPtr("run-1"),
+		SkippedProjects:     []string{"proj-1"},
+		IncludeScanHistory:  true,
+	}
+}

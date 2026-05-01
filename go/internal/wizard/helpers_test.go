@@ -265,6 +265,45 @@ func TestNextPhase(t *testing.T) {
 	}
 }
 
+func TestPhasesUpTo(t *testing.T) {
+	names := phasesUpTo(PhaseOrgMapping)
+	want := []string{"Extract", "Structure", "Organization Mapping"}
+	if len(names) != len(want) {
+		t.Fatalf("expected %d names, got %d: %v", len(want), len(names), names)
+	}
+	for i, n := range names {
+		if n != want[i] {
+			t.Errorf("index %d: got %q, want %q", i, n, want[i])
+		}
+	}
+}
+
+func TestPhasesUpToAll(t *testing.T) {
+	names := phasesUpTo(PhaseMigrate)
+	if len(names) != 6 {
+		t.Errorf("expected 6 phases, got %d", len(names))
+	}
+}
+
+func TestPhaseByIndex(t *testing.T) {
+	tests := []struct {
+		idx  int
+		want WizardPhase
+	}{
+		{0, PhaseExtract},
+		{2, PhaseOrgMapping},
+		{5, PhaseMigrate},
+		{-1, PhaseExtract},
+		{99, PhaseExtract},
+	}
+	for _, tt := range tests {
+		got := phaseByIndex(tt.idx)
+		if got != tt.want {
+			t.Errorf("phaseByIndex(%d) = %q, want %q", tt.idx, got, tt.want)
+		}
+	}
+}
+
 func TestStrPtr(t *testing.T) {
 	p := strPtr("hello")
 	if *p != "hello" {
