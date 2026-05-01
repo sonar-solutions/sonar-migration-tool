@@ -494,7 +494,7 @@ var Wizard = (function() {
 	}
 
 	function isCloudURLPrompt(msg) {
-		return msg.message && msg.message.toLowerCase().indexOf('cloud url') >= 0;
+		return msg.message && msg.message.toLowerCase().includes('cloud url');
 	}
 
 	function renderPromptURL(msg) {
@@ -735,7 +735,7 @@ var Wizard = (function() {
 		try {
 			const u = new URL(str);
 			return u.protocol === 'http:' || u.protocol === 'https:';
-		} catch (e) {
+		} catch {
 			return false;
 		}
 	}
@@ -745,7 +745,7 @@ var Wizard = (function() {
 	function addLogEntry(message, type) {
 		const log = document.getElementById('event-log');
 		const emptyMsg = log.querySelector('.text-muted');
-		if (emptyMsg && emptyMsg.textContent.indexOf('No events') >= 0) {
+		if (emptyMsg && emptyMsg.textContent.includes('No events')) {
 			log.innerHTML = '';
 		}
 
@@ -835,7 +835,7 @@ var Wizard = (function() {
 	}
 
 	function escapeAttr(str) {
-		return escapeHTML(str).replace(/"/g, '&quot;');
+		return escapeHTML(str).replaceAll('"', '&quot;');
 	}
 
 	// --- Init & public API ---
@@ -858,7 +858,7 @@ var Wizard = (function() {
 		submitChoice: function() {
 			const sel = document.getElementById('choice-select');
 			if (sel) {
-				respond(parseInt(sel.value, 10));
+				respond(Number.parseInt(sel.value, 10));
 			}
 		},
 		onCloudSelect: onCloudSelect,
