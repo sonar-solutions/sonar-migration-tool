@@ -2,6 +2,7 @@ package gui
 
 import (
 	"bytes"
+	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,6 +129,33 @@ func TestWizardTemplateContent(t *testing.T) {
 		if !strings.Contains(html, c.contain) {
 			t.Errorf("wizard template missing %s (%q)", c.name, c.contain)
 		}
+	}
+}
+
+func TestBuildPageTemplateUnknownPage(t *testing.T) {
+	baseTmpl := []byte(`<!doctype html><html>{{block "content" .}}{{end}}</html>`)
+	funcMap := template.FuncMap{}
+	_, err := buildPageTemplate("nonexistent_page", baseTmpl, funcMap)
+	if err == nil {
+		t.Error("expected error for nonexistent page template")
+	}
+}
+
+func TestBuildPageTemplateBadBase(t *testing.T) {
+	badBase := []byte(`{{define "base"}}{{.Foo`)
+	funcMap := template.FuncMap{}
+	_, err := buildPageTemplate("wizard", badBase, funcMap)
+	if err == nil {
+		t.Error("expected error for malformed base template")
+	}
+}
+
+func TestRenderHTTPErrorPage(t *testing.T) {
+	tmpl := mustParseTemplates(t)
+	w := httptest.NewRecorder()
+	tmpl.RenderHTTP(w, "bogus_page", PageData{})
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
 	}
 }
 
