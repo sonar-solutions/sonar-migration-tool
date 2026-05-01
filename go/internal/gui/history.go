@@ -9,13 +9,16 @@ import (
 	"sort"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/analysis"
-	"github.com/sonar-solutions/sonar-migration-tool/internal/report/migration"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/report/maturity"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/report/migration"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/wizard"
 )
 
-const headerContentType = "Content-Type"
+const (
+	headerContentType = "Content-Type"
+	extractMetaFile   = "extract.json"
+)
 
 // runIDPattern matches date-based run IDs like "04-27-2026-01".
 var runIDPattern = regexp.MustCompile(`^\d{2}-\d{2}-\d{4}-\d{2}$`)
@@ -28,42 +31,78 @@ type RunInfo struct {
 	HasAnalysis bool   `json:"has_analysis"`
 }
 
-// RunsListHandler returns all run directories in exportDir.
+// --- Reusable data-fetching functions (used by both JSON API and page handlers) ---
+
+// fetchRunList scans exportDir for run directories and returns unsorted results.
+func fetchRunList(exportDir string) []RunInfo {
+	entries, err := os.ReadDir(exportDir)
+	if err != nil {
+		return nil
+	}
+
+	var runs []RunInfo
+	for _, e := range entries {
+		if !e.IsDir() || !runIDPattern.MatchString(e.Name()) {
+			continue
+		}
+		runs = append(runs, buildRunInfo(exportDir, e.Name()))
+	}
+	return runs
+}
+
+// buildRunInfo creates a RunInfo for a single run directory.
+func buildRunInfo(exportDir, runID string) RunInfo {
+	dir := filepath.Join(exportDir, runID)
+	ri := RunInfo{RunID: runID}
+
+	if data, err := os.ReadFile(filepath.Join(dir, extractMetaFile)); err == nil {
+		var meta map[string]string
+		if json.Unmarshal(data, &meta) == nil {
+			ri.SourceURL = meta["url"]
+		}
+	}
+
+	ri.HasAnalysis = fileExists(filepath.Join(dir, "requests.log"))
+	ri.HasReport = fileExists(filepath.Join(dir, "final_analysis_report.csv"))
+	return ri
+}
+
+// loadRunMetadata reads extract.json for a single run.
+func loadRunMetadata(exportDir, runID string) map[string]string {
+	dir := filepath.Join(exportDir, runID)
+	data, err := os.ReadFile(filepath.Join(dir, extractMetaFile))
+	if err != nil {
+		return nil
+	}
+	var meta map[string]string
+	if json.Unmarshal(data, &meta) != nil {
+		return nil
+	}
+	return meta
+}
+
+// loadAnalysis generates analysis report rows for a run.
+func loadAnalysis(exportDir, runID string) []analysis.ReportRow {
+	dir := filepath.Join(exportDir, runID)
+	rows, err := analysis.GenerateReport(dir)
+	if err != nil {
+		return nil
+	}
+	return rows
+}
+
+// --- JSON API handlers (kept for HTMX partial fetches) ---
+
+// RunsListHandler returns all run directories in exportDir as JSON.
 func RunsListHandler(exportDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		entries, err := os.ReadDir(exportDir)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-
-		var runs []RunInfo
-		for _, e := range entries {
-			if !e.IsDir() || !runIDPattern.MatchString(e.Name()) {
-				continue
-			}
-			dir := filepath.Join(exportDir, e.Name())
-			ri := RunInfo{RunID: e.Name()}
-
-			// Read extract.json for source URL.
-			if data, err := os.ReadFile(filepath.Join(dir, "extract.json")); err == nil {
-				var meta map[string]string
-				if json.Unmarshal(data, &meta) == nil {
-					ri.SourceURL = meta["url"]
-				}
-			}
-
-			ri.HasAnalysis = fileExists(filepath.Join(dir, "requests.log"))
-			ri.HasReport = fileExists(filepath.Join(dir, "final_analysis_report.csv"))
-			runs = append(runs, ri)
-		}
-
+		runs := fetchRunList(exportDir)
 		sort.Slice(runs, func(i, j int) bool { return runs[i].RunID > runs[j].RunID })
 		writeJSON(w, http.StatusOK, runs)
 	}
 }
 
-// RunDetailHandler returns metadata for a single run.
+// RunDetailHandler returns metadata for a single run as JSON.
 func RunDetailHandler(exportDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		runID := r.PathValue("runId")
@@ -72,7 +111,7 @@ func RunDetailHandler(exportDir string) http.HandlerFunc {
 			return
 		}
 		dir := filepath.Join(exportDir, runID)
-		data, err := os.ReadFile(filepath.Join(dir, "extract.json"))
+		data, err := os.ReadFile(filepath.Join(dir, extractMetaFile))
 		if err != nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "run not found"})
 			return
@@ -82,7 +121,7 @@ func RunDetailHandler(exportDir string) http.HandlerFunc {
 	}
 }
 
-// RunAnalysisHandler returns analysis report rows for a run.
+// RunAnalysisHandler returns analysis report rows for a run as JSON.
 func RunAnalysisHandler(exportDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		runID := r.PathValue("runId")
@@ -126,7 +165,7 @@ func GenerateReportHandler(exportDir string) http.HandlerFunc {
 	}
 }
 
-// WizardStateHandler returns the current wizard state.
+// WizardStateHandler returns the current wizard state as JSON.
 func WizardStateHandler(exportDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		state, err := wizard.Load(exportDir)
@@ -135,6 +174,19 @@ func WizardStateHandler(exportDir string) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, state)
+	}
+}
+
+// ReportPDFHandler serves the migration_summary.pdf from exportDir.
+func ReportPDFHandler(exportDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		pdfPath := filepath.Join(exportDir, "migration_summary.pdf")
+		if !fileExists(pdfPath) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "report not found"})
+			return
+		}
+		w.Header().Set(headerContentType, "application/pdf")
+		http.ServeFile(w, r, pdfPath)
 	}
 }
 
