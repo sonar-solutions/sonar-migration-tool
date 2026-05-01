@@ -67,13 +67,6 @@ jobs:
             suffix: windows-arm64.exe
     steps:
       - uses: actions/checkout@v6
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Build frontend
-        working-directory: web
-        run: npm install --ignore-scripts --registry=https://registry.npmjs.org/ && npm run build
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
