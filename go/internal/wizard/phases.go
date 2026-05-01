@@ -2,6 +2,7 @@ package wizard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -257,11 +258,19 @@ func mapAllOrganizations(p Prompter, exportDir string) error {
 		return fmt.Errorf("no organizations found — run 'structure' command first")
 	}
 
-	for i, row := range rows {
-		if err := processOrgMapping(p, row, i+1, len(rows)); err != nil {
+	for i := 0; i < len(rows); i++ {
+		p.SetBackEnabled(i > 0)
+		if err := processOrgMapping(p, rows[i], i+1, len(rows)); err != nil {
+			if errors.Is(err, ErrBack) && i > 0 {
+				rows[i-1]["sonarcloud_org_key"] = ""
+				i -= 2 // loop increment brings it to i-1
+				continue
+			}
+			p.SetBackEnabled(false)
 			return err
 		}
 	}
+	p.SetBackEnabled(false)
 
 	orgs := orgsFromMaps(rows)
 	return structure.ExportCSV(exportDir, "organizations", orgs)
@@ -398,8 +407,8 @@ func phaseMigrate(ctx context.Context, p Prompter, state *WizardState, exportDir
 		return err
 	}
 	if !ok {
-		p.DisplayMessage("Migration cancelled. You can resume later.")
-		return nil
+		p.DisplayMessage("Migration skipped. You can resume later.")
+		return fmt.Errorf("migration declined by user")
 	}
 
 	token, err := p.PromptPassword("Cloud admin token:")

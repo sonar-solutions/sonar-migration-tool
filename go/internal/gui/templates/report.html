@@ -1,0 +1,13 @@
+{{define "title"}}Report - SQ Migration{{end}}
+
+{{define "content"}}
+<div id="report-page" class="card">
+	{{if .Data}}
+	<div id="report-content" class="report-content">
+		{{safeHTML .Data.HTML}}
+	</div>
+	{{else}}
+	<p class="text-muted">No report content available.</p>
+	{{end}}
+</div>
+{{end}}

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>{{block "title" .}}SQ Migration{{end}}</title>
+	<link rel="icon" href="/static/favicon.ico">
+	<link rel="stylesheet" href="/static/app.css">
+	<script src="/static/htmx.min.js"></script>
+	<script src="/static/htmx-ws.js"></script>
+</head>
+<body>
+	<header id="header" class="header">
+		<div id="header-inner" class="header-inner">
+			<div id="header-left" class="header-left">
+				<span id="header-title" class="header-title">SonarQube Migration Tool</span>
+				<nav id="header-nav" class="header-nav">
+					<a id="nav-wizard" href="/" {{if eq .ActiveNav "wizard"}}class="active"{{end}}>Wizard</a>
+					<a id="nav-history" href="/history" {{if eq .ActiveNav "history"}}class="active"{{end}}>History</a>
+				</nav>
+			</div>
+			<div id="header-right" class="header-right">
+				<span class="header-label">Connection Status</span>
+				<span id="connection-dot" class="connection-dot"></span>
+				<span class="header-label">Theme Toggle</span>
+				<button id="theme-toggle" class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">
+					<span id="theme-icon"></span>
+				</button>
+			</div>
+		</div>
+	</header>
+
+	<main id="main-content" class="container">
+		{{block "content" .}}{{end}}
+	</main>
+
+	<script>
+	(function() {
+		var THEME_ATTR = 'data-theme';
+		var html = document.documentElement;
+		var icon = document.getElementById('theme-icon');
+		var stored = localStorage.getItem('theme') || 'dark';
+		html.setAttribute(THEME_ATTR, stored);
+		updateIcon();
+
+		function updateIcon() {
+			icon.textContent = html.getAttribute(THEME_ATTR) === 'dark' ? '\u2600\uFE0F' : '\u263E';
+		}
+
+		globalThis.toggleTheme = function() {
+			var next = html.getAttribute(THEME_ATTR) === 'dark' ? 'light' : 'dark';
+			html.setAttribute(THEME_ATTR, next);
+			localStorage.setItem('theme', next);
+			updateIcon();
+		};
+	})();
+	</script>
+</body>
+</html>

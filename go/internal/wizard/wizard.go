@@ -97,6 +97,13 @@ func runPhaseLoop(ctx context.Context, p Prompter, state *WizardState, exportDir
 
 		if err := runPhaseHandler(ctx, p, state, exportDir, currentPhase); err != nil {
 			state.Save(exportDir)
+			restartPhase, ok := offerPhaseRestart(p, currentPhase)
+			if ok {
+				resetPhaseState(state, restartPhase)
+				state.Phase = restartPhase
+				currentPhase = restartPhase
+				continue
+			}
 			return fmt.Errorf("phase %s: %w", PhaseDisplayName(currentPhase), err)
 		}
 
@@ -133,4 +140,25 @@ func runPhaseHandler(ctx context.Context, p Prompter, state *WizardState, export
 	default:
 		return fmt.Errorf("unknown phase: %s", phase)
 	}
+}
+
+// offerPhaseRestart asks the user if they want to restart from a previous phase.
+// Returns the selected phase and true, or zero-value and false if declined.
+func offerPhaseRestart(p Prompter, failedPhase WizardPhase) (WizardPhase, bool) {
+	restart, err := p.Confirm("Restart from a previous phase?", true)
+	if err != nil || !restart {
+		return "", false
+	}
+
+	options := phasesUpTo(failedPhase)
+	if len(options) == 0 {
+		return "", false
+	}
+
+	idx, err := p.PromptChoice("Which phase?", options)
+	if err != nil {
+		return "", false
+	}
+
+	return phaseByIndex(idx), true
 }

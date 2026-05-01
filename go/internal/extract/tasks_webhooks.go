@@ -31,7 +31,7 @@ func webhookDeliveries(taskName, depTask string) func(ctx context.Context, e *Ex
 				webhookKey := extractField(item, "key")
 				items, err := e.Raw.GetPaginated(ctx, PaginatedOpts{
 					Path: "api/webhooks/deliveries", ResultKey: "deliveries", MaxPageSize: 500, PageLimit: 10,
-					Params: url.Values{"webhooks": {webhookKey}},
+					Params: url.Values{"webhook": {webhookKey}},
 				})
 				if err != nil {
 					return err

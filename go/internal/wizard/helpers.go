@@ -68,6 +68,26 @@ func nextPhase(current WizardPhase) WizardPhase {
 	return PhaseComplete
 }
 
+// phasesUpTo returns phase display names from Extract up to (inclusive) the given phase.
+func phasesUpTo(phase WizardPhase) []string {
+	var names []string
+	for _, p := range phaseSequence {
+		names = append(names, PhaseDisplayName(p))
+		if p == phase {
+			break
+		}
+	}
+	return names
+}
+
+// phaseByIndex returns the phase at the given 0-based index in phaseSequence.
+func phaseByIndex(idx int) WizardPhase {
+	if idx >= 0 && idx < len(phaseSequence) {
+		return phaseSequence[idx]
+	}
+	return PhaseExtract
+}
+
 // generateRunID creates a date-based run ID like "04-20-2026-01".
 func generateRunID(directory string) string {
 	today := time.Now().UTC().Format("01-02-2006")

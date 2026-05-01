@@ -1,0 +1,77 @@
+{{define "title"}}History - SQ Migration{{end}}
+
+{{define "content"}}
+<div id="history-page" class="history-page">
+	<div id="history-runs-card" class="card">
+		<div id="history-header" class="flex justify-between items-center mb-2">
+			<h2>Run History</h2>
+			<div id="report-buttons" class="flex gap-1">
+				{{$activeReport := ""}}
+				{{if .Data}}{{$activeReport = .Data.ActiveReport}}{{end}}
+				<a href="{{if eq $activeReport "migration"}}/history{{else}}/history?report=migration{{end}}"
+				   id="btn-migration-report" class="btn-secondary{{if eq $activeReport "migration"}} active{{end}}">Migration Report</a>
+				<a href="{{if eq $activeReport "maturity"}}/history{{else}}/history?report=maturity{{end}}"
+				   id="btn-maturity-report" class="btn-secondary{{if eq $activeReport "maturity"}} active{{end}}">Maturity Report</a>
+			</div>
+		</div>
+
+		{{if .Data}}
+		{{if .Data.Runs}}
+		<table id="runs-table" class="runs-table">
+			<thead>
+				<tr>
+					<th>Run ID</th>
+					<th>Source URL</th>
+					<th>Analysis</th>
+					<th>Report</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				{{range .Data.Runs}}
+				<tr>
+					<td style="font-family:'SF Mono','Consolas',monospace;font-size:0.85rem">{{.RunID}}</td>
+					<td>{{if .SourceURL}}{{.SourceURL}}{{else}}&mdash;{{end}}</td>
+					<td>
+						{{if .HasAnalysis}}
+						<span class="badge badge-success">Available</span>
+						{{else}}
+						<span class="badge badge-muted">None</span>
+						{{end}}
+					</td>
+					<td>
+						{{if .HasReport}}
+						<span class="badge badge-success">Available</span>
+						{{else}}
+						<span class="badge badge-muted">None</span>
+						{{end}}
+					</td>
+					<td><a href="/history/{{.RunID}}" style="color:var(--color-primary);text-decoration:none;font-size:0.85rem;font-weight:500">View</a></td>
+				</tr>
+				{{end}}
+			</tbody>
+		</table>
+		{{else}}
+		<p class="text-muted">No migration runs found.</p>
+		{{end}}
+
+		{{if .Data.ReportHTML}}
+		<div id="report-viewer-card" class="card mt-2">
+			<h3 id="report-title">{{if eq $activeReport "migration"}}Migration{{else}}Maturity{{end}} Report</h3>
+			<div id="report-content" class="report-content">
+				{{safeHTML .Data.ReportHTML}}
+			</div>
+		</div>
+		{{end}}
+		{{end}}
+	</div>
+</div>
+
+<style>
+.btn-secondary.active {
+	background: var(--color-primary);
+	color: white;
+	border-color: var(--color-primary);
+}
+</style>
+{{end}}

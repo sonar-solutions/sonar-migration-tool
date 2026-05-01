@@ -3,7 +3,6 @@ package gui
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -17,19 +16,19 @@ type Server struct {
 	addr      string
 	exportDir string
 	hub       *Hub
-	frontend  fs.FS
+	tmpl      *Templates
 	listener  net.Listener
 	ready     chan struct{} // closed once the listener is bound
 }
 
-// NewServer creates a Server that serves the given frontend filesystem
-// and routes API/WebSocket requests.
-func NewServer(addr, exportDir string, hub *Hub, frontend fs.FS) *Server {
+// NewServer creates a Server that serves Go templates and routes
+// API/WebSocket requests.
+func NewServer(addr, exportDir string, hub *Hub, tmpl *Templates) *Server {
 	return &Server{
 		addr:      addr,
 		exportDir: exportDir,
 		hub:       hub,
-		frontend:  frontend,
+		tmpl:      tmpl,
 		ready:     make(chan struct{}),
 	}
 }
@@ -60,15 +59,21 @@ func (s *Server) Start(ctx context.Context) error {
 	// WebSocket.
 	mux.HandleFunc("GET /ws", s.hub.ServeWS)
 
-	// REST API.
+	// JSON API (kept for potential HTMX partial fetches).
 	mux.HandleFunc("GET /api/runs", RunsListHandler(s.exportDir))
 	mux.HandleFunc("GET /api/runs/{runId}", RunDetailHandler(s.exportDir))
 	mux.HandleFunc("GET /api/runs/{runId}/analysis", RunAnalysisHandler(s.exportDir))
 	mux.HandleFunc("GET /api/reports/{type}", GenerateReportHandler(s.exportDir))
 	mux.HandleFunc("GET /api/state", WizardStateHandler(s.exportDir))
+	mux.HandleFunc("GET /api/report/pdf", ReportPDFHandler(s.exportDir))
 
-	// SPA static files — fallback to index.html for client-side routing.
-	mux.Handle("/", spaHandler(s.frontend))
+	// Static files (CSS, JS).
+	mux.Handle("GET /static/", StaticHandler())
+
+	// Template-rendered pages.
+	mux.HandleFunc("GET /history/{runId}", RunDetailPageHandler(s.tmpl, s.exportDir))
+	mux.HandleFunc("GET /history", HistoryPageHandler(s.tmpl, s.exportDir))
+	mux.HandleFunc("GET /", WizardPageHandler(s.tmpl))
 
 	srv := &http.Server{Handler: mux}
 
@@ -87,28 +92,4 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("gui: serve: %w", err)
 	}
 	return nil
-}
-
-// spaHandler serves static files, falling back to index.html for unknown paths.
-func spaHandler(frontend fs.FS) http.Handler {
-	fileServer := http.FileServer(http.FS(frontend))
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Try serving the exact file.
-		path := r.URL.Path
-		if path == "/" {
-			path = "index.html"
-		} else if len(path) > 0 && path[0] == '/' {
-			path = path[1:]
-		}
-
-		if _, err := fs.Stat(frontend, path); err == nil {
-			fileServer.ServeHTTP(w, r)
-			return
-		}
-
-		// Fallback to index.html for SPA client-side routing.
-		r.URL.Path = "/"
-		fileServer.ServeHTTP(w, r)
-	})
 }

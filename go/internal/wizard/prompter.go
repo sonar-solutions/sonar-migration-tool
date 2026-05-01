@@ -1,5 +1,10 @@
 package wizard
 
+import "errors"
+
+// ErrBack is returned by prompt methods when the user clicks the Back button.
+var ErrBack = errors.New("back")
+
 // KV is an ordered key-value pair for display (Go maps are unordered).
 type KV struct {
 	Key   string
@@ -25,6 +30,12 @@ type Prompter interface {
 	// ConfirmReview displays key-value details and asks the user to accept.
 	// Returns true if the user confirms, false to re-enter.
 	ConfirmReview(title string, details []KV) (bool, error)
+
+	// PromptChoice presents a list of options and returns the 0-based index.
+	PromptChoice(message string, options []string) (int, error)
+
+	// SetBackEnabled controls whether the next prompt shows a Back button.
+	SetBackEnabled(enabled bool)
 
 	// Display methods (output only, no return).
 	DisplayWelcome()

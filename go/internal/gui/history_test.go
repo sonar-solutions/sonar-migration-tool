@@ -206,6 +206,136 @@ func TestGenerateReportHandlerInvalidType(t *testing.T) {
 	}
 }
 
+func TestReportPDFHandler(t *testing.T) {
+	dir := t.TempDir()
+	pdfContent := []byte("%PDF-1.4 fake content")
+	os.WriteFile(filepath.Join(dir, "migration_summary.pdf"), pdfContent, 0o644)
+
+	handler := ReportPDFHandler(dir)
+	req := httptest.NewRequest("GET", "/api/report/pdf", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/pdf" {
+		t.Errorf("content-type: got %q, want application/pdf", ct)
+	}
+}
+
+func TestReportPDFHandlerNotFound(t *testing.T) {
+	dir := t.TempDir()
+
+	handler := ReportPDFHandler(dir)
+	req := httptest.NewRequest("GET", "/api/report/pdf", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestRunAnalysisHandlerInvalidID(t *testing.T) {
+	dir := t.TempDir()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/runs/{runId}/analysis", RunAnalysisHandler(dir))
+
+	req := httptest.NewRequest("GET", "/api/runs/bad-id/analysis", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func requireOK(t *testing.T, code int) {
+	t.Helper()
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+}
+
+func TestRunAnalysisHandlerValidRun(t *testing.T) {
+	dir := setupTestExportDir(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/runs/{runId}/analysis", RunAnalysisHandler(dir))
+
+	req := httptest.NewRequest("GET", "/api/runs/04-20-2026-01/analysis", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	requireOK(t, w.Code)
+}
+
+func TestGenerateReportHandlerMigration(t *testing.T) {
+	dir := t.TempDir()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/reports/{type}", GenerateReportHandler(dir))
+
+	req := httptest.NewRequest("GET", "/api/reports/migration", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	requireOK(t, w.Code)
+	ct := w.Header().Get("Content-Type")
+	if ct != "text/markdown; charset=utf-8" {
+		t.Errorf("content-type: got %q", ct)
+	}
+}
+
+func TestGenerateReportHandlerMaturity(t *testing.T) {
+	dir := t.TempDir()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/reports/{type}", GenerateReportHandler(dir))
+
+	req := httptest.NewRequest("GET", "/api/reports/maturity", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	requireOK(t, w.Code)
+}
+
+func TestWizardStateHandlerError(t *testing.T) {
+	dir := t.TempDir()
+	// Make the state file a directory to trigger a Load error.
+	os.Mkdir(filepath.Join(dir, ".wizard_state.json"), 0o755)
+
+	handler := WizardStateHandler(dir)
+	req := httptest.NewRequest("GET", "/api/state", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", w.Code)
+	}
+}
+
+func TestLoadRunMetadataInvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	runID := "04-20-2026-01"
+	runDir := filepath.Join(dir, runID)
+	os.MkdirAll(runDir, 0o755)
+	os.WriteFile(filepath.Join(runDir, extractMetaFile), []byte("{invalid}"), 0o644)
+
+	result := loadRunMetadata(dir, runID)
+	if result != nil {
+		t.Error("expected nil for invalid JSON metadata")
+	}
+}
+
+func TestLoadAnalysisNoData(t *testing.T) {
+	dir := t.TempDir()
+	result := loadAnalysis(dir, "nonexistent")
+	if result != nil {
+		t.Error("expected nil for missing analysis data")
+	}
+}
+
 func TestRunIDPatternValidation(t *testing.T) {
 	valid := []string{"04-20-2026-01", "12-31-2025-99", "01-01-2000-01"}
 	invalid := []string{"not-a-run", "04-20-2026", "2026-04-20-01", "../escape", ""}
