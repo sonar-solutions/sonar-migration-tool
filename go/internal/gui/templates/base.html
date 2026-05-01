@@ -47,7 +47,7 @@
 			icon.textContent = html.getAttribute(THEME_ATTR) === 'dark' ? '\u2600\uFE0F' : '\u263E';
 		}
 
-		window.toggleTheme = function() {
+		globalThis.toggleTheme = function() {
 			var next = html.getAttribute(THEME_ATTR) === 'dark' ? 'light' : 'dark';
 			html.setAttribute(THEME_ATTR, next);
 			localStorage.setItem('theme', next);
