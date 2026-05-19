@@ -6,6 +6,7 @@ import (
 
 	"github.com/sonar-solutions/sq-api-go/cloud"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -130,29 +131,34 @@ func runSetOrgGroupPermissions(ctx context.Context, e *Executor) error {
 		return err
 	}
 
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
 	for _, item := range items {
-		name := extractField(item.Data, "name")
-		if name == "Anyone" {
-			continue
-		}
-		perms := extractPermissions(item.Data)
-		orgKey := orgKeys[item.ServerURL]
-		if shouldSkipOrg(orgKey) {
-			continue
-		}
-		for _, perm := range perms {
-			if !validPermissions[perm] {
-				continue
+		g.Go(func() error {
+			name := extractField(item.Data, "name")
+			if name == "Anyone" {
+				return nil
 			}
-			err := e.Cloud.Permissions.AddGroup(ctx, name, perm, orgKey, "")
-			if err != nil {
-				e.Logger.Warn("setOrgGroupPermissions failed",
-					"group", name, "perm", perm, "err", err)
+			perms := extractPermissions(item.Data)
+			orgKey := orgKeys[item.ServerURL]
+			if shouldSkipOrg(orgKey) {
+				return nil
 			}
-		}
-		_ = w.WriteOne(item.Data)
+			for _, perm := range perms {
+				if !validPermissions[perm] {
+					continue
+				}
+				err := e.Cloud.Permissions.AddGroup(ctx, name, perm, orgKey, "")
+				if err != nil {
+					e.Logger.Warn("setOrgGroupPermissions failed",
+						"group", name, "perm", perm, "err", err)
+				}
+			}
+			_ = w.WriteOne(item.Data)
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 func runSetProfileGroupPermissions(ctx context.Context, e *Executor) error {
@@ -176,20 +182,25 @@ func runSetProfileGroupPermissions(ctx context.Context, e *Executor) error {
 		return err
 	}
 
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
 	for _, item := range items {
-		profileKey := extractField(item.Data, "profileKey")
-		groupName := extractField(item.Data, "name")
-		refs := profileInfo[profileKey]
-		for _, ref := range refs {
-			err := e.Cloud.QualityProfiles.AddGroup(ctx, ref.Language, ref.Name, groupName, ref.OrgKey)
-			if err != nil {
-				e.Logger.Warn("setProfileGroupPermissions failed",
-					"profile", ref.Name, "group", groupName, "err", err)
+		g.Go(func() error {
+			profileKey := extractField(item.Data, "profileKey")
+			groupName := extractField(item.Data, "name")
+			refs := profileInfo[profileKey]
+			for _, ref := range refs {
+				err := e.Cloud.QualityProfiles.AddGroup(ctx, ref.Language, ref.Name, groupName, ref.OrgKey)
+				if err != nil {
+					e.Logger.Warn("setProfileGroupPermissions failed",
+						"profile", ref.Name, "group", groupName, "err", err)
+				}
 			}
-		}
-		_ = w.WriteOne(item.Data)
+			_ = w.WriteOne(item.Data)
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 type profileRef struct {

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/sonar-solutions/sq-api-go/cloud"
+	"golang.org/x/sync/errgroup"
 )
 
 // ruleTasks returns tasks for updating rules in Cloud.
@@ -32,24 +33,29 @@ func runUpdateRuleTags(ctx context.Context, e *Executor) error {
 		return err
 	}
 
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
 	for _, item := range items {
-		ruleKey := extractField(item.Data, "key")
-		tags := extractStringArray(item.Data, "tags")
-		if ruleKey == "" || len(tags) == 0 {
-			continue
-		}
+		g.Go(func() error {
+			ruleKey := extractField(item.Data, "key")
+			tags := extractStringArray(item.Data, "tags")
+			if ruleKey == "" || len(tags) == 0 {
+				return nil
+			}
 
-		_, err := e.Cloud.Rules.Update(ctx, cloud.UpdateRuleParams{
-			Key:  ruleKey,
-			Tags: strings.Join(tags, ","),
+			_, err := e.Cloud.Rules.Update(ctx, cloud.UpdateRuleParams{
+				Key:  ruleKey,
+				Tags: strings.Join(tags, ","),
+			})
+			if err != nil {
+				e.Logger.Warn("updateRuleTags failed", "rule", ruleKey, "err", err)
+				return nil
+			}
+			_ = w.WriteOne(item.Data)
+			return nil
 		})
-		if err != nil {
-			e.Logger.Warn("updateRuleTags failed", "rule", ruleKey, "err", err)
-			continue
-		}
-		_ = w.WriteOne(item.Data)
 	}
-	return nil
+	return g.Wait()
 }
 
 func runUpdateRuleDescriptions(ctx context.Context, e *Executor) error {
@@ -61,22 +67,27 @@ func runUpdateRuleDescriptions(ctx context.Context, e *Executor) error {
 		return err
 	}
 
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
 	for _, item := range items {
-		ruleKey := extractField(item.Data, "key")
-		note := extractField(item.Data, "mdNote")
-		if ruleKey == "" || note == "" {
-			continue
-		}
+		g.Go(func() error {
+			ruleKey := extractField(item.Data, "key")
+			note := extractField(item.Data, "mdNote")
+			if ruleKey == "" || note == "" {
+				return nil
+			}
 
-		_, err := e.Cloud.Rules.Update(ctx, cloud.UpdateRuleParams{
-			Key:          ruleKey,
-			MarkdownNote: note,
+			_, err := e.Cloud.Rules.Update(ctx, cloud.UpdateRuleParams{
+				Key:          ruleKey,
+				MarkdownNote: note,
+			})
+			if err != nil {
+				e.Logger.Warn("updateRuleDescriptions failed", "rule", ruleKey, "err", err)
+				return nil
+			}
+			_ = w.WriteOne(item.Data)
+			return nil
 		})
-		if err != nil {
-			e.Logger.Warn("updateRuleDescriptions failed", "rule", ruleKey, "err", err)
-			continue
-		}
-		_ = w.WriteOne(item.Data)
 	}
-	return nil
+	return g.Wait()
 }

@@ -39,15 +39,12 @@ func forEachMigrateItemFiltered(ctx context.Context, e *Executor, taskName, depT
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
 	for _, item := range items {
 		if filterFn != nil && !filterFn(item) {
 			continue
 		}
 		g.Go(func() error {
-			if err := common.AcquireSem(ctx, e.Sem); err != nil {
-				return err
-			}
-			defer func() { <-e.Sem }()
 			return fn(ctx, item, w)
 		})
 	}

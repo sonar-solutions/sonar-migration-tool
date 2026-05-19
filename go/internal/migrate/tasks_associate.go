@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
+	"golang.org/x/sync/errgroup"
 )
 
 // associateTasks returns tasks that associate projects with profiles, gates, etc.
@@ -127,30 +128,35 @@ func runSetProjectGroupPermissions(ctx context.Context, e *Executor) error {
 		return err
 	}
 
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
 	for _, item := range items {
-		project := extractField(item.Data, "project")
-		pm, ok := projectKeyMap[item.ServerURL+project]
-		if !ok {
-			continue
-		}
+		g.Go(func() error {
+			project := extractField(item.Data, "project")
+			pm, ok := projectKeyMap[item.ServerURL+project]
+			if !ok {
+				return nil
+			}
 
-		name := extractField(item.Data, "name")
-		permsRaw := extractPermissions(item.Data)
-		for _, perm := range permsRaw {
-			if !validPermissions[perm] {
-				continue
+			name := extractField(item.Data, "name")
+			permsRaw := extractPermissions(item.Data)
+			for _, perm := range permsRaw {
+				if !validPermissions[perm] {
+					continue
+				}
+				err := e.Cloud.Permissions.AddGroup(ctx, name, perm, pm.OrgKey, pm.CloudKey)
+				if err != nil {
+					e.Logger.Warn("setProjectGroupPermissions failed",
+						"project", pm.CloudKey, "group", name, "perm", perm, "err", err)
+				}
 			}
-			err := e.Cloud.Permissions.AddGroup(ctx, name, perm, pm.OrgKey, pm.CloudKey)
-			if err != nil {
-				e.Logger.Warn("setProjectGroupPermissions failed",
-					"project", pm.CloudKey, "group", name, "perm", perm, "err", err)
-			}
-		}
-		_ = w.WriteOne(common.EnrichRaw(item.Data, map[string]any{
-			"cloud_project_key": pm.CloudKey,
-		}))
+			_ = w.WriteOne(common.EnrichRaw(item.Data, map[string]any{
+				"cloud_project_key": pm.CloudKey,
+			}))
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 func runSetProjectSettings(ctx context.Context, e *Executor) error {
@@ -174,25 +180,30 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 		return err
 	}
 
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
 	for _, item := range items {
-		projectKey := extractField(item.Data, "projectKey")
-		pm, ok := projectKeyMap[item.ServerURL+projectKey]
-		if !ok {
-			continue
-		}
-		settingKey := extractField(item.Data, "key")
-		value := extractField(item.Data, "value")
-		if settingKey == "" || value == "" {
-			continue
-		}
-		err := e.Cloud.Settings.Set(ctx, pm.CloudKey, settingKey, value)
-		if err != nil {
-			e.Logger.Warn("setProjectSettings failed",
-				"project", pm.CloudKey, "setting", settingKey, "err", err)
-		}
-		_ = w.WriteOne(item.Data)
+		g.Go(func() error {
+			projectKey := extractField(item.Data, "projectKey")
+			pm, ok := projectKeyMap[item.ServerURL+projectKey]
+			if !ok {
+				return nil
+			}
+			settingKey := extractField(item.Data, "key")
+			value := extractField(item.Data, "value")
+			if settingKey == "" || value == "" {
+				return nil
+			}
+			err := e.Cloud.Settings.Set(ctx, pm.CloudKey, settingKey, value)
+			if err != nil {
+				e.Logger.Warn("setProjectSettings failed",
+					"project", pm.CloudKey, "setting", settingKey, "err", err)
+			}
+			_ = w.WriteOne(item.Data)
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 func runSetProjectTags(ctx context.Context, e *Executor) error {
@@ -214,24 +225,29 @@ func runSetProjectTags(ctx context.Context, e *Executor) error {
 		return err
 	}
 
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
 	for _, item := range items {
-		projectKey := extractField(item.Data, "projectKey")
-		pm, ok := projectKeyMap[item.ServerURL+projectKey]
-		if !ok || pm.CloudKey == "" {
-			continue
-		}
-		tags := extractStringArray(item.Data, "tags")
-		if len(tags) == 0 {
-			continue
-		}
-		tagStr := strings.Join(tags, ",")
-		err := e.Cloud.Projects.SetTags(ctx, pm.CloudKey, tagStr)
-		if err != nil {
-			e.Logger.Warn("setProjectTags failed", "project", pm.CloudKey, "err", err)
-		}
-		_ = w.WriteOne(item.Data)
+		g.Go(func() error {
+			projectKey := extractField(item.Data, "projectKey")
+			pm, ok := projectKeyMap[item.ServerURL+projectKey]
+			if !ok || pm.CloudKey == "" {
+				return nil
+			}
+			tags := extractStringArray(item.Data, "tags")
+			if len(tags) == 0 {
+				return nil
+			}
+			tagStr := strings.Join(tags, ",")
+			err := e.Cloud.Projects.SetTags(ctx, pm.CloudKey, tagStr)
+			if err != nil {
+				e.Logger.Warn("setProjectTags failed", "project", pm.CloudKey, "err", err)
+			}
+			_ = w.WriteOne(item.Data)
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 type projectMapping struct {

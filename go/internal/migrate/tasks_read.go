@@ -58,9 +58,6 @@ func runGetProjectIds(ctx context.Context, e *Executor) error {
 			if shouldSkipOrg(orgKey) || projectKey == "" {
 				return nil
 			}
-			if err := common.AcquireSem(ctx, e.Sem); err != nil {
-				return err
-			}
 			raw, err := e.Raw.GetPaginated(ctx, common.PaginatedOpts{
 				Path: "api/projects/search", ResultKey: "components",
 				Params: url.Values{
@@ -68,7 +65,6 @@ func runGetProjectIds(ctx context.Context, e *Executor) error {
 					"projects":     {projectKey},
 				},
 			})
-			<-e.Sem
 			if err != nil {
 				return err
 			}
@@ -86,13 +82,9 @@ func runGetOrgRepos(ctx context.Context, e *Executor) error {
 			if shouldSkipOrg(orgKey) {
 				return nil
 			}
-			if err := common.AcquireSem(ctx, e.Sem); err != nil {
-				return err
-			}
 			raw, err := e.Raw.GetArray(ctx,
 				"api/alm_integration/list_repositories", "repositories",
 				url.Values{"organization": {orgKey}})
-			<-e.Sem
 			if err != nil {
 				e.Logger.Warn("getOrgRepos skipped", "org", orgKey, "err", err)
 				return nil
@@ -155,11 +147,7 @@ func runGetMigrationUser(ctx context.Context, e *Executor) error {
 	if err != nil {
 		return err
 	}
-	if err := common.AcquireSem(ctx, e.Sem); err != nil {
-		return err
-	}
 	raw, err := e.Raw.Get(ctx, "api/users/current", nil)
-	<-e.Sem
 	if err != nil {
 		return err
 	}
@@ -173,14 +161,10 @@ func runGetCreatedProjects(ctx context.Context, e *Executor) error {
 			if shouldSkipOrg(orgKey) {
 				return nil
 			}
-			if err := common.AcquireSem(ctx, e.Sem); err != nil {
-				return err
-			}
 			raw, err := e.Raw.GetPaginated(ctx, common.PaginatedOpts{
 				Path: "api/projects/search", ResultKey: "components",
 				Params: url.Values{"organization": {orgKey}},
 			})
-			<-e.Sem
 			if err != nil {
 				return err
 			}
@@ -196,11 +180,7 @@ func runGetEnterprises(ctx context.Context, e *Executor) error {
 	if err != nil {
 		return err
 	}
-	if err := common.AcquireSem(ctx, e.Sem); err != nil {
-		return err
-	}
 	raw, err := e.RawAPI.Get(ctx, "enterprises/enterprises", nil)
-	<-e.Sem
 	if err != nil {
 		return err
 	}
