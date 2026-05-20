@@ -15,6 +15,7 @@ type clientConfig struct {
 	certErr     error // deferred cert loading error, reported on first request
 	maxConns    int
 	timeoutSecs int
+	retryLogFn  RetryLogFunc
 }
 
 func defaultClientConfig() *clientConfig {
@@ -69,5 +70,13 @@ func WithMaxConnections(n int) Option {
 func WithTimeout(seconds int) Option {
 	return func(cfg *clientConfig) {
 		cfg.timeoutSecs = seconds
+	}
+}
+
+// WithRetryLogger sets a callback that is invoked when a request is retried
+// due to a retryable status code (429, 5xx) or network error.
+func WithRetryLogger(fn RetryLogFunc) Option {
+	return func(cfg *clientConfig) {
+		cfg.retryLogFn = fn
 	}
 }

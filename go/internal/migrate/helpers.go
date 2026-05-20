@@ -3,8 +3,12 @@ package migrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
+	"sync/atomic"
 
+	sqapi "github.com/sonar-solutions/sq-api-go"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 	"golang.org/x/sync/errgroup"
@@ -33,6 +37,51 @@ func forEachMigrateItemFiltered(ctx context.Context, e *Executor, taskName, depT
 		return fmt.Errorf("%s: reading %s: %w", taskName, depTask, err)
 	}
 
+	// Pre-filter to get accurate count for progress logging.
+	var filtered []json.RawMessage
+	for _, item := range items {
+		if filterFn == nil || filterFn(item) {
+			filtered = append(filtered, item)
+		}
+	}
+
+	e.Logger.Info("starting task", "task", taskName, "items", len(filtered))
+	prog := newProgressLogger(e.Logger, taskName, len(filtered))
+
+	w, err := e.Store.Writer(taskName)
+	if err != nil {
+		return err
+	}
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
+	for _, item := range filtered {
+		g.Go(func() error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			err := fn(ctx, item, w)
+			prog.Increment()
+			return err
+		})
+	}
+	return g.Wait()
+}
+
+// forEachExtractItem reads items from an extract task and calls fn for each,
+// concurrently bounded by semaphore. Unlike forEachMigrateItem which reads from
+// the migrate store, this reads from extract data across all extract runs.
+func forEachExtractItem(ctx context.Context, e *Executor, taskName, extractKey string,
+	fn func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error) error {
+
+	items, err := readExtractItems(e, extractKey)
+	if err != nil {
+		return fmt.Errorf("%s: reading %s: %w", taskName, extractKey, err)
+	}
+
+	e.Logger.Info("starting task", "task", taskName, "items", len(items))
+	prog := newProgressLogger(e.Logger, taskName, len(items))
+
 	w, err := e.Store.Writer(taskName)
 	if err != nil {
 		return err
@@ -41,11 +90,13 @@ func forEachMigrateItemFiltered(ctx context.Context, e *Executor, taskName, depT
 	g, ctx := errgroup.WithContext(ctx)
 	g.SetLimit(cap(e.Sem))
 	for _, item := range items {
-		if filterFn != nil && !filterFn(item) {
-			continue
-		}
 		g.Go(func() error {
-			return fn(ctx, item, w)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			err := fn(ctx, item, w)
+			prog.Increment()
+			return err
 		})
 	}
 	return g.Wait()
@@ -106,6 +157,19 @@ func loadCSVToJSONL(e *Executor, taskName, csvFilename string) error {
 	return w.WriteChunk(items)
 }
 
+// buildServerOrgLookup returns a map from server URL to SonarCloud org key
+// using the generateOrganizationMappings migrate output.
+func buildServerOrgLookup(e *Executor) map[string]string {
+	orgItems, _ := e.Store.ReadAll("generateOrganizationMappings")
+	orgKeys := make(map[string]string, len(orgItems))
+	for _, o := range orgItems {
+		serverURL := extractField(o, "server_url")
+		cloudKey := extractField(o, "sonarcloud_org_key")
+		orgKeys[serverURL] = cloudKey
+	}
+	return orgKeys
+}
+
 // Unsupported languages that are filtered during migration.
 var unsupportedLanguages = map[string]bool{
 	"c++": true, "grvy": true, "ps": true,
@@ -124,6 +188,85 @@ const skippedOrgSentinel = "SKIPPED"
 // shouldSkipOrg returns true if the org key is empty or marked SKIPPED.
 func shouldSkipOrg(orgKey string) bool {
 	return orgKey == "" || orgKey == skippedOrgSentinel
+}
+
+// logAPIWarn logs an API error with structured fields. If the error is an
+// APIError, it extracts the human-readable message, status code, and endpoint.
+func logAPIWarn(logger *slog.Logger, msg string, err error, attrs ...any) {
+	var apiErr *sqapi.APIError
+	if errors.As(err, &apiErr) {
+		attrs = append(attrs,
+			"err", apiErr.Message(),
+			"status", apiErr.StatusCode,
+			"endpoint", apiErr.Endpoint(),
+		)
+	} else {
+		attrs = append(attrs, "err", err)
+	}
+	logger.Warn(msg, attrs...)
+}
+
+// TaskCounter tracks success/failure counts for a task. Safe for concurrent use.
+type TaskCounter struct {
+	succeeded atomic.Int64
+	failed    atomic.Int64
+	task      string
+}
+
+// NewTaskCounter creates a counter for tracking task operation results.
+func NewTaskCounter(task string) *TaskCounter {
+	return &TaskCounter{task: task}
+}
+
+// Success increments the success count.
+func (c *TaskCounter) Success() { c.succeeded.Add(1) }
+
+// Fail increments the failure count.
+func (c *TaskCounter) Fail() { c.failed.Add(1) }
+
+// LogSummary logs the final counts. Only logs if there were any operations.
+func (c *TaskCounter) LogSummary(logger *slog.Logger) {
+	s, f := c.succeeded.Load(), c.failed.Load()
+	total := s + f
+	if total == 0 {
+		return
+	}
+	logger.Info("task summary",
+		"task", c.task,
+		"succeeded", s,
+		"failed", f,
+		"total", total,
+	)
+}
+
+// progressLogger logs progress at regular intervals. Safe for concurrent use.
+type progressLogger struct {
+	task     string
+	total    int
+	done     atomic.Int64
+	logger   *slog.Logger
+	interval int64
+}
+
+func newProgressLogger(logger *slog.Logger, task string, total int) *progressLogger {
+	interval := int64(1000)
+	if total < 1000 {
+		interval = 100
+	}
+	if total < 100 {
+		interval = int64(total)
+	}
+	return &progressLogger{task: task, total: total, logger: logger, interval: interval}
+}
+
+func (p *progressLogger) Increment() {
+	if p.interval <= 0 {
+		return
+	}
+	n := p.done.Add(1)
+	if n%p.interval == 0 {
+		p.logger.Info("progress", "task", p.task, "completed", n, "total", p.total)
+	}
 }
 
 // extractField is a convenience alias.

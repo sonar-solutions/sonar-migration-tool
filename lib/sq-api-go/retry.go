@@ -26,6 +26,11 @@ var retryableStatusCodes = map[int]bool{
 	http.StatusGatewayTimeout:      true,
 }
 
+// RetryLogFunc is called when a request is about to be retried.
+// It receives the HTTP method, URL path, status code (0 if network error),
+// current attempt number (1-based), and total attempts.
+type RetryLogFunc func(method, url string, status, attempt, total int)
+
 // retryTransport is an http.RoundTripper that retries failed requests with
 // exponential backoff plus up to 50% random jitter.
 //
@@ -33,6 +38,7 @@ var retryableStatusCodes = map[int]bool{
 type retryTransport struct {
 	inner   http.RoundTripper
 	backoff []time.Duration
+	logFn   RetryLogFunc // nil = no logging (backward compatible)
 }
 
 func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -57,6 +63,13 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 
 		if attempt < len(t.backoff) {
+			status := 0
+			if resp != nil {
+				status = resp.StatusCode
+			}
+			if t.logFn != nil {
+				t.logFn(req.Method, req.URL.Path, status, attempt+1, totalAttempts)
+			}
 			time.Sleep(jitter(t.backoff[attempt]))
 		}
 	}

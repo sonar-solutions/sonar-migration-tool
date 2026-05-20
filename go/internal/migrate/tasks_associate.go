@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
-	"golang.org/x/sync/errgroup"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 )
 
 // associateTasks returns tasks that associate projects with profiles, gates, etc.
@@ -52,7 +52,8 @@ func runSetProjectProfiles(ctx context.Context, e *Executor) error {
 		profileLookup[orgKey+lang+name] = true
 	}
 
-	return forEachMigrateItem(ctx, e, "setProjectProfiles", "createProjects",
+	counter := NewTaskCounter("setProjectProfiles")
+	err := forEachMigrateItem(ctx, e, "setProjectProfiles", "createProjects",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			projectKey := extractField(item, "cloud_project_key")
@@ -67,13 +68,17 @@ func runSetProjectProfiles(ctx context.Context, e *Executor) error {
 				if !profileLookup[orgKey+lang+name] {
 					continue
 				}
-				err := e.Cloud.QualityProfiles.AddProject(ctx, lang, name, projectKey, orgKey)
-				if err != nil {
-					e.Logger.Warn("setProjectProfiles failed", "project", projectKey, "err", err)
+				if err := e.Cloud.QualityProfiles.AddProject(ctx, lang, name, projectKey, orgKey); err != nil {
+					counter.Fail()
+					logAPIWarn(e.Logger, "setProjectProfiles failed", err, "project", projectKey)
+				} else {
+					counter.Success()
 				}
 			}
 			return nil
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runSetProjectGates(ctx context.Context, e *Executor) error {
@@ -87,7 +92,8 @@ func runSetProjectGates(ctx context.Context, e *Executor) error {
 		gateLookup[orgKey+name] = id
 	}
 
-	return forEachMigrateItem(ctx, e, "setProjectGates", "createProjects",
+	counter := NewTaskCounter("setProjectGates")
+	err := forEachMigrateItem(ctx, e, "setProjectGates", "createProjects",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			projectKey := extractField(item, "cloud_project_key")
@@ -99,18 +105,19 @@ func runSetProjectGates(ctx context.Context, e *Executor) error {
 			if !ok {
 				return nil
 			}
-			err := e.Cloud.QualityGates.Select(ctx, gateID, projectKey, orgKey)
-			if err != nil {
-				e.Logger.Warn("setProjectGates failed", "project", projectKey, "err", err)
+			if err := e.Cloud.QualityGates.Select(ctx, gateID, projectKey, orgKey); err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "setProjectGates failed", err, "project", projectKey)
+			} else {
+				counter.Success()
 			}
 			return nil
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runSetProjectGroupPermissions(ctx context.Context, e *Executor) error {
-	// Read project group permissions from extract data.
-	items, _ := readExtractItems(e, "getProjectGroupsPermissions")
-
 	// Build project key lookup from created projects.
 	projects, _ := e.Store.ReadAll("createProjects")
 	projectKeyMap := make(map[string]projectMapping) // serverURL+key -> mapping
@@ -123,38 +130,34 @@ func runSetProjectGroupPermissions(ctx context.Context, e *Executor) error {
 		}
 	}
 
-	w, err := e.Store.Writer("setProjectGroupPermissions")
-	if err != nil {
-		return err
-	}
-
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(cap(e.Sem))
-	for _, item := range items {
-		g.Go(func() error {
+	counter := NewTaskCounter("setProjectGroupPermissions")
+	err := forEachExtractItem(ctx, e, "setProjectGroupPermissions", "getProjectGroupsPermissions",
+		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			project := extractField(item.Data, "project")
 			pm, ok := projectKeyMap[item.ServerURL+project]
 			if !ok {
 				return nil
 			}
-			applyGroupPermissions(ctx, e, item.Data, pm, w)
+			applyGroupPermissions(ctx, e, item.Data, pm, w, counter)
 			return nil
 		})
-	}
-	return g.Wait()
+	counter.LogSummary(e.Logger)
+	return err
 }
 
-func applyGroupPermissions(ctx context.Context, e *Executor, data json.RawMessage, pm projectMapping, w *common.ChunkWriter) {
+func applyGroupPermissions(ctx context.Context, e *Executor, data json.RawMessage, pm projectMapping, w *common.ChunkWriter, counter *TaskCounter) {
 	name := extractField(data, "name")
 	permsRaw := extractPermissions(data)
 	for _, perm := range permsRaw {
 		if !validPermissions[perm] {
 			continue
 		}
-		err := e.Cloud.Permissions.AddGroup(ctx, name, perm, pm.OrgKey, pm.CloudKey)
-		if err != nil {
-			e.Logger.Warn("setProjectGroupPermissions failed",
-				"project", pm.CloudKey, "group", name, "perm", perm, "err", err)
+		if err := e.Cloud.Permissions.AddGroup(ctx, name, perm, pm.OrgKey, pm.CloudKey); err != nil {
+			counter.Fail()
+			logAPIWarn(e.Logger, "setProjectGroupPermissions failed", err,
+				"project", pm.CloudKey, "group", name, "perm", perm)
+		} else {
+			counter.Success()
 		}
 	}
 	_ = w.WriteOne(common.EnrichRaw(data, map[string]any{
@@ -163,9 +166,6 @@ func applyGroupPermissions(ctx context.Context, e *Executor, data json.RawMessag
 }
 
 func runSetProjectSettings(ctx context.Context, e *Executor) error {
-	// Read project settings from extract data.
-	items, _ := readExtractItems(e, "getProjectSettings")
-
 	// Build project lookup.
 	projects, _ := e.Store.ReadAll("createProjects")
 	projectKeyMap := make(map[string]projectMapping)
@@ -178,15 +178,9 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 		}
 	}
 
-	w, err := e.Store.Writer("setProjectSettings")
-	if err != nil {
-		return err
-	}
-
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(cap(e.Sem))
-	for _, item := range items {
-		g.Go(func() error {
+	counter := NewTaskCounter("setProjectSettings")
+	err := forEachExtractItem(ctx, e, "setProjectSettings", "getProjectSettings",
+		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			projectKey := extractField(item.Data, "projectKey")
 			pm, ok := projectKeyMap[item.ServerURL+projectKey]
 			if !ok {
@@ -197,22 +191,21 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 			if settingKey == "" || value == "" {
 				return nil
 			}
-			err := e.Cloud.Settings.Set(ctx, pm.CloudKey, settingKey, value)
-			if err != nil {
-				e.Logger.Warn("setProjectSettings failed",
-					"project", pm.CloudKey, "setting", settingKey, "err", err)
+			if err := e.Cloud.Settings.Set(ctx, pm.CloudKey, settingKey, value, pm.OrgKey); err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "setProjectSettings failed", err,
+					"project", pm.CloudKey, "setting", settingKey)
+			} else {
+				counter.Success()
 			}
 			_ = w.WriteOne(item.Data)
 			return nil
 		})
-	}
-	return g.Wait()
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runSetProjectTags(ctx context.Context, e *Executor) error {
-	// Read project tags from extract data.
-	items, _ := readExtractItems(e, "getProjectTags")
-
 	projects, _ := e.Store.ReadAll("createProjects")
 	projectKeyMap := make(map[string]projectMapping)
 	for _, p := range projects {
@@ -223,15 +216,9 @@ func runSetProjectTags(ctx context.Context, e *Executor) error {
 		}
 	}
 
-	w, err := e.Store.Writer("setProjectTags")
-	if err != nil {
-		return err
-	}
-
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(cap(e.Sem))
-	for _, item := range items {
-		g.Go(func() error {
+	counter := NewTaskCounter("setProjectTags")
+	err := forEachExtractItem(ctx, e, "setProjectTags", "getProjectTags",
+		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			projectKey := extractField(item.Data, "projectKey")
 			pm, ok := projectKeyMap[item.ServerURL+projectKey]
 			if !ok || pm.CloudKey == "" {
@@ -242,15 +229,17 @@ func runSetProjectTags(ctx context.Context, e *Executor) error {
 				return nil
 			}
 			tagStr := strings.Join(tags, ",")
-			err := e.Cloud.Projects.SetTags(ctx, pm.CloudKey, tagStr)
-			if err != nil {
-				e.Logger.Warn("setProjectTags failed", "project", pm.CloudKey, "err", err)
+			if err := e.Cloud.Projects.SetTags(ctx, pm.CloudKey, tagStr); err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "setProjectTags failed", err, "project", pm.CloudKey)
+			} else {
+				counter.Success()
 			}
 			_ = w.WriteOne(item.Data)
 			return nil
 		})
-	}
-	return g.Wait()
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 type projectMapping struct {

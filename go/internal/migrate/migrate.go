@@ -54,12 +54,19 @@ type Executor struct {
 func RunMigrate(ctx context.Context, cfg MigrateConfig) (string, error) {
 	cfg.applyDefaults()
 
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
 	cloudURL := cfg.URL
 	apiURL := strings.Replace(cloudURL, "https://", "https://api.", 1)
 
-	// Create Cloud clients.
-	cloudClient := sqapi.NewCloudClient(cloudURL, cfg.Token)
-	apiClient := sqapi.NewCloudClient(apiURL, cfg.Token)
+	// Create Cloud clients with retry logging.
+	retryLog := func(method, url string, status, attempt, total int) {
+		logger.Warn("retrying request",
+			"method", method, "endpoint", url,
+			"status", status, "attempt", attempt, "maxAttempts", total)
+	}
+	cloudClient := sqapi.NewCloudClient(cloudURL, cfg.Token, sqapi.WithRetryLogger(retryLog))
+	apiClient := sqapi.NewCloudClient(apiURL, cfg.Token, sqapi.WithRetryLogger(retryLog))
 	cc := cloud.New(cloudClient)
 	apiCC := cloud.New(apiClient)
 
@@ -114,7 +121,6 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) (string, error) {
 	store := common.NewDataStore(runDir)
 	plan = filterCompleted(plan, store)
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	executor := &Executor{
 		Cloud:     cc,
 		CloudAPI:  apiCC,
@@ -154,6 +160,7 @@ func runPhase(ctx context.Context, e *Executor, taskNames []string, registry map
 		e.Logger.Info("running task", "task", name)
 		g.Go(func() error {
 			if err := def.Run(ctx, e); err != nil {
+				e.Logger.Error("task failed", "task", name, "err", err)
 				return fmt.Errorf("task %s: %w", name, err)
 			}
 			return nil

@@ -403,6 +403,62 @@ func TestUpdateRuleDescriptions(t *testing.T) {
 	}
 }
 
+func TestApplyGroupPermissions(t *testing.T) {
+	cloudSrv := newMockCloudServer()
+	defer cloudSrv.Close()
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+
+	w, _ := e.Store.Writer("testApplyGroupPerms")
+	pm := projectMapping{CloudKey: "cloud-proj1", OrgKey: testCloudOrg}
+
+	// Valid permissions.
+	data := json.RawMessage(`{"name":"devs","permissions":["scan","user"]}`)
+	applyGroupPermissions(context.Background(), e, data, pm, w, NewTaskCounter("test"))
+
+	items, _ := e.Store.ReadAll("testApplyGroupPerms")
+	if len(items) != 1 {
+		t.Errorf("expected 1 output item, got %d", len(items))
+	}
+	// Verify cloud_project_key was enriched.
+	if extractField(items[0], "cloud_project_key") != "cloud-proj1" {
+		t.Error("expected cloud_project_key enrichment")
+	}
+
+	// Invalid permissions should be skipped (no error).
+	w2, _ := e.Store.Writer("testApplyGroupPermsInvalid")
+	data2 := json.RawMessage(`{"name":"devs","permissions":["bogus","fake"]}`)
+	applyGroupPermissions(context.Background(), e, data2, pm, w2, NewTaskCounter("test"))
+
+	items2, _ := e.Store.ReadAll("testApplyGroupPermsInvalid")
+	if len(items2) != 1 {
+		t.Errorf("expected 1 output item (still written), got %d", len(items2))
+	}
+}
+
+func TestApplyOrgPermissions(t *testing.T) {
+	cloudSrv := newMockCloudServer()
+	defer cloudSrv.Close()
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+
+	// Valid permissions.
+	data := json.RawMessage(`{"permissions":["scan","admin"]}`)
+	applyOrgPermissions(context.Background(), e, data, "devs", testCloudOrg, NewTaskCounter("test"))
+
+	// Invalid permissions — should not panic.
+	data2 := json.RawMessage(`{"permissions":["bogus"]}`)
+	applyOrgPermissions(context.Background(), e, data2, "devs", testCloudOrg, NewTaskCounter("test"))
+
+	// Empty permissions — should be a no-op.
+	data3 := json.RawMessage(`{"permissions":[]}`)
+	applyOrgPermissions(context.Background(), e, data3, "devs", testCloudOrg, NewTaskCounter("test"))
+}
+
 func TestDeleteTasks(t *testing.T) {
 	cloudSrv := newMockCloudServer()
 	defer cloudSrv.Close()

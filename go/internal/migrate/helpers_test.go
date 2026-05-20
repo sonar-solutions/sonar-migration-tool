@@ -3,11 +3,13 @@ package migrate
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 )
 
 func TestLoadCSVToJSONL(t *testing.T) {
@@ -78,8 +80,9 @@ func TestForEachMigrateItem(t *testing.T) {
 	})
 
 	e := &Executor{
-		Store: store,
-		Sem:   make(chan struct{}, 5),
+		Store:  store,
+		Sem:    make(chan struct{}, 5),
+		Logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	}
 
 	var count int
@@ -107,8 +110,9 @@ func TestForEachMigrateItemFiltered(t *testing.T) {
 	})
 
 	e := &Executor{
-		Store: store,
-		Sem:   make(chan struct{}, 5),
+		Store:  store,
+		Sem:    make(chan struct{}, 5),
+		Logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	}
 
 	var keys []string
@@ -125,6 +129,62 @@ func TestForEachMigrateItemFiltered(t *testing.T) {
 	}
 	if len(keys) != 1 || keys[0] != "b" {
 		t.Errorf("expected [b], got %v", keys)
+	}
+}
+
+func TestForEachExtractItem(t *testing.T) {
+	dir := t.TempDir()
+
+	// Set up extract data with rule details.
+	setupExtractData(dir)
+
+	store := common.NewDataStore(filepath.Join(dir, "run-test"))
+	os.MkdirAll(filepath.Join(dir, "run-test"), 0o755)
+
+	e := &Executor{
+		Store:     store,
+		ExportDir: dir,
+		Mapping:   structure.ExtractMapping{testServerURL: "extract-01"},
+		Sem:       make(chan struct{}, 5),
+		Logger:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+	}
+
+	var count int
+	err := forEachExtractItem(context.Background(), e, "testExtract", "getRuleDetails",
+		func(_ context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
+			count++
+			key := extractField(item.Data, "key")
+			if key == "" {
+				t.Error("expected non-empty key")
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 extract item, got %d", count)
+	}
+}
+
+func TestBuildServerOrgLookup(t *testing.T) {
+	dir := t.TempDir()
+	store := common.NewDataStore(dir)
+
+	// Write org mapping data.
+	w, _ := store.Writer("generateOrganizationMappings")
+	w.WriteChunk([]json.RawMessage{
+		json.RawMessage(`{"server_url":"https://sq.test/","sonarcloud_org_key":"cloud-org1"}`),
+	})
+
+	e := &Executor{Store: store}
+	lookup := buildServerOrgLookup(e)
+
+	if lookup["https://sq.test/"] != "cloud-org1" {
+		t.Errorf("expected cloud-org1, got %v", lookup["https://sq.test/"])
+	}
+	if lookup["unknown"] != "" {
+		t.Errorf("expected empty for unknown, got %v", lookup["unknown"])
 	}
 }
 

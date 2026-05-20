@@ -44,7 +44,8 @@ func portfolioTasks() []TaskDef {
 				}
 
 				// Match with created portfolios.
-				return forEachMigrateItem(ctx, e, "setPortfolioProjects", "createPortfolios",
+				counter := NewTaskCounter("setPortfolioProjects")
+				err := forEachMigrateItem(ctx, e, "setPortfolioProjects", "createPortfolios",
 					func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 						portfolioID := extractField(item, "cloud_portfolio_id")
 						sourceKey := extractField(item, "source_portfolio_key")
@@ -58,11 +59,16 @@ func portfolioTasks() []TaskDef {
 							Projects:    projects,
 						})
 						if err != nil {
-							e.Logger.Warn("setPortfolioProjects failed",
-								"portfolio", portfolioID, "err", err)
+							counter.Fail()
+							logAPIWarn(e.Logger, "setPortfolioProjects failed", err,
+								"portfolio", portfolioID)
+						} else {
+							counter.Success()
 						}
 						return nil
 					})
+				counter.LogSummary(e.Logger)
+				return err
 			},
 		},
 	}

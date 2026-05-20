@@ -74,13 +74,13 @@ func TestBuildComponents(t *testing.T) {
 		{Key: "proj:src/util.go", Name: "util.go", Path: "src/util.go", Language: "Go", Lines: 30},
 	}
 
-	root, fileComps, cr := BuildComponents("proj", "My Project", files)
+	root, fileComps, cr := BuildComponents("proj", files)
 
 	if root.Type != pb.Component_PROJECT {
 		t.Error("root should be PROJECT type")
 	}
-	if root.Name != "My Project" {
-		t.Errorf("root name: got %s", root.Name)
+	if root.Key != "proj" {
+		t.Errorf("root key: got %s", root.Key)
 	}
 	if len(root.ChildRef) != 2 {
 		t.Errorf("expected 2 child refs, got %d", len(root.ChildRef))
