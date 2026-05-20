@@ -1,13 +1,20 @@
 package migrate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	sqapi "github.com/sonar-solutions/sq-api-go"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 )
 
 func TestLoadCSVToJSONL(t *testing.T) {
@@ -78,8 +85,9 @@ func TestForEachMigrateItem(t *testing.T) {
 	})
 
 	e := &Executor{
-		Store: store,
-		Sem:   make(chan struct{}, 5),
+		Store:  store,
+		Sem:    make(chan struct{}, 5),
+		Logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	}
 
 	var count int
@@ -107,8 +115,9 @@ func TestForEachMigrateItemFiltered(t *testing.T) {
 	})
 
 	e := &Executor{
-		Store: store,
-		Sem:   make(chan struct{}, 5),
+		Store:  store,
+		Sem:    make(chan struct{}, 5),
+		Logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	}
 
 	var keys []string
@@ -128,6 +137,62 @@ func TestForEachMigrateItemFiltered(t *testing.T) {
 	}
 }
 
+func TestForEachExtractItem(t *testing.T) {
+	dir := t.TempDir()
+
+	// Set up extract data with rule details.
+	setupExtractData(dir)
+
+	store := common.NewDataStore(filepath.Join(dir, "run-test"))
+	os.MkdirAll(filepath.Join(dir, "run-test"), 0o755)
+
+	e := &Executor{
+		Store:     store,
+		ExportDir: dir,
+		Mapping:   structure.ExtractMapping{testServerURL: "extract-01"},
+		Sem:       make(chan struct{}, 5),
+		Logger:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+	}
+
+	var count int
+	err := forEachExtractItem(context.Background(), e, "testExtract", "getRuleDetails",
+		func(_ context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
+			count++
+			key := extractField(item.Data, "key")
+			if key == "" {
+				t.Error("expected non-empty key")
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 extract item, got %d", count)
+	}
+}
+
+func TestBuildServerOrgLookup(t *testing.T) {
+	dir := t.TempDir()
+	store := common.NewDataStore(dir)
+
+	// Write org mapping data.
+	w, _ := store.Writer("generateOrganizationMappings")
+	w.WriteChunk([]json.RawMessage{
+		json.RawMessage(`{"server_url":"https://sq.test/","sonarcloud_org_key":"cloud-org1"}`),
+	})
+
+	e := &Executor{Store: store}
+	lookup := buildServerOrgLookup(e)
+
+	if lookup["https://sq.test/"] != "cloud-org1" {
+		t.Errorf("expected cloud-org1, got %v", lookup["https://sq.test/"])
+	}
+	if lookup["unknown"] != "" {
+		t.Errorf("expected empty for unknown, got %v", lookup["unknown"])
+	}
+}
+
 func TestUnsupportedLanguages(t *testing.T) {
 	if !unsupportedLanguages["c++"] {
 		t.Error("expected c++ to be unsupported")
@@ -143,5 +208,112 @@ func TestValidPermissions(t *testing.T) {
 	}
 	if validPermissions["delete"] {
 		t.Error("expected delete to be invalid")
+	}
+}
+
+func TestLogAPIWarnWithAPIError(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	apiErr := &sqapi.APIError{
+		StatusCode: 403,
+		Method:     "POST",
+		URL:        "https://sonarcloud.io/api/permissions/add_group",
+		Body:       `{"errors":[{"msg":"Insufficient privileges"}]}`,
+	}
+	logAPIWarn(logger, "operation failed", apiErr, "project", "proj1")
+
+	output := buf.String()
+	if !strings.Contains(output, "Insufficient privileges") {
+		t.Errorf("expected parsed error message, got: %s", output)
+	}
+	if !strings.Contains(output, "status=403") {
+		t.Errorf("expected status=403, got: %s", output)
+	}
+	if !strings.Contains(output, "endpoint=/api/permissions/add_group") {
+		t.Errorf("expected endpoint, got: %s", output)
+	}
+	if !strings.Contains(output, "project=proj1") {
+		t.Errorf("expected project attr, got: %s", output)
+	}
+}
+
+func TestLogAPIWarnWithPlainError(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	logAPIWarn(logger, "something failed", errors.New("connection refused"), "task", "test")
+
+	output := buf.String()
+	if !strings.Contains(output, "connection refused") {
+		t.Errorf("expected plain error, got: %s", output)
+	}
+	if strings.Contains(output, "status=") {
+		t.Errorf("should not have status for plain error, got: %s", output)
+	}
+}
+
+func TestTaskCounterFailAndSummary(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	c := NewTaskCounter("testTask")
+	c.Success()
+	c.Success()
+	c.Fail()
+	c.LogSummary(logger)
+
+	output := buf.String()
+	if !strings.Contains(output, "succeeded=2") {
+		t.Errorf("expected succeeded=2, got: %s", output)
+	}
+	if !strings.Contains(output, "failed=1") {
+		t.Errorf("expected failed=1, got: %s", output)
+	}
+	if !strings.Contains(output, "total=3") {
+		t.Errorf("expected total=3, got: %s", output)
+	}
+}
+
+func TestTaskCounterEmptySummary(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	c := NewTaskCounter("empty")
+	c.LogSummary(logger)
+
+	if buf.Len() > 0 {
+		t.Errorf("expected no output for empty counter, got: %s", buf.String())
+	}
+}
+
+func TestProgressLoggerZeroInterval(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// total=0 → interval=0 → Increment should be a no-op
+	prog := newProgressLogger(logger, "test", 0)
+	prog.Increment()
+
+	if buf.Len() > 0 {
+		t.Errorf("expected no output for zero-interval progress, got: %s", buf.String())
+	}
+}
+
+func TestProgressLoggerLogsAtInterval(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// total=50 → interval=50 (< 100 branch)
+	prog := newProgressLogger(logger, "test", 50)
+	for i := range 49 {
+		prog.Increment()
+		if buf.Len() > 0 {
+			t.Fatalf("unexpected log at iteration %d", i)
+		}
+	}
+	prog.Increment() // 50th item
+	if !strings.Contains(buf.String(), fmt.Sprintf("completed=%d", 50)) {
+		t.Errorf("expected progress log at 50, got: %s", buf.String())
 	}
 }

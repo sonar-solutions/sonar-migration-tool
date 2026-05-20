@@ -61,7 +61,7 @@ func runImportScanHistory(ctx context.Context, e *Executor) error {
 				Branch:    branch,
 			})
 			if err != nil {
-				e.Logger.Warn("scan history import failed", "project", cloudKey, "branch", branch, "err", err)
+				logAPIWarn(e.Logger, "scan history import failed", err, "project", cloudKey, "branch", branch)
 				result = &importResult{Status: "failed", Error: err.Error()}
 			}
 
@@ -107,7 +107,12 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 		return &importResult{Status: "skipped"}, nil
 	}
 
-	root, fileComps, cr := scanreport.BuildComponents(input.CloudKey, input.CloudKey, components)
+	// Filter profiles and rules to languages present in the project (matches cloudvoyager).
+	projectLangs := collectProjectLanguages(components)
+	qprofiles = filterProfilesByLanguage(qprofiles, projectLangs)
+	activeRules = filterRulesByLanguage(activeRules, projectLangs)
+
+	root, fileComps, cr := scanreport.BuildComponents(input.CloudKey, components)
 	pbIssues := scanreport.BuildIssues(issues, cr)
 	pbActiveRules := scanreport.BuildActiveRules(activeRules)
 
@@ -517,3 +522,35 @@ func extractMeasureInt32(data json.RawMessage, metricKey string) int32 {
 	return 0
 }
 
+// collectProjectLanguages returns the set of languages present in the project's components.
+func collectProjectLanguages(components []scanreport.ComponentInput) map[string]bool {
+	langs := make(map[string]bool)
+	for _, c := range components {
+		if c.Language != "" {
+			langs[strings.ToLower(c.Language)] = true
+		}
+	}
+	return langs
+}
+
+// filterProfilesByLanguage keeps only profiles whose language is in the project.
+func filterProfilesByLanguage(profiles []scanreport.QProfileInfo, langs map[string]bool) []scanreport.QProfileInfo {
+	var filtered []scanreport.QProfileInfo
+	for _, p := range profiles {
+		if langs[strings.ToLower(p.Language)] {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered
+}
+
+// filterRulesByLanguage keeps only active rules whose language is in the project.
+func filterRulesByLanguage(rules []scanreport.ActiveRuleInput, langs map[string]bool) []scanreport.ActiveRuleInput {
+	var filtered []scanreport.ActiveRuleInput
+	for _, r := range rules {
+		if langs[strings.ToLower(r.Language)] {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}

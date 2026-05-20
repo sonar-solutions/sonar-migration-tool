@@ -35,9 +35,10 @@ func (g *GroupsClient) Create(ctx context.Context, params CreateGroupParams) (*t
 }
 
 // Delete deletes a group by ID via /api/user_groups/delete.
-func (g *GroupsClient) Delete(ctx context.Context, groupID int) error {
+func (g *GroupsClient) Delete(ctx context.Context, groupID int, organization string) error {
 	form := url.Values{}
 	form.Set("id", strconv.Itoa(groupID))
+	form.Set("organization", organization)
 	return g.postForm(ctx, "api/user_groups/delete", form, nil)
 }
 

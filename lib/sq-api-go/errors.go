@@ -1,9 +1,11 @@
 package sqapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -21,6 +23,40 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("sonarqube api error: %s %s → %d: %s", e.Method, e.URL, e.StatusCode, e.Body)
+}
+
+// Message returns the human-readable error message(s) extracted from the
+// SonarQube JSON error response body. Falls back to the raw body if parsing fails.
+func (e *APIError) Message() string {
+	if e.Body == "" {
+		return ""
+	}
+	var obj struct {
+		Errors []struct {
+			Msg string `json:"msg"`
+		} `json:"errors"`
+	}
+	if json.Unmarshal([]byte(e.Body), &obj) != nil || len(obj.Errors) == 0 {
+		return e.Body
+	}
+	msgs := make([]string, 0, len(obj.Errors))
+	for _, item := range obj.Errors {
+		if item.Msg != "" {
+			msgs = append(msgs, item.Msg)
+		}
+	}
+	if len(msgs) == 0 {
+		return e.Body
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// Endpoint returns the API path from the full URL (strips scheme and host).
+func (e *APIError) Endpoint() string {
+	if u, err := url.Parse(e.URL); err == nil {
+		return u.Path
+	}
+	return e.URL
 }
 
 // IsNotFound reports whether err is an APIError with status 404.

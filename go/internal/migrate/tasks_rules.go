@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/sonar-solutions/sq-api-go/cloud"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 )
 
 // ruleTasks returns tasks for updating rules in Cloud.
@@ -24,59 +26,63 @@ func ruleTasks() []TaskDef {
 }
 
 func runUpdateRuleTags(ctx context.Context, e *Executor) error {
-	// Read rule details from extract data.
-	items, _ := readExtractItems(e, "getRuleDetails")
+	orgKeys := buildServerOrgLookup(e)
 
-	w, err := e.Store.Writer("updateRuleTags")
-	if err != nil {
-		return err
-	}
+	counter := NewTaskCounter("updateRuleTags")
+	err := forEachExtractItem(ctx, e, "updateRuleTags", "getRuleDetails",
+		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
+			ruleKey := extractField(item.Data, "key")
+			tags := extractStringArray(item.Data, "tags")
+			if ruleKey == "" || len(tags) == 0 {
+				return nil
+			}
 
-	for _, item := range items {
-		ruleKey := extractField(item.Data, "key")
-		tags := extractStringArray(item.Data, "tags")
-		if ruleKey == "" || len(tags) == 0 {
-			continue
-		}
-
-		_, err := e.Cloud.Rules.Update(ctx, cloud.UpdateRuleParams{
-			Key:  ruleKey,
-			Tags: strings.Join(tags, ","),
+			orgKey := orgKeys[item.ServerURL]
+			_, err := e.Cloud.Rules.Update(ctx, cloud.UpdateRuleParams{
+				Key:          ruleKey,
+				Organization: orgKey,
+				Tags:         strings.Join(tags, ","),
+			})
+			if err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "updateRuleTags failed", err, "rule", ruleKey)
+				return nil
+			}
+			counter.Success()
+			_ = w.WriteOne(item.Data)
+			return nil
 		})
-		if err != nil {
-			e.Logger.Warn("updateRuleTags failed", "rule", ruleKey, "err", err)
-			continue
-		}
-		_ = w.WriteOne(item.Data)
-	}
-	return nil
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runUpdateRuleDescriptions(ctx context.Context, e *Executor) error {
-	// Read rule details from extract data.
-	items, _ := readExtractItems(e, "getRuleDetails")
+	orgKeys := buildServerOrgLookup(e)
 
-	w, err := e.Store.Writer("updateRuleDescriptions")
-	if err != nil {
-		return err
-	}
+	counter := NewTaskCounter("updateRuleDescriptions")
+	err := forEachExtractItem(ctx, e, "updateRuleDescriptions", "getRuleDetails",
+		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
+			ruleKey := extractField(item.Data, "key")
+			note := extractField(item.Data, "mdNote")
+			if ruleKey == "" || note == "" {
+				return nil
+			}
 
-	for _, item := range items {
-		ruleKey := extractField(item.Data, "key")
-		note := extractField(item.Data, "mdNote")
-		if ruleKey == "" || note == "" {
-			continue
-		}
-
-		_, err := e.Cloud.Rules.Update(ctx, cloud.UpdateRuleParams{
-			Key:          ruleKey,
-			MarkdownNote: note,
+			orgKey := orgKeys[item.ServerURL]
+			_, err := e.Cloud.Rules.Update(ctx, cloud.UpdateRuleParams{
+				Key:          ruleKey,
+				Organization: orgKey,
+				MarkdownNote: note,
+			})
+			if err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "updateRuleDescriptions failed", err, "rule", ruleKey)
+				return nil
+			}
+			counter.Success()
+			_ = w.WriteOne(item.Data)
+			return nil
 		})
-		if err != nil {
-			e.Logger.Warn("updateRuleDescriptions failed", "rule", ruleKey, "err", err)
-			continue
-		}
-		_ = w.WriteOne(item.Data)
-	}
-	return nil
+	counter.LogSummary(e.Logger)
+	return err
 }

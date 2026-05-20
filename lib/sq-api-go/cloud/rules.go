@@ -12,10 +12,12 @@ import (
 type RulesClient struct{ baseClient }
 
 // UpdateRuleParams holds the parameters for updating a rule.
-// All fields except Key are optional — only non-empty values are sent.
+// All fields except Key and Organization are optional — only non-empty values are sent.
 type UpdateRuleParams struct {
 	// Key is the rule key, e.g. "java:S1234". Required.
 	Key string
+	// Organization is the SonarCloud organization key. Required.
+	Organization string
 	// Tags is a comma-separated list of tags to set. Empty string removes all tags.
 	Tags string
 	// MarkdownNote is a custom note to attach to the rule.
@@ -26,6 +28,7 @@ type UpdateRuleParams struct {
 func (r *RulesClient) Update(ctx context.Context, params UpdateRuleParams) (*types.Rule, error) {
 	form := url.Values{}
 	form.Set("key", params.Key)
+	form.Set("organization", params.Organization)
 	if strings.TrimSpace(params.Tags) != "" {
 		form.Set("tags", params.Tags)
 	}

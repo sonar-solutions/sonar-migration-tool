@@ -126,6 +126,7 @@ func buildTransport(cfg *clientConfig, token string, version float64) http.Round
 	retry := &retryTransport{
 		inner:   base,
 		backoff: defaultBackoff,
+		logFn:   cfg.retryLogFn,
 	}
 
 	return &authTransport{

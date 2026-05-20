@@ -87,7 +87,8 @@ func runMatchProjectRepos(ctx context.Context, e *Executor) error {
 }
 
 func runSetProjectBinding(ctx context.Context, e *Executor) error {
-	return forEachMigrateItem(ctx, e, "setProjectBinding", "matchProjectRepos",
+	counter := NewTaskCounter("setProjectBinding")
+	err := forEachMigrateItem(ctx, e, "setProjectBinding", "matchProjectRepos",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			projID := extractField(item, "project_id")
 			repoID := extractField(item, "repository_id")
@@ -100,11 +101,16 @@ func runSetProjectBinding(ctx context.Context, e *Executor) error {
 				RepositoryID: repoID,
 			})
 			if err != nil {
-				e.Logger.Warn("setProjectBinding failed",
-					"project", projID, "repo", repoID, "err", err)
+				counter.Fail()
+				logAPIWarn(e.Logger, "setProjectBinding failed", err,
+					"project", projID, "repo", repoID)
+			} else {
+				counter.Success()
 			}
 			return nil
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 type projectALMInfo struct {

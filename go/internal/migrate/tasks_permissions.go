@@ -6,6 +6,7 @@ import (
 
 	"github.com/sonar-solutions/sq-api-go/cloud"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 )
 
 const (
@@ -47,7 +48,8 @@ func permissionTasks() []TaskDef {
 }
 
 func runCreateMigrationGroups(ctx context.Context, e *Executor) error {
-	return forEachMigrateItem(ctx, e, "createMigrationGroups", "generateOrganizationMappings",
+	counter := NewTaskCounter("createMigrationGroups")
+	err := forEachMigrateItem(ctx, e, "createMigrationGroups", "generateOrganizationMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			if shouldSkipOrg(orgKey) {
@@ -60,7 +62,10 @@ func runCreateMigrationGroups(ctx context.Context, e *Executor) error {
 					Organization: orgKey,
 				})
 				if err != nil {
-					e.Logger.Warn("createMigrationGroups failed", "group", groupName, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "createMigrationGroups failed", err, "group", groupName)
+				} else {
+					counter.Success()
 				}
 			}
 			result, _ := json.Marshal(map[string]any{
@@ -69,6 +74,8 @@ func runCreateMigrationGroups(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runAddMigrationUserToMigrationGroups(ctx context.Context, e *Executor) error {
@@ -82,83 +89,98 @@ func runAddMigrationUserToMigrationGroups(ctx context.Context, e *Executor) erro
 		return nil
 	}
 
-	return forEachMigrateItem(ctx, e, "addMigrationUserToMigrationGroups", "createMigrationGroups",
+	counter := NewTaskCounter("addMigrationUserToMigrationGroups")
+	err := forEachMigrateItem(ctx, e, "addMigrationUserToMigrationGroups", "createMigrationGroups",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			for _, groupName := range migrationGroups {
 				err := e.Cloud.Groups.AddUser(ctx, groupName, login, orgKey)
 				if err != nil {
-					e.Logger.Warn("addMigrationUser failed", "group", groupName, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "addMigrationUser failed", err, "group", groupName)
+				} else {
+					counter.Success()
 				}
 			}
 			return nil
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runAddMigrationGroupToTemplates(ctx context.Context, e *Executor) error {
-	return forEachMigrateItem(ctx, e, "addMigrationGroupToTemplates", "createPermissionTemplates",
+	counter := NewTaskCounter("addMigrationGroupToTemplates")
+	err := forEachMigrateItem(ctx, e, "addMigrationGroupToTemplates", "createPermissionTemplates",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			templateID := extractField(item, "cloud_template_id")
 			if templateID == "" {
 				return nil
 			}
+			orgKey := extractField(item, "sonarcloud_org_key")
 			for _, perm := range []string{"scan", "user"} {
-				_ = e.Cloud.Permissions.AddGroupToTemplate(ctx, templateID, migrationScanners, perm)
+				err := e.Cloud.Permissions.AddGroupToTemplate(ctx, templateID, migrationScanners, perm, orgKey)
+				if err != nil {
+					counter.Fail()
+					logAPIWarn(e.Logger, "addMigrationGroupToTemplates failed", err, "template", templateID, "perm", perm)
+				} else {
+					counter.Success()
+				}
 			}
 			for _, perm := range []string{"user", "codeviewer"} {
-				_ = e.Cloud.Permissions.AddGroupToTemplate(ctx, templateID, migrationViewers, perm)
+				err := e.Cloud.Permissions.AddGroupToTemplate(ctx, templateID, migrationViewers, perm, orgKey)
+				if err != nil {
+					counter.Fail()
+					logAPIWarn(e.Logger, "addMigrationGroupToTemplates failed", err, "template", templateID, "perm", perm)
+				} else {
+					counter.Success()
+				}
 			}
 			return nil
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runSetOrgGroupPermissions(ctx context.Context, e *Executor) error {
-	// Read groups from extract data that have org-level permissions.
-	items, _ := readExtractItems(e, "getGroups")
-
 	// Build org lookup.
-	orgItems, _ := e.Store.ReadAll("generateOrganizationMappings")
-	orgKeys := make(map[string]string) // serverURL -> cloudOrgKey
-	for _, o := range orgItems {
-		serverURL := extractField(o, "server_url")
-		cloudKey := extractField(o, "sonarcloud_org_key")
-		orgKeys[serverURL] = cloudKey
-	}
+	orgKeys := buildServerOrgLookup(e)
 
-	w, err := e.Store.Writer("setOrgGroupPermissions")
-	if err != nil {
-		return err
-	}
+	counter := NewTaskCounter("setOrgGroupPermissions")
+	err := forEachExtractItem(ctx, e, "setOrgGroupPermissions", "getGroups",
+		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
+			name := extractField(item.Data, "name")
+			if name == "Anyone" {
+				return nil
+			}
+			orgKey := orgKeys[item.ServerURL]
+			if shouldSkipOrg(orgKey) {
+				return nil
+			}
+			applyOrgPermissions(ctx, e, item.Data, name, orgKey, counter)
+			_ = w.WriteOne(item.Data)
+			return nil
+		})
+	counter.LogSummary(e.Logger)
+	return err
+}
 
-	for _, item := range items {
-		name := extractField(item.Data, "name")
-		if name == "Anyone" {
+func applyOrgPermissions(ctx context.Context, e *Executor, data json.RawMessage, name, orgKey string, counter *TaskCounter) {
+	perms := extractPermissions(data)
+	for _, perm := range perms {
+		if !validPermissions[perm] {
 			continue
 		}
-		perms := extractPermissions(item.Data)
-		orgKey := orgKeys[item.ServerURL]
-		if shouldSkipOrg(orgKey) {
-			continue
+		err := e.Cloud.Permissions.AddGroup(ctx, name, perm, orgKey, "")
+		if err != nil {
+			counter.Fail()
+			logAPIWarn(e.Logger, "setOrgGroupPermissions failed", err, "group", name, "perm", perm)
+		} else {
+			counter.Success()
 		}
-		for _, perm := range perms {
-			if !validPermissions[perm] {
-				continue
-			}
-			err := e.Cloud.Permissions.AddGroup(ctx, name, perm, orgKey, "")
-			if err != nil {
-				e.Logger.Warn("setOrgGroupPermissions failed",
-					"group", name, "perm", perm, "err", err)
-			}
-		}
-		_ = w.WriteOne(item.Data)
 	}
-	return nil
 }
 
 func runSetProfileGroupPermissions(ctx context.Context, e *Executor) error {
-	// Read profile groups from extract data.
-	items, _ := readExtractItems(e, "getProfileGroups")
-
 	// Build profile lookup: sourceKey -> []orgKey+profileName+language.
 	profiles, _ := e.Store.ReadAll("createProfiles")
 	profileInfo := make(map[string][]profileRef) // source_profile_key -> refs
@@ -171,25 +193,27 @@ func runSetProfileGroupPermissions(ctx context.Context, e *Executor) error {
 		})
 	}
 
-	w, err := e.Store.Writer("setProfileGroupPermissions")
-	if err != nil {
-		return err
-	}
-
-	for _, item := range items {
-		profileKey := extractField(item.Data, "profileKey")
-		groupName := extractField(item.Data, "name")
-		refs := profileInfo[profileKey]
-		for _, ref := range refs {
-			err := e.Cloud.QualityProfiles.AddGroup(ctx, ref.Language, ref.Name, groupName, ref.OrgKey)
-			if err != nil {
-				e.Logger.Warn("setProfileGroupPermissions failed",
-					"profile", ref.Name, "group", groupName, "err", err)
+	counter := NewTaskCounter("setProfileGroupPermissions")
+	err := forEachExtractItem(ctx, e, "setProfileGroupPermissions", "getProfileGroups",
+		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
+			profileKey := extractField(item.Data, "profileKey")
+			groupName := extractField(item.Data, "name")
+			refs := profileInfo[profileKey]
+			for _, ref := range refs {
+				err := e.Cloud.QualityProfiles.AddGroup(ctx, ref.Language, ref.Name, groupName, ref.OrgKey)
+				if err != nil {
+					counter.Fail()
+					logAPIWarn(e.Logger, "setProfileGroupPermissions failed", err,
+						"profile", ref.Name, "group", groupName)
+				} else {
+					counter.Success()
+				}
 			}
-		}
-		_ = w.WriteOne(item.Data)
-	}
-	return nil
+			_ = w.WriteOne(item.Data)
+			return nil
+		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 type profileRef struct {

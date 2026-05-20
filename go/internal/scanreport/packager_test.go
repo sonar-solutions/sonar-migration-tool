@@ -25,7 +25,7 @@ func TestPackageReportMinimal(t *testing.T) {
 
 func packageMinimalReport(t *testing.T) []byte {
 	t.Helper()
-	root, files, cr := BuildComponents("proj", "My Project", []ComponentInput{
+	root, files, cr := BuildComponents("proj", []ComponentInput{
 		{Key: "proj:main.go", Name: "main.go", Path: "main.go", Language: "go", Lines: 5},
 	})
 	fileRef := cr.Refs()["proj:main.go"]

@@ -68,11 +68,15 @@ func BuildMetadata(input MetadataInput, rootRef int32) *pb.Metadata {
 
 	qprofiles := make(map[string]*pb.Metadata_QProfile, len(input.QProfiles))
 	for _, qp := range input.QProfiles {
+		rulesUpdated := qp.RulesUpdatedAt.UnixMilli()
+		if rulesUpdated <= 0 {
+			rulesUpdated = input.AnalysisDate.UnixMilli()
+		}
 		qprofiles[qp.Language] = &pb.Metadata_QProfile{
 			Key:            qp.Key,
 			Name:           qp.Name,
 			Language:       qp.Language,
-			RulesUpdatedAt: qp.RulesUpdatedAt.UnixMilli(),
+			RulesUpdatedAt: rulesUpdated,
 		}
 	}
 
@@ -106,7 +110,7 @@ type ComponentInput struct {
 
 // BuildComponents creates the project root component and file components.
 // Returns the root component, file components, and the ComponentRef tracker.
-func BuildComponents(projectKey, projectName string, files []ComponentInput) (*pb.Component, []*pb.Component, *ComponentRef) {
+func BuildComponents(projectKey string, files []ComponentInput) (*pb.Component, []*pb.Component, *ComponentRef) {
 	cr := NewComponentRef()
 	rootRef := cr.Get(projectKey)
 
@@ -118,7 +122,6 @@ func BuildComponents(projectKey, projectName string, files []ComponentInput) (*p
 		childRefs = append(childRefs, ref)
 		fileComponents = append(fileComponents, &pb.Component{
 			Ref:                 ref,
-			Name:                f.Name,
 			Type:                pb.Component_FILE,
 			Language:            sanitizeLanguage(f.Language),
 			Lines:               f.Lines,
@@ -131,7 +134,6 @@ func BuildComponents(projectKey, projectName string, files []ComponentInput) (*p
 
 	root := &pb.Component{
 		Ref:      rootRef,
-		Name:     projectName,
 		Type:     pb.Component_PROJECT,
 		Key:      projectKey,
 		ChildRef: childRefs,

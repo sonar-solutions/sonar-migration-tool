@@ -49,7 +49,8 @@ func createTasks() []TaskDef {
 }
 
 func runCreateProjects(ctx context.Context, e *Executor) error {
-	return forEachMigrateItem(ctx, e, "createProjects", "generateProjectMappings",
+	counter := NewTaskCounter("createProjects")
+	err := forEachMigrateItem(ctx, e, "createProjects", "generateProjectMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			if shouldSkipOrg(orgKey) {
@@ -71,11 +72,14 @@ func runCreateProjects(ctx context.Context, e *Executor) error {
 			})
 			if err != nil {
 				if !sqapi.IsAlreadyExists(err) {
-					e.Logger.Warn("createProjects: create failed", "key", key, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "createProjects: create failed", err, "key", key)
 					return nil
 				}
+				counter.Success()
 				e.Logger.Info("createProjects: already exists", "key", key)
 			} else {
+				counter.Success()
 				cloudKey = proj.Key
 			}
 
@@ -85,10 +89,13 @@ func runCreateProjects(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runCreateProfiles(ctx context.Context, e *Executor) error {
-	return forEachMigrateItemFiltered(ctx, e, "createProfiles", "generateProfileMappings",
+	counter := NewTaskCounter("createProfiles")
+	err := forEachMigrateItemFiltered(ctx, e, "createProfiles", "generateProfileMappings",
 		func(item json.RawMessage) bool {
 			lang := extractField(item, "language")
 			return !unsupportedLanguages[lang]
@@ -107,16 +114,20 @@ func runCreateProfiles(ctx context.Context, e *Executor) error {
 			})
 			if err != nil {
 				if !sqapi.IsAlreadyExists(err) {
-					e.Logger.Warn("createProfiles: create failed", "name", name, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "createProfiles: create failed", err, "name", name)
 					return nil
 				}
 				e.Logger.Info("createProfiles: already exists, looking up", "name", name)
 				profileKey, err = lookupExistingProfile(ctx, e.Raw, name, lang, orgKey)
 				if err != nil {
-					e.Logger.Warn("createProfiles: lookup failed", "name", name, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "createProfiles: lookup failed", err, "name", name)
 					return nil
 				}
+				counter.Success()
 			} else {
+				counter.Success()
 				profileKey = prof.Key
 			}
 
@@ -126,10 +137,13 @@ func runCreateProfiles(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runCreateGates(ctx context.Context, e *Executor) error {
-	return forEachMigrateItem(ctx, e, "createGates", "generateGateMappings",
+	counter := NewTaskCounter("createGates")
+	err := forEachMigrateItem(ctx, e, "createGates", "generateGateMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			if shouldSkipOrg(orgKey) {
@@ -141,16 +155,20 @@ func runCreateGates(ctx context.Context, e *Executor) error {
 			gate, err := e.Cloud.QualityGates.Create(ctx, name, orgKey)
 			if err != nil {
 				if !sqapi.IsAlreadyExists(err) {
-					e.Logger.Warn("createGates: create failed", "name", name, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "createGates: create failed", err, "name", name)
 					return nil
 				}
 				e.Logger.Info("createGates: already exists, looking up", "name", name)
 				gateID, err = lookupExistingGate(ctx, e.Raw, name, orgKey)
 				if err != nil {
-					e.Logger.Warn("createGates: lookup failed", "name", name, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "createGates: lookup failed", err, "name", name)
 					return nil
 				}
+				counter.Success()
 			} else {
+				counter.Success()
 				gateID = strconv.Itoa(gate.ID)
 			}
 
@@ -160,10 +178,13 @@ func runCreateGates(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runCreateGroups(ctx context.Context, e *Executor) error {
-	return forEachMigrateItem(ctx, e, "createGroups", "generateGroupMappings",
+	counter := NewTaskCounter("createGroups")
+	err := forEachMigrateItem(ctx, e, "createGroups", "generateGroupMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			if shouldSkipOrg(orgKey) {
@@ -178,16 +199,20 @@ func runCreateGroups(ctx context.Context, e *Executor) error {
 			})
 			if err != nil {
 				if !sqapi.IsAlreadyExists(err) {
-					e.Logger.Warn("createGroups: create failed", "name", name, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "createGroups: create failed", err, "name", name)
 					return nil
 				}
 				e.Logger.Info("createGroups: already exists, looking up", "name", name)
 				groupID, err = lookupExistingGroup(ctx, e.Raw, name, orgKey)
 				if err != nil {
-					e.Logger.Warn("createGroups: lookup failed", "name", name, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "createGroups: lookup failed", err, "name", name)
 					return nil
 				}
+				counter.Success()
 			} else {
+				counter.Success()
 				groupID = strconv.Itoa(group.ID)
 			}
 
@@ -197,10 +222,13 @@ func runCreateGroups(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runCreatePermissionTemplates(ctx context.Context, e *Executor) error {
-	return forEachMigrateItem(ctx, e, "createPermissionTemplates", "generateTemplateMappings",
+	counter := NewTaskCounter("createPermissionTemplates")
+	err := forEachMigrateItem(ctx, e, "createPermissionTemplates", "generateTemplateMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			if shouldSkipOrg(orgKey) {
@@ -221,16 +249,20 @@ func runCreatePermissionTemplates(ctx context.Context, e *Executor) error {
 			})
 			if err != nil {
 				if !sqapi.IsAlreadyExists(err) {
-					e.Logger.Warn("createPermissionTemplates: create failed", "name", name, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "createPermissionTemplates: create failed", err, "name", name)
 					return nil
 				}
 				e.Logger.Info("createPermissionTemplates: already exists, looking up", "name", name)
 				templateID, err = lookupExistingTemplate(ctx, e.Raw, name, orgKey)
 				if err != nil {
-					e.Logger.Warn("createPermissionTemplates: lookup failed", "name", name, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "createPermissionTemplates: lookup failed", err, "name", name)
 					return nil
 				}
+				counter.Success()
 			} else {
+				counter.Success()
 				templateID = tpl.ID
 			}
 
@@ -240,6 +272,8 @@ func runCreatePermissionTemplates(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runCreatePortfolios(ctx context.Context, e *Executor) error {
@@ -248,7 +282,8 @@ func runCreatePortfolios(ctx context.Context, e *Executor) error {
 		return err
 	}
 
-	return forEachMigrateItem(ctx, e, "createPortfolios", "generatePortfolioMappings",
+	counter := NewTaskCounter("createPortfolios")
+	err = forEachMigrateItem(ctx, e, "createPortfolios", "generatePortfolioMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			name := extractField(item, "name")
 			desc := extractField(item, "description")
@@ -262,15 +297,19 @@ func runCreatePortfolios(ctx context.Context, e *Executor) error {
 			if err != nil {
 				// Portfolio lookup on re-run is not supported — the enterprise API
 				// does not expose a list/search endpoint for portfolios.
-				e.Logger.Warn("createPortfolios: create failed", "name", name, "err", err)
+				counter.Fail()
+				logAPIWarn(e.Logger, "createPortfolios: create failed", err, "name", name)
 				return nil
 			}
 
+			counter.Success()
 			result := common.EnrichRaw(item, map[string]any{
 				"cloud_portfolio_id": portfolio.ID,
 			})
 			return w.WriteOne(result)
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 // resolveEnterpriseID reads the getEnterprises task output and returns the UUID

@@ -46,7 +46,8 @@ func configureTasks() []TaskDef {
 }
 
 func runSetProfileParent(ctx context.Context, e *Executor) error {
-	return forEachMigrateItemFiltered(ctx, e, "setProfileParent", "createProfiles",
+	counter := NewTaskCounter("setProfileParent")
+	err := forEachMigrateItemFiltered(ctx, e, "setProfileParent", "createProfiles",
 		func(item json.RawMessage) bool {
 			return extractField(item, "parent_name") != ""
 		},
@@ -58,14 +59,20 @@ func runSetProfileParent(ctx context.Context, e *Executor) error {
 
 			err := e.Cloud.QualityProfiles.ChangeParent(ctx, lang, name, parent, orgKey)
 			if err != nil {
-				e.Logger.Warn("setProfileParent failed", "name", name, "err", err)
+				counter.Fail()
+				logAPIWarn(e.Logger, "setProfileParent failed", err, "name", name)
+			} else {
+				counter.Success()
 			}
 			return nil
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runRestoreProfiles(ctx context.Context, e *Executor) error {
-	return forEachMigrateItem(ctx, e, "restoreProfiles", "getProfileBackups",
+	counter := NewTaskCounter("restoreProfiles")
+	err := forEachMigrateItem(ctx, e, "restoreProfiles", "getProfileBackups",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			profileKey := extractField(item, "profileKey")
@@ -87,16 +94,22 @@ func runRestoreProfiles(ctx context.Context, e *Executor) error {
 				}
 				_, err := e.Cloud.QualityProfiles.Restore(ctx, orgKey, []byte(backup))
 				if err != nil {
-					e.Logger.Warn("restoreProfiles failed", "profile", profileKey, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "restoreProfiles failed", err, "profile", profileKey)
+				} else {
+					counter.Success()
 				}
 				return nil
 			}
 			return nil
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runAddGateConditions(ctx context.Context, e *Executor) error {
-	return forEachMigrateItem(ctx, e, "addGateConditions", "getGateConditions",
+	counter := NewTaskCounter("addGateConditions")
+	err := forEachMigrateItem(ctx, e, "addGateConditions", "getGateConditions",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			gateIDStr := extractField(item, "cloud_gate_id")
@@ -127,15 +140,21 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 					Metric: metric, Op: op, Error: errorVal,
 				})
 				if err != nil {
-					e.Logger.Warn("addGateConditions failed", "metric", metric, "err", err)
+					counter.Fail()
+					logAPIWarn(e.Logger, "addGateConditions failed", err, "metric", metric)
+				} else {
+					counter.Success()
 				}
 			}
 			return nil
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runSetDefaultProfiles(ctx context.Context, e *Executor) error {
-	return forEachMigrateItemFiltered(ctx, e, "setDefaultProfiles", "createProfiles",
+	counter := NewTaskCounter("setDefaultProfiles")
+	err := forEachMigrateItemFiltered(ctx, e, "setDefaultProfiles", "createProfiles",
 		func(item json.RawMessage) bool {
 			return extractBool(item, "is_default")
 		},
@@ -146,14 +165,20 @@ func runSetDefaultProfiles(ctx context.Context, e *Executor) error {
 
 			err := e.Cloud.QualityProfiles.SetDefault(ctx, lang, name, orgKey)
 			if err != nil {
-				e.Logger.Warn("setDefaultProfiles failed", "name", name, "err", err)
+				counter.Fail()
+				logAPIWarn(e.Logger, "setDefaultProfiles failed", err, "name", name)
+			} else {
+				counter.Success()
 			}
 			return nil
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runSetDefaultGates(ctx context.Context, e *Executor) error {
-	return forEachMigrateItemFiltered(ctx, e, "setDefaultGates", "createGates",
+	counter := NewTaskCounter("setDefaultGates")
+	err := forEachMigrateItemFiltered(ctx, e, "setDefaultGates", "createGates",
 		func(item json.RawMessage) bool {
 			return extractBool(item, "is_default")
 		},
@@ -164,24 +189,36 @@ func runSetDefaultGates(ctx context.Context, e *Executor) error {
 
 			err := e.Cloud.QualityGates.SetDefault(ctx, gateID, orgKey)
 			if err != nil {
-				e.Logger.Warn("setDefaultGates failed", "gate", gateIDStr, "err", err)
+				counter.Fail()
+				logAPIWarn(e.Logger, "setDefaultGates failed", err, "gate", gateIDStr)
+			} else {
+				counter.Success()
 			}
 			return nil
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }
 
 func runSetDefaultTemplates(ctx context.Context, e *Executor) error {
-	return forEachMigrateItemFiltered(ctx, e, "setDefaultTemplates", "createPermissionTemplates",
+	counter := NewTaskCounter("setDefaultTemplates")
+	err := forEachMigrateItemFiltered(ctx, e, "setDefaultTemplates", "createPermissionTemplates",
 		func(item json.RawMessage) bool {
 			return extractBool(item, "is_default")
 		},
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			templateID := extractField(item, "cloud_template_id")
 
-			err := e.Cloud.Permissions.SetDefaultTemplate(ctx, templateID, "TRK")
+			orgKey := extractField(item, "sonarcloud_org_key")
+			err := e.Cloud.Permissions.SetDefaultTemplate(ctx, templateID, "TRK", orgKey)
 			if err != nil {
-				e.Logger.Warn("setDefaultTemplates failed", "template", templateID, "err", err)
+				counter.Fail()
+				logAPIWarn(e.Logger, "setDefaultTemplates failed", err, "template", templateID)
+			} else {
+				counter.Success()
 			}
 			return nil
 		})
+	counter.LogSummary(e.Logger)
+	return err
 }

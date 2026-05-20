@@ -214,11 +214,12 @@ func TestGroupsDelete(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/user_groups/delete", func(w http.ResponseWriter, r *http.Request) {
 		assertFormValue(t, r, "id", "42")
+		assertFormValue(t, r, "organization", "myorg")
 		w.WriteHeader(http.StatusNoContent)
 	})
 	cc := newTestCloud(t, mux)
 
-	err := cc.Groups.Delete(context.Background(), 42)
+	err := cc.Groups.Delete(context.Background(), 42, "myorg")
 	require.NoError(t, err)
 }
 
@@ -520,11 +521,12 @@ func TestPermissionsDeleteTemplate(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/permissions/delete_template", func(w http.ResponseWriter, r *http.Request) {
 		assertFormValue(t, r, "templateId", "tmpl1")
+		assertFormValue(t, r, "organization", "myorg")
 		w.WriteHeader(http.StatusNoContent)
 	})
 	cc := newTestCloud(t, mux)
 
-	err := cc.Permissions.DeleteTemplate(context.Background(), "tmpl1")
+	err := cc.Permissions.DeleteTemplate(context.Background(), "tmpl1", "myorg")
 	require.NoError(t, err)
 }
 
@@ -533,11 +535,12 @@ func TestPermissionsSetDefaultTemplate(t *testing.T) {
 	mux.HandleFunc("/api/permissions/set_default_template", func(w http.ResponseWriter, r *http.Request) {
 		assertFormValue(t, r, "templateId", "tmpl1")
 		assertFormValue(t, r, "qualifier", "TRK")
+		assertFormValue(t, r, "organization", "myorg")
 		w.WriteHeader(http.StatusNoContent)
 	})
 	cc := newTestCloud(t, mux)
 
-	err := cc.Permissions.SetDefaultTemplate(context.Background(), "tmpl1", "TRK")
+	err := cc.Permissions.SetDefaultTemplate(context.Background(), "tmpl1", "TRK", "myorg")
 	require.NoError(t, err)
 }
 
@@ -575,11 +578,12 @@ func TestPermissionsAddGroupToTemplate(t *testing.T) {
 		assertFormValue(t, r, "templateId", "tmpl1")
 		assertFormValue(t, r, "groupName", "devs")
 		assertFormValue(t, r, "permission", "codeviewer")
+		assertFormValue(t, r, "organization", "myorg")
 		w.WriteHeader(http.StatusNoContent)
 	})
 	cc := newTestCloud(t, mux)
 
-	err := cc.Permissions.AddGroupToTemplate(context.Background(), "tmpl1", "devs", "codeviewer")
+	err := cc.Permissions.AddGroupToTemplate(context.Background(), "tmpl1", "devs", "codeviewer", "myorg")
 	require.NoError(t, err)
 }
 
@@ -625,7 +629,7 @@ func TestRulesUpdate(t *testing.T) {
 	cc := newTestCloud(t, mux)
 
 	rule, err := cc.Rules.Update(context.Background(), cloud.UpdateRuleParams{
-		Key: testRuleKey, Tags: "security,java", MarkdownNote: "Important rule",
+		Key: testRuleKey, Organization: "myorg", Tags: "security,java", MarkdownNote: "Important rule",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, testRuleKey, rule.Key)
@@ -644,7 +648,7 @@ func TestRulesUpdateMinimal(t *testing.T) {
 	})
 	cc := newTestCloud(t, mux)
 
-	_, err := cc.Rules.Update(context.Background(), cloud.UpdateRuleParams{Key: testRuleKey})
+	_, err := cc.Rules.Update(context.Background(), cloud.UpdateRuleParams{Key: testRuleKey, Organization: "myorg"})
 	require.NoError(t, err)
 }
 
@@ -655,7 +659,7 @@ func TestRulesUpdateError(t *testing.T) {
 	})
 	cc := newTestCloud(t, mux)
 
-	_, err := cc.Rules.Update(context.Background(), cloud.UpdateRuleParams{Key: "nonexistent"})
+	_, err := cc.Rules.Update(context.Background(), cloud.UpdateRuleParams{Key: "nonexistent", Organization: "myorg"})
 	require.Error(t, err)
 	assert.True(t, sqapi.IsNotFound(err))
 }
@@ -672,7 +676,7 @@ func TestSettingsSet(t *testing.T) {
 	})
 	cc := newTestCloud(t, mux)
 
-	err := cc.Settings.Set(context.Background(), "proj1", "sonar.coverage.exclusions", "**/*.java")
+	err := cc.Settings.Set(context.Background(), "proj1", "sonar.coverage.exclusions", "**/*.java", "myorg")
 	require.NoError(t, err)
 }
 
@@ -683,7 +687,7 @@ func TestSettingsSetError(t *testing.T) {
 	})
 	cc := newTestCloud(t, mux)
 
-	err := cc.Settings.Set(context.Background(), "p", "k", "v")
+	err := cc.Settings.Set(context.Background(), "p", "k", "v", "")
 	require.Error(t, err)
 	assert.True(t, sqapi.IsForbidden(err))
 }
@@ -698,7 +702,7 @@ func TestSettingsSetValues(t *testing.T) {
 	})
 	cc := newTestCloud(t, mux)
 
-	err := cc.Settings.SetValues(context.Background(), "proj1", "sonar.exclusions", []string{"a.java", "b.java", "c.java"})
+	err := cc.Settings.SetValues(context.Background(), "proj1", "sonar.exclusions", []string{"a.java", "b.java", "c.java"}, "myorg")
 	require.NoError(t, err)
 }
 

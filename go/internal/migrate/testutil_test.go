@@ -395,6 +395,41 @@ func setupExtractData(dir string) {
 	writeJSONL(filepath.Join(extractDir, "getPortfolioProjects"), nil)
 }
 
+// newFailingCloudServer creates a mock server that returns 403 for all POST requests.
+func newFailingCloudServer() *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"errors":[{"msg":"Insufficient privileges"}]}`)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{})
+	})
+	return httptest.NewServer(mux)
+}
+
+// newAlreadyExistsButLookupFailsServer creates a mock Cloud server where POST
+// create endpoints return 400 "already exists" AND GET search/lookup endpoints
+// also return errors. This exercises the "create failed + lookup failed" paths.
+func newAlreadyExistsButLookupFailsServer() *httptest.Server {
+	existsBody := `{"errors":[{"msg":"already exists"}]}`
+	mux := http.NewServeMux()
+
+	// POST create endpoints — return 400 "already exists".
+	mux.HandleFunc("POST /", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		fmt.Fprint(w, existsBody)
+	})
+
+	// GET lookup endpoints — return 500 to simulate lookup failure.
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"errors":[{"msg":"Internal error"}]}`, 500)
+	})
+
+	return httptest.NewServer(mux)
+}
+
 func writeJSON(path string, data any) {
 	os.MkdirAll(filepath.Dir(path), 0o755)
 	b, _ := json.Marshal(data)
