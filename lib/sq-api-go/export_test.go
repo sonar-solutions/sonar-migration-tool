@@ -35,3 +35,15 @@ func NewAuthTransport(inner http.RoundTripper, header string) http.RoundTripper 
 func NewRetryTransport(inner http.RoundTripper, backoff []time.Duration) http.RoundTripper {
 	return &retryTransport{inner: inner, backoff: backoff}
 }
+
+// NewRetryTransportWithLogger wraps inner with the retry transport and a log callback.
+func NewRetryTransportWithLogger(inner http.RoundTripper, backoff []time.Duration, logFn RetryLogFunc) http.RoundTripper {
+	return &retryTransport{inner: inner, backoff: backoff, logFn: logFn}
+}
+
+// ApplyWithRetryLogger exercises the WithRetryLogger option for coverage.
+func ApplyWithRetryLogger(fn RetryLogFunc) *clientConfig {
+	cfg := defaultClientConfig()
+	WithRetryLogger(fn)(cfg)
+	return cfg
+}

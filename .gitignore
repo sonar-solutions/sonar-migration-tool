@@ -45,6 +45,7 @@ my-*.json
 # sq-api-go: ignore lib/* but keep the library
 lib/*
 !lib/sq-api-go/
+lib/sq-api-go/coverage.out
 
 # Logs
 *.log

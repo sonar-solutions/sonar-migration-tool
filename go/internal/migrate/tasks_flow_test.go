@@ -436,6 +436,26 @@ func TestApplyGroupPermissions(t *testing.T) {
 	if len(items2) != 1 {
 		t.Errorf("expected 1 output item (still written), got %d", len(items2))
 	}
+
+	// Verify counter tracks successes.
+	counter := NewTaskCounter("test")
+	w3, _ := e.Store.Writer("testApplyGroupPermsCounter")
+	data3 := json.RawMessage(`{"name":"devs","permissions":["scan"]}`)
+	applyGroupPermissions(context.Background(), e, data3, pm, w3, counter)
+	if counter.succeeded.Load() != 1 {
+		t.Errorf("expected 1 success, got %d", counter.succeeded.Load())
+	}
+
+	// Verify counter tracks failures (use failing server).
+	failSrv := newFailingCloudServer()
+	defer failSrv.Close()
+	failE := newTestExecutor(failSrv, apiSrv, dir)
+	failCounter := NewTaskCounter("test")
+	w4, _ := failE.Store.Writer("testApplyGroupPermsFail")
+	applyGroupPermissions(context.Background(), failE, data3, pm, w4, failCounter)
+	if failCounter.failed.Load() != 1 {
+		t.Errorf("expected 1 failure, got %d", failCounter.failed.Load())
+	}
 }
 
 func TestApplyOrgPermissions(t *testing.T) {
@@ -457,6 +477,23 @@ func TestApplyOrgPermissions(t *testing.T) {
 	// Empty permissions — should be a no-op.
 	data3 := json.RawMessage(`{"permissions":[]}`)
 	applyOrgPermissions(context.Background(), e, data3, "devs", testCloudOrg, NewTaskCounter("test"))
+
+	// Verify counter tracks successes and failures.
+	counter := NewTaskCounter("test")
+	data4 := json.RawMessage(`{"permissions":["scan","admin"]}`)
+	applyOrgPermissions(context.Background(), e, data4, "devs", testCloudOrg, counter)
+	if counter.succeeded.Load() != 2 {
+		t.Errorf("expected 2 successes, got %d", counter.succeeded.Load())
+	}
+
+	failSrv := newFailingCloudServer()
+	defer failSrv.Close()
+	failE := newTestExecutor(failSrv, apiSrv, dir)
+	failCounter := NewTaskCounter("test")
+	applyOrgPermissions(context.Background(), failE, data4, "devs", testCloudOrg, failCounter)
+	if failCounter.failed.Load() != 2 {
+		t.Errorf("expected 2 failures, got %d", failCounter.failed.Load())
+	}
 }
 
 func TestDeleteTasks(t *testing.T) {
@@ -589,6 +626,38 @@ func TestSetPortfolioProjects(t *testing.T) {
 	}
 }
 
+// TestCreateTasksLookupFailure exercises the "already exists + lookup fails" path
+// in create tasks, where the create returns 400 and the subsequent GET lookup also fails.
+func TestCreateTasksLookupFailure(t *testing.T) {
+	lookupFailSrv := newAlreadyExistsButLookupFailsServer()
+	defer lookupFailSrv.Close()
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+	dir := t.TempDir()
+	setupExtractData(dir)
+	e := newTestExecutor(lookupFailSrv, apiSrv, dir)
+	setupCreateOutputs(t, e)
+
+	reg := BuildMigrateRegistry(RegisterAll())
+	lookupFailTasks := []string{
+		"createProfiles",
+		"createGates",
+		"createGroups",
+		"createPermissionTemplates",
+	}
+	for _, taskName := range lookupFailTasks {
+		def, ok := reg[taskName]
+		if !ok {
+			t.Errorf("task %q not found", taskName)
+			continue
+		}
+		err := def.Run(context.Background(), e)
+		if err != nil {
+			t.Errorf("task %q should warn-and-swallow, got: %v", taskName, err)
+		}
+	}
+}
+
 func TestRunMigrateIntegration(t *testing.T) {
 	cloudSrv := newMockCloudServer()
 	defer cloudSrv.Close()
@@ -611,5 +680,79 @@ func TestRunMigrateIntegration(t *testing.T) {
 	_, err := RunMigrate(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("RunMigrate: %v", err)
+	}
+}
+
+// TestTasksWithFailingServer runs all task functions against a server that
+// returns 403 for all POST requests. This exercises the error-path logging
+// (logAPIWarn, counter.Fail) that the happy-path tests don't reach.
+func TestTasksWithFailingServer(t *testing.T) {
+	failSrv := newFailingCloudServer()
+	defer failSrv.Close()
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+	dir := t.TempDir()
+	setupExtractData(dir)
+	e := newTestExecutor(failSrv, apiSrv, dir)
+	setupCreateOutputs(t, e)
+
+	// Write org mapping for buildServerOrgLookup.
+	w, _ := e.Store.Writer("generateOrganizationMappings")
+	orgData, _ := json.Marshal(map[string]any{
+		"server_url": testServerURL, "sonarcloud_org_key": testCloudOrg,
+	})
+	_ = w.WriteChunk([]json.RawMessage{orgData})
+
+	reg := BuildMigrateRegistry(RegisterAll())
+
+	// These tasks should not return errors — they warn-and-swallow.
+	// The failing server exercises the counter.Fail() + logAPIWarn paths.
+	errorPathTasks := []string{
+		// Associate tasks.
+		"setProjectProfiles",
+		"setProjectGates",
+		"setProjectGroupPermissions",
+		"setProjectSettings",
+		"setProjectTags",
+		// Permission tasks.
+		"setOrgGroupPermissions",
+		"setProfileGroupPermissions",
+		"createMigrationGroups",
+		"addMigrationGroupToTemplates",
+		// Configure tasks.
+		"setProfileParent",
+		"restoreProfiles",
+		"addGateConditions",
+		"setDefaultProfiles",
+		"setDefaultGates",
+		"setDefaultTemplates",
+		// Create tasks (will fail on create, not reach already-exists path).
+		"createProjects",
+		"createProfiles",
+		"createGates",
+		"createGroups",
+		"createPermissionTemplates",
+		// Rule tasks.
+		"updateRuleTags",
+		"updateRuleDescriptions",
+		// Delete tasks.
+		"deleteProjects",
+		"deleteProfiles",
+		"deleteGates",
+		"deleteGroups",
+		"deleteTemplates",
+		"deletePortfolios",
+	}
+
+	for _, taskName := range errorPathTasks {
+		def, ok := reg[taskName]
+		if !ok {
+			t.Errorf("task %q not found in registry", taskName)
+			continue
+		}
+		err := def.Run(context.Background(), e)
+		if err != nil {
+			t.Errorf("task %q should warn-and-swallow, but returned error: %v", taskName, err)
+		}
 	}
 }

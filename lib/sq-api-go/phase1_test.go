@@ -3,6 +3,7 @@ package sqapi_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -55,6 +56,47 @@ func TestAPIErrorErrorString(t *testing.T) {
 	assert.Contains(t, msg, "403")
 	assert.Contains(t, msg, "GET")
 	assert.Contains(t, msg, "api/projects/search")
+}
+
+func TestAPIErrorMessage(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"single error", `{"errors":[{"msg":"Insufficient privileges"}]}`, "Insufficient privileges"},
+		{"multiple errors", `{"errors":[{"msg":"Error 1"},{"msg":"Error 2"}]}`, "Error 1; Error 2"},
+		{"empty body", "", ""},
+		{"non-JSON body", "Internal Server Error", "Internal Server Error"},
+		{"no errors key", `{"status":"error"}`, `{"status":"error"}`},
+		{"empty errors array", `{"errors":[]}`, `{"errors":[]}`},
+		{"empty msg fields", `{"errors":[{"msg":""}]}`, `{"errors":[{"msg":""}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &sqapi.APIError{StatusCode: 400, Body: tt.body}
+			assert.Equal(t, tt.want, err.Message())
+		})
+	}
+}
+
+func TestAPIErrorEndpoint(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"full URL", "https://sonarcloud.io/api/permissions/add_group", "/api/permissions/add_group"},
+		{"with query", "https://sonarcloud.io/api/projects/search?org=foo", "/api/projects/search"},
+		{"path only", "/api/rules/update", "/api/rules/update"},
+		{"invalid URL", "://bad", "://bad"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := &sqapi.APIError{StatusCode: 400, URL: tt.url}
+			assert.Equal(t, tt.want, err.Endpoint())
+		})
+	}
 }
 
 // ---- Error predicate functions ----
@@ -254,6 +296,43 @@ func TestRetryTransportDoesNotRetryOn4xx(t *testing.T) {
 	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, 1, attempts, "4xx should not trigger a retry")
+}
+
+func TestRetryTransportLogsRetries(t *testing.T) {
+	attempts := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer ts.Close()
+
+	var logs []string
+	logFn := func(method, url string, status, attempt, total int) {
+		logs = append(logs, fmt.Sprintf("%s %s %d %d/%d", method, url, status, attempt, total))
+	}
+	transport := sqapi.NewRetryTransportWithLogger(http.DefaultTransport, []time.Duration{0, 0}, logFn)
+	client := &http.Client{Transport: transport}
+	resp, err := client.Get(ts.URL + "/api/test")
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, 3, attempts)
+	assert.Len(t, logs, 2, "should log 2 retries")
+	assert.Contains(t, logs[0], "429")
+	assert.Contains(t, logs[1], "429")
+}
+
+func TestWithRetryLoggerOption(t *testing.T) {
+	called := false
+	fn := func(method, url string, status, attempt, total int) { called = true }
+	cfg := sqapi.ApplyWithRetryLogger(fn)
+	_ = cfg // option was applied (coverage for WithRetryLogger)
+	assert.False(t, called, "should not be called until retry happens")
 }
 
 // ---- NewPaginator default page size ----

@@ -1,13 +1,18 @@
 package migrate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	sqapi "github.com/sonar-solutions/sq-api-go"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 )
@@ -203,5 +208,112 @@ func TestValidPermissions(t *testing.T) {
 	}
 	if validPermissions["delete"] {
 		t.Error("expected delete to be invalid")
+	}
+}
+
+func TestLogAPIWarnWithAPIError(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	apiErr := &sqapi.APIError{
+		StatusCode: 403,
+		Method:     "POST",
+		URL:        "https://sonarcloud.io/api/permissions/add_group",
+		Body:       `{"errors":[{"msg":"Insufficient privileges"}]}`,
+	}
+	logAPIWarn(logger, "operation failed", apiErr, "project", "proj1")
+
+	output := buf.String()
+	if !strings.Contains(output, "Insufficient privileges") {
+		t.Errorf("expected parsed error message, got: %s", output)
+	}
+	if !strings.Contains(output, "status=403") {
+		t.Errorf("expected status=403, got: %s", output)
+	}
+	if !strings.Contains(output, "endpoint=/api/permissions/add_group") {
+		t.Errorf("expected endpoint, got: %s", output)
+	}
+	if !strings.Contains(output, "project=proj1") {
+		t.Errorf("expected project attr, got: %s", output)
+	}
+}
+
+func TestLogAPIWarnWithPlainError(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	logAPIWarn(logger, "something failed", errors.New("connection refused"), "task", "test")
+
+	output := buf.String()
+	if !strings.Contains(output, "connection refused") {
+		t.Errorf("expected plain error, got: %s", output)
+	}
+	if strings.Contains(output, "status=") {
+		t.Errorf("should not have status for plain error, got: %s", output)
+	}
+}
+
+func TestTaskCounterFailAndSummary(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	c := NewTaskCounter("testTask")
+	c.Success()
+	c.Success()
+	c.Fail()
+	c.LogSummary(logger)
+
+	output := buf.String()
+	if !strings.Contains(output, "succeeded=2") {
+		t.Errorf("expected succeeded=2, got: %s", output)
+	}
+	if !strings.Contains(output, "failed=1") {
+		t.Errorf("expected failed=1, got: %s", output)
+	}
+	if !strings.Contains(output, "total=3") {
+		t.Errorf("expected total=3, got: %s", output)
+	}
+}
+
+func TestTaskCounterEmptySummary(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	c := NewTaskCounter("empty")
+	c.LogSummary(logger)
+
+	if buf.Len() > 0 {
+		t.Errorf("expected no output for empty counter, got: %s", buf.String())
+	}
+}
+
+func TestProgressLoggerZeroInterval(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// total=0 → interval=0 → Increment should be a no-op
+	prog := newProgressLogger(logger, "test", 0)
+	prog.Increment()
+
+	if buf.Len() > 0 {
+		t.Errorf("expected no output for zero-interval progress, got: %s", buf.String())
+	}
+}
+
+func TestProgressLoggerLogsAtInterval(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// total=50 → interval=50 (< 100 branch)
+	prog := newProgressLogger(logger, "test", 50)
+	for i := range 49 {
+		prog.Increment()
+		if buf.Len() > 0 {
+			t.Fatalf("unexpected log at iteration %d", i)
+		}
+	}
+	prog.Increment() // 50th item
+	if !strings.Contains(buf.String(), fmt.Sprintf("completed=%d", 50)) {
+		t.Errorf("expected progress log at 50, got: %s", buf.String())
 	}
 }

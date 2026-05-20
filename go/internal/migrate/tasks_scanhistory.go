@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -174,12 +173,6 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 	zipBytes, err := scanreport.PackageReport(reportData)
 	if err != nil {
 		return nil, fmt.Errorf("packaging report: %w", err)
-	}
-
-	// DEBUG: save ZIP for inspection
-	debugPath := fmt.Sprintf("/tmp/scanner-report-%s-%s.zip", input.CloudKey, input.Branch)
-	if wErr := os.WriteFile(debugPath, zipBytes, 0644); wErr == nil {
-		e.Logger.Info("DEBUG: saved report ZIP", "path", debugPath, "size", len(zipBytes))
 	}
 
 	cfg := scanreport.SubmitConfig{
