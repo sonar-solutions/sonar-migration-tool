@@ -70,6 +70,8 @@ func runDeleteProjects(ctx context.Context, e *Executor) error {
 			if key == "" {
 				return nil
 			}
+			e.Logger.Debug("project api call: POST /api/projects/delete",
+				"project", key)
 			err := e.Cloud.Projects.Delete(ctx, key)
 			if err != nil {
 				counter.Fail()
