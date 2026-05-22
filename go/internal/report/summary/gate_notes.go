@@ -72,7 +72,7 @@ func collectGateMappingNotes(runDir string) map[string][]string {
 			switch note.Action {
 			case "remapped":
 				ag.remapped = append(ag.remapped,
-					fmt.Sprintf("%s → %s", note.SourceMetric, strings.Join(note.TargetMetrics, ", ")))
+					fmt.Sprintf("%s --> %s", note.SourceMetric, strings.Join(note.TargetMetrics, ", ")))
 			case "dropped":
 				ag.dropped = append(ag.dropped, note.SourceMetric)
 			}
@@ -86,14 +86,14 @@ func collectGateMappingNotes(runDir string) map[string][]string {
 		if len(ag.remapped) > 0 {
 			sort.Strings(ag.remapped)
 			msgs = append(msgs,
-				"Some metrics were mapped to the closest SonarQube Cloud equivalents (#143): "+
-					strings.Join(ag.remapped, "; "))
+				"Some metrics were mapped to the closest SonarQube Cloud equivalents:\n"+
+					strings.Join(ag.remapped, "\n"))
 		}
 		if len(ag.dropped) > 0 {
 			sort.Strings(ag.dropped)
 			msgs = append(msgs,
-				"Some conditions were dropped because the source metric has no SonarQube Cloud equivalent: "+
-					strings.Join(ag.dropped, ", "))
+				"Some conditions were dropped because the source metric has no SonarQube Cloud equivalent:\n"+
+					strings.Join(ag.dropped, "\n"))
 		}
 		if len(msgs) > 0 {
 			out[gateID] = msgs

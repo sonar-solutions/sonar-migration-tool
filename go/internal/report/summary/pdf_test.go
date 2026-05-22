@@ -231,8 +231,8 @@ func TestBuildUnifiedRowsOrdering(t *testing.T) {
 	if rows[4].name != "GateD" {
 		t.Errorf("expected unused skipped second, got name %q", rows[4].name)
 	}
-	if rows[1].details != "43 — Add condition: foo" {
-		t.Errorf("expected partial details to combine cloud key + issues, got %q", rows[1].details)
+	if rows[1].details != "43\nAdd condition: foo" {
+		t.Errorf("expected partial details to combine cloud key + issues on separate lines, got %q", rows[1].details)
 	}
 }
 

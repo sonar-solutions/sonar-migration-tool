@@ -586,14 +586,19 @@ func TestCollectSummaryQualityGateMetricMappingMovesToPartial(t *testing.T) {
 		t.Errorf("expected Backend QG in Partial, got %q", item.Name)
 	}
 	joined := strings.Join(item.Issues, " | ")
-	if !strings.Contains(joined, "new_security_rating_with_aica → new_security_rating") {
-		t.Errorf("expected remap detail in Issues, got %q", joined)
+	if !strings.Contains(joined, "new_security_rating_with_aica --> new_security_rating") {
+		t.Errorf("expected remap detail (with -->) in Issues, got %q", joined)
 	}
 	if !strings.Contains(joined, "contains_ai_code") {
 		t.Errorf("expected dropped metric in Issues, got %q", joined)
 	}
-	if !strings.Contains(joined, "#143") {
-		t.Errorf("expected #143 reference in remap message, got %q", joined)
+	if strings.Contains(joined, "#143") {
+		t.Errorf("did not expect #143 reference in user-facing message, got %q", joined)
+	}
+	// Each metric entry should be on its own line within an Issues message.
+	if !strings.Contains(joined, "\nnew_security_rating_with_aica -->") &&
+		!strings.HasPrefix(item.Issues[0], "Some metrics were mapped") {
+		t.Errorf("expected newline-separated metric list, got %q", joined)
 	}
 }
 

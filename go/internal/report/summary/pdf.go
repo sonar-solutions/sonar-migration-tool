@@ -389,12 +389,12 @@ func successDetails(item EntityItem) string {
 	return fmt.Sprintf("%s — scan history: %s", cloudKey, scanStatusLabel(scan))
 }
 
-// partialDetails formats the Details column for a Partial item — joined issues,
-// and the cloud key if known.
+// partialDetails formats the Details column for a Partial item — each issue
+// rendered on its own line, prefixed by the cloud key if known.
 func partialDetails(item EntityItem) string {
-	issues := strings.Join(item.Issues, "; ")
+	issues := strings.Join(item.Issues, "\n")
 	if item.Detail != "" && issues != "" {
-		return item.Detail + " — " + issues
+		return item.Detail + "\n" + issues
 	}
 	if issues != "" {
 		return issues
