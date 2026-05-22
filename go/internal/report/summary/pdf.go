@@ -260,21 +260,30 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 	}
 
 	// Single-line rows render at the original 6mm height; when the Details
-	// text wraps, each extra line is set to a tighter 3.6mm so the row does
-	// not balloon vertically. This still leaves enough breathing room above
-	// and below 8pt text for legibility.
+	// text wraps, each extra line is set to a tighter 3.0mm so the row does
+	// not balloon vertically. Multi-line details (typically metric mapping
+	// notes) also drop to a smaller 6pt font so the per-line cost stays low.
 	const (
-		singleLineH  = 6.0
-		wrappedLineH = 3.6
+		singleLineH       = 6.0
+		wrappedLineH      = 3.0
+		bodyFontSize      = 8.0
+		multiLineFontSize = 6.0
 	)
-	pdf.SetFont(pdfFontFamily, "", 8)
+	pdf.SetFont(pdfFontFamily, "", bodyFontSize)
 	for i, row := range rows {
 		// Compute wrapped line count for the Details column so the whole row
 		// (Name, Organization, Outcome) can match that height. SplitLines
 		// already accounts for the cell's internal margin.
 		detailsText := sanitizeForPDF(row.details)
 		detailsCol := len(widths) - 1
+		multiLine := strings.Contains(detailsText, "\n")
+		detailsFontSize := bodyFontSize
+		if multiLine {
+			detailsFontSize = multiLineFontSize
+		}
+		pdf.SetFont(pdfFontFamily, "", detailsFontSize)
 		lineCount := len(pdf.SplitLines([]byte(detailsText), widths[detailsCol]))
+		pdf.SetFont(pdfFontFamily, "", bodyFontSize)
 		if lineCount < 1 {
 			lineCount = 1
 		}
@@ -313,10 +322,13 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 		col++
 		// Details in black, regular — MultiCell wraps long text across lines
 		// rather than truncating. lineH is per-line so the cell ends up at
-		// rowHeight, matching the row.
+		// rowHeight, matching the row. Multi-line details drop to a smaller
+		// font so a long metric-mapping block doesn't visually dominate the
+		// table.
 		setColor(pdf, colorBlack)
-		pdf.SetFont(pdfFontFamily, "", 8)
+		pdf.SetFont(pdfFontFamily, "", detailsFontSize)
 		pdf.MultiCell(widths[col], lineH, detailsText, "1", "L", true)
+		pdf.SetFont(pdfFontFamily, "", bodyFontSize)
 	}
 }
 
