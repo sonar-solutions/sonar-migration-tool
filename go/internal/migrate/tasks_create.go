@@ -151,7 +151,10 @@ func runCreateGates(ctx context.Context, e *Executor) error {
 			}
 			name := extractField(item, "name")
 
+			e.Logger.Debug("gate api call: POST /api/qualitygates/create",
+				"name", name, "org", orgKey)
 			var gateID string
+			wasPreexisting := false
 			gate, err := e.Cloud.QualityGates.Create(ctx, name, orgKey)
 			if err != nil {
 				if !sqapi.IsAlreadyExists(err) {
@@ -159,22 +162,30 @@ func runCreateGates(ctx context.Context, e *Executor) error {
 					logAPIWarn(e.Logger, "createGates: create failed", err, "name", name)
 					return nil
 				}
-				e.Logger.Info("createGates: already exists, looking up", "name", name)
+				e.Logger.Info("createGates: already exists, will override conditions", "name", name)
+				e.Logger.Debug("gate api call: GET /api/qualitygates/list (lookup)",
+					"name", name, "org", orgKey)
 				gateID, err = lookupExistingGate(ctx, e.Raw, name, orgKey)
 				if err != nil {
 					counter.Fail()
 					logAPIWarn(e.Logger, "createGates: lookup failed", err, "name", name)
 					return nil
 				}
+				wasPreexisting = true
 				counter.Success()
+				e.Logger.Debug("gate operation: reusing existing gate",
+					"name", name, "gate_id", gateID, "org", orgKey)
 			} else {
 				counter.Success()
 				gateID = strconv.Itoa(gate.ID)
+				e.Logger.Debug("gate operation: created new gate",
+					"name", name, "gate_id", gateID, "org", orgKey)
 			}
 
 			result := common.EnrichRaw(item, map[string]any{
 				"cloud_gate_id":      gateID,
 				"sonarcloud_org_key": orgKey,
+				"was_preexisting":    wasPreexisting,
 			})
 			return w.WriteOne(result)
 		})

@@ -374,11 +374,12 @@ func setupExtractData(dir string) {
 	writeJSON(filepath.Join(extractDir, "extract.json"),
 		map[string]any{"url": testServerURL, "edition": "enterprise"})
 
-	// Gate conditions.
+	// Gate conditions. The real extract task (api/qualitygates/show →
+	// enrichAll(conditions, ...)) writes one record per condition, each
+	// enriched with the parent gateName and serverUrl. Match that shape so
+	// runGetGateConditions sees the join key it expects.
 	writeJSONL(filepath.Join(extractDir, "getGateConditions"), []map[string]any{
-		{"name": "Custom Gate", "conditions": []map[string]any{
-			{"metric": "coverage", "op": "LT", "error": "80"},
-		}, "serverUrl": testServerURL},
+		{"metric": "coverage", "op": "LT", "error": "80", "gateName": "Custom Gate", "serverUrl": testServerURL},
 	})
 
 	// Profile backups.

@@ -99,6 +99,15 @@ func collectSection(store *common.DataStore, def sectionDef,
 		}
 	}
 
+	// Quality gates whose conditions were remapped (#143) or dropped
+	// because no SQC equivalent exists are reported as Partial. The
+	// per-condition decisions are written by addGateConditions to a
+	// sidecar JSONL.
+	if def.Name == "Quality Gates" {
+		notes := collectGateMappingNotes(store.BaseDir())
+		succeeded, partial = applyGateMappingNotes(succeeded, partial, notes)
+	}
+
 	return Section{
 		Name:      def.Name,
 		Succeeded: succeeded,

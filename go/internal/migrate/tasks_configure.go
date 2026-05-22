@@ -108,19 +108,36 @@ func runRestoreProfiles(ctx context.Context, e *Executor) error {
 }
 
 func runAddGateConditions(ctx context.Context, e *Executor) error {
+	// Sidecar JSONL recording per-condition mapping notes — used by the
+	// summary report to mark a quality gate as Partial when some of its
+	// conditions were either remapped to a close SQC equivalent (#143) or
+	// dropped because no SQC equivalent exists.
+	notesW, _ := e.Store.Writer("addGateConditions.notes")
 	counter := NewTaskCounter("addGateConditions")
 	err := forEachMigrateItem(ctx, e, "addGateConditions", "getGateConditions",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			gateIDStr := extractField(item, "cloud_gate_id")
+			gateName := extractField(item, "gate_name")
+			wasPreexisting := extractBool(item, "was_preexisting")
 			if shouldSkipOrg(orgKey) || gateIDStr == "" {
 				return nil
 			}
 			gateID, _ := strconv.Atoi(gateIDStr)
 
+			// Override semantics: if the target gate already existed on SQC,
+			// wipe its current conditions first so the migrated set is the
+			// authoritative one — never a union of source + whatever was
+			// already on the target.
+			if wasPreexisting {
+				clearTargetGateConditions(ctx, e, counter, gateName, orgKey)
+			}
+
 			// Extract conditions from the gate data.
 			var obj map[string]json.RawMessage
-			json.Unmarshal(item, &obj)
+			if err := json.Unmarshal(item, &obj); err != nil {
+				return nil
+			}
 			conditionsRaw, ok := obj["conditions"]
 			if !ok {
 				return nil
@@ -135,21 +152,110 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 				if metric == "" || op == "" {
 					continue
 				}
-				_, err := e.Cloud.QualityGates.CreateCondition(ctx, cloud.CreateConditionParams{
-					GateID: gateID, Organization: orgKey,
-					Metric: metric, Op: op, Error: errorVal,
-				})
-				if err != nil {
+
+				targets, mapped := lookupMetricReplacement(metric)
+				if mapped && len(targets) == 0 {
+					e.Logger.Warn("addGateConditions: source metric has no SonarQube Cloud equivalent — condition skipped (#143)",
+						"gate", gateName, "metric", metric, "op", op, "error", errorVal)
+					recordGateConditionNote(notesW, gateIDStr, gateName, "dropped", metric, nil)
 					counter.Fail()
-					logAPIWarn(e.Logger, "addGateConditions failed", err, "metric", metric)
+					continue
+				}
+				if !mapped {
+					targets = []replacementCondition{{Metric: metric}}
 				} else {
-					counter.Success()
+					e.Logger.Info("addGateConditions: source metric remapped to SonarQube Cloud equivalent(s) (#143)",
+						"gate", gateName, "source_metric", metric, "target_metrics", targets)
+					targetMetrics := make([]string, 0, len(targets))
+					for _, repl := range targets {
+						targetMetrics = append(targetMetrics, repl.Metric)
+					}
+					recordGateConditionNote(notesW, gateIDStr, gateName, "remapped", metric, targetMetrics)
+				}
+
+				for _, repl := range targets {
+					effOp := repl.Op
+					if effOp == "" {
+						effOp = op
+					}
+					effErr := repl.Error
+					if effErr == "" {
+						effErr = errorVal
+					}
+					e.Logger.Debug("gate api call: POST /api/qualitygates/create_condition",
+						"gate_id", gateID, "metric", repl.Metric, "op", effOp, "error", effErr, "org", orgKey,
+						"source_metric", metric)
+					_, err := e.Cloud.QualityGates.CreateCondition(ctx, cloud.CreateConditionParams{
+						GateID: gateID, Organization: orgKey,
+						Metric: repl.Metric, Op: effOp, Error: effErr,
+					})
+					if err != nil {
+						counter.Fail()
+						logAPIWarn(e.Logger, "addGateConditions failed", err,
+							"metric", repl.Metric, "source_metric", metric)
+					} else {
+						counter.Success()
+					}
 				}
 			}
 			return nil
 		})
 	counter.LogSummary(e.Logger)
 	return err
+}
+
+// recordGateConditionNote appends a sidecar JSONL entry describing a
+// per-condition mapping decision (a metric remap per #143 or a dropped
+// condition with no SQC equivalent). The summary report reads this file to
+// mark the parent quality gate as Partial.
+func recordGateConditionNote(w *common.ChunkWriter, cloudGateID, gateName, action, sourceMetric string, targetMetrics []string) {
+	if w == nil || cloudGateID == "" {
+		return
+	}
+	rec := map[string]any{
+		"cloud_gate_id": cloudGateID,
+		"gate_name":     gateName,
+		"action":        action, // "remapped" | "dropped"
+		"source_metric": sourceMetric,
+	}
+	if len(targetMetrics) > 0 {
+		rec["target_metrics"] = targetMetrics
+	}
+	b, _ := json.Marshal(rec)
+	_ = w.WriteOne(b)
+}
+
+// clearTargetGateConditions removes every condition from a pre-existing target
+// quality gate before the migrated source conditions are added. Failures here
+// are logged at Warn level but do not abort the migration — the subsequent
+// CreateCondition calls will surface a conflict if the cleanup did not take
+// effect.
+func clearTargetGateConditions(ctx context.Context, e *Executor, counter *TaskCounter, gateName, orgKey string) {
+	if gateName == "" {
+		return
+	}
+	e.Logger.Debug("gate api call: GET /api/qualitygates/show",
+		"name", gateName, "org", orgKey)
+	gate, err := e.Cloud.QualityGates.Show(ctx, gateName, orgKey)
+	if err != nil {
+		logAPIWarn(e.Logger, "addGateConditions: show gate failed during override cleanup", err,
+			"gate", gateName)
+		return
+	}
+	for _, cond := range gate.Conditions {
+		if cond.ID == 0 {
+			continue
+		}
+		e.Logger.Debug("gate api call: POST /api/qualitygates/delete_condition",
+			"gate", gateName, "condition_id", cond.ID, "metric", cond.Metric, "org", orgKey)
+		if err := e.Cloud.QualityGates.DeleteCondition(ctx, cond.ID, orgKey); err != nil {
+			counter.Fail()
+			logAPIWarn(e.Logger, "addGateConditions: delete existing condition failed", err,
+				"gate", gateName, "condition_id", cond.ID, "metric", cond.Metric)
+		}
+	}
+	e.Logger.Info("addGateConditions: cleared pre-existing conditions on overridden gate",
+		"gate", gateName, "count", len(gate.Conditions))
 }
 
 func runSetDefaultProfiles(ctx context.Context, e *Executor) error {
@@ -185,8 +291,11 @@ func runSetDefaultGates(ctx context.Context, e *Executor) error {
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			gateIDStr := extractField(item, "cloud_gate_id")
+			gateName := extractField(item, "name")
 			gateID, _ := strconv.Atoi(gateIDStr)
 
+			e.Logger.Debug("gate api call: POST /api/qualitygates/set_as_default",
+				"name", gateName, "gate_id", gateIDStr, "org", orgKey)
 			err := e.Cloud.QualityGates.SetDefault(ctx, gateID, orgKey)
 			if err != nil {
 				counter.Fail()

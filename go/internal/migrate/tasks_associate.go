@@ -105,6 +105,8 @@ func runSetProjectGates(ctx context.Context, e *Executor) error {
 			if !ok {
 				return nil
 			}
+			e.Logger.Debug("gate api call: POST /api/qualitygates/select",
+				"gate_id", gateID, "gate_name", gateName, "project", projectKey, "org", orgKey)
 			if err := e.Cloud.QualityGates.Select(ctx, gateID, projectKey, orgKey); err != nil {
 				counter.Fail()
 				logAPIWarn(e.Logger, "setProjectGates failed", err, "project", projectKey)

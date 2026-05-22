@@ -523,6 +523,156 @@ func portfolioNames(items []EntityItem) []string {
 	return out
 }
 
+// TestCollectSummaryQualityGateMappingDedupesAcrossSourceOrgs verifies
+// that when the same SQS source gate is migrated into a single SQC gate
+// from several source orgs (gates.csv carries one row per source-org
+// pairing, all sharing the same cloud_gate_id), the Details column shows
+// each mapping decision exactly once — not repeated per source org.
+func TestCollectSummaryQualityGateMappingDedupesAcrossSourceOrgs(t *testing.T) {
+	dir := t.TempDir()
+	runID := "run-01"
+	runDir := filepath.Join(dir, runID)
+	os.MkdirAll(runDir, 0o755)
+
+	writeTaskJSONL(t, runDir, "createGates", []map[string]any{
+		{"name": "Shared QG", "sonarcloud_org_key": "org1", "cloud_gate_id": "42"},
+	})
+
+	// Three identical sidecar entries for the same (cloud_gate_id,
+	// source_metric, target_metric) tuple — emulates addGateConditions
+	// recording the same remap from three different source SQS orgs that
+	// all migrated into a single target SQC org.
+	notesDir := filepath.Join(runDir, "addGateConditions.notes")
+	os.MkdirAll(notesDir, 0o755)
+	dup := map[string]any{
+		"cloud_gate_id":  "42",
+		"gate_name":      "Shared QG",
+		"action":         "remapped",
+		"source_metric":  "new_security_rating_with_aica",
+		"target_metrics": []string{"new_security_rating"},
+	}
+	dupDropped := map[string]any{
+		"cloud_gate_id": "42",
+		"gate_name":     "Shared QG",
+		"action":        "dropped",
+		"source_metric": "contains_ai_code",
+	}
+	f, _ := os.Create(filepath.Join(notesDir, "results.1.jsonl"))
+	for i := 0; i < 3; i++ {
+		b, _ := json.Marshal(dup)
+		f.Write(b)
+		f.Write([]byte("\n"))
+		b, _ = json.Marshal(dupDropped)
+		f.Write(b)
+		f.Write([]byte("\n"))
+	}
+	f.Close()
+
+	summary, err := CollectSummary(runDir, dir)
+	if err != nil {
+		t.Fatalf("CollectSummary: %v", err)
+	}
+	gates := findSection(summary, "Quality Gates")
+	if len(gates.Partial) != 1 {
+		t.Fatalf("expected 1 Partial gate, got %d", len(gates.Partial))
+	}
+	joined := strings.Join(gates.Partial[0].Issues, "\n")
+	// Each remap/dropped metric should appear exactly once.
+	if got := strings.Count(joined, "new_security_rating_with_aica --> new_security_rating"); got != 1 {
+		t.Errorf("expected remap line exactly once, got %d occurrences in:\n%s", got, joined)
+	}
+	if got := strings.Count(joined, "contains_ai_code"); got != 1 {
+		t.Errorf("expected dropped metric exactly once, got %d occurrences in:\n%s", got, joined)
+	}
+}
+
+func TestCollectSummaryQualityGateMetricMappingMovesToPartial(t *testing.T) {
+	dir := t.TempDir()
+	runID := "run-01"
+	runDir := filepath.Join(dir, runID)
+	os.MkdirAll(runDir, 0o755)
+
+	// Two gates created. Only one of them has a sidecar mapping note.
+	writeTaskJSONL(t, runDir, "createGates", []map[string]any{
+		{"name": "Backend QG", "sonarcloud_org_key": "org1", "cloud_gate_id": "42"},
+		{"name": "Frontend QG", "sonarcloud_org_key": "org1", "cloud_gate_id": "99"},
+	})
+
+	// addGateConditions.notes — sidecar JSONL recording per-condition
+	// remap (#143) + dropped decisions for the Backend QG.
+	notesDir := filepath.Join(runDir, "addGateConditions.notes")
+	os.MkdirAll(notesDir, 0o755)
+	lines := []map[string]any{
+		{
+			"cloud_gate_id":  "42",
+			"gate_name":      "Backend QG",
+			"action":         "remapped",
+			"source_metric":  "new_security_rating_with_aica",
+			"target_metrics": []string{"new_security_rating"},
+		},
+		{
+			"cloud_gate_id": "42",
+			"gate_name":     "Backend QG",
+			"action":        "dropped",
+			"source_metric": "contains_ai_code",
+		},
+	}
+	f, _ := os.Create(filepath.Join(notesDir, "results.1.jsonl"))
+	for _, line := range lines {
+		b, _ := json.Marshal(line)
+		f.Write(b)
+		f.Write([]byte("\n"))
+	}
+	f.Close()
+
+	summary, err := CollectSummary(runDir, dir)
+	if err != nil {
+		t.Fatalf("CollectSummary: %v", err)
+	}
+
+	gates := findSection(summary, "Quality Gates")
+	if gates == nil {
+		t.Fatal("missing Quality Gates section")
+	}
+
+	// Backend QG should be moved to Partial; Frontend QG should remain
+	// in Succeeded untouched.
+	if len(gates.Succeeded) != 1 || gates.Succeeded[0].Name != "Frontend QG" {
+		t.Errorf("expected Frontend QG to remain in Succeeded, got %+v",
+			succeededNames(gates.Succeeded))
+	}
+	if len(gates.Partial) != 1 {
+		t.Fatalf("expected 1 Partial gate, got %d", len(gates.Partial))
+	}
+	item := gates.Partial[0]
+	if item.Name != "Backend QG" {
+		t.Errorf("expected Backend QG in Partial, got %q", item.Name)
+	}
+	joined := strings.Join(item.Issues, " | ")
+	if !strings.Contains(joined, "new_security_rating_with_aica --> new_security_rating") {
+		t.Errorf("expected remap detail (with -->) in Issues, got %q", joined)
+	}
+	if !strings.Contains(joined, "contains_ai_code") {
+		t.Errorf("expected dropped metric in Issues, got %q", joined)
+	}
+	if strings.Contains(joined, "#143") {
+		t.Errorf("did not expect #143 reference in user-facing message, got %q", joined)
+	}
+	// Each metric entry should be on its own line within an Issues message.
+	if !strings.Contains(joined, "\nnew_security_rating_with_aica -->") &&
+		!strings.HasPrefix(item.Issues[0], "Some metrics were mapped") {
+		t.Errorf("expected newline-separated metric list, got %q", joined)
+	}
+}
+
+func succeededNames(items []EntityItem) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.Name)
+	}
+	return out
+}
+
 // --- helpers ---
 
 func findSection(s *MigrationSummary, name string) *Section {
