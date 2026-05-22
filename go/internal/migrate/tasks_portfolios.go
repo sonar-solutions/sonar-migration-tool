@@ -30,60 +30,56 @@ func portfolioTasks() []TaskDef {
 	}
 }
 
-// runSetPortfolioProjects assigns the resolved project list to MANUAL source
-// portfolios. REGEXP- and TAGS-based source portfolios are skipped here and
-// handled by runConfigurePortfolios instead, so we don't overwrite their
-// selection mode with a project list.
-func runSetPortfolioProjects(ctx context.Context, e *Executor) error {
-	projectIndex := buildProjectCloudKeyIndex(e)
-	portfolioProjects := buildPortfolioProjectList(e, projectIndex)
-
-	counter := NewTaskCounter("setPortfolioProjects")
-	err := forEachMigrateItem(ctx, e, "setPortfolioProjects", "createPortfolios",
-		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
-			selectionMode := strings.ToUpper(extractField(item, "selection_mode"))
-			if selectionMode == "REGEXP" || selectionMode == "TAGS" {
-				return nil
-			}
-			portfolioID := extractField(item, "cloud_portfolio_id")
-			sourceKey := extractField(item, "source_portfolio_key")
-			projects, ok := portfolioProjects[sourceKey]
-			if !ok || len(projects) == 0 {
-				return nil
-			}
-
-			err := e.CloudAPI.Enterprises.UpdatePortfolio(ctx, cloud.UpdatePortfolioParams{
-				PortfolioID: portfolioID,
-				ProjectKeys: projects,
-			})
-			if err != nil {
-				counter.Fail()
-				logAPIWarn(e.Logger, "setPortfolioProjects failed", err,
-					"portfolio", portfolioID)
-			} else {
-				counter.Success()
-			}
-			return nil
-		})
-	counter.LogSummary(e.Logger)
-	return err
+// runSetPortfolioProjects is intentionally a no-op.
+//
+// The SonarQube Cloud portfolios PATCH endpoint requires `projects` to be an
+// array of `{branchId: <UUID>}` objects — there is no way to assign projects
+// by key. Looking up branch UUIDs per project would require an extra round
+// trip per project, so we instead translate every selection mode (including
+// MANUAL) into a `selection: "regex"` PATCH inside configurePortfolios:
+// the regex matches the resolved cloud keys exactly. The task survives only
+// as a dependency anchor for configurePortfolios.
+func runSetPortfolioProjects(_ context.Context, e *Executor) error {
+	w, err := e.Store.Writer("setPortfolioProjects")
+	if err != nil {
+		return err
+	}
+	return w.WriteChunk(nil)
 }
 
-// runConfigurePortfolios sets the SQC selection mode for REGEXP- and
-// TAGS-based source portfolios. The regex is rewritten so that it matches
-// projects under their new SonarQube Cloud key prefix (orgKey_<...>); for
-// portfolios whose projects span multiple SQC orgs, the prefix becomes a
-// non-capturing alternation of org keys.
+// runConfigurePortfolios sets the SQC selection mode for every source
+// portfolio that has a definition we can translate. Three selection modes
+// are migrated:
+//
+//   - REGEXP: rewrite the SQS regex so it matches under the SQC project-key
+//     renaming scheme (orgKey_<sqsKey>).
+//   - TAGS:   forward the source tag list verbatim.
+//   - MANUAL: turn the resolved cloud project keys into a regex that matches
+//     exactly those keys (SQC's PATCH endpoint rejects raw project keys —
+//     it requires per-project branch UUIDs we do not hold). This keeps the
+//     portfolio populated without an extra branches lookup; the trade-off
+//     is that new projects with matching keys will be auto-included, which
+//     is acceptable because cloud keys are namespaced by org.
+//
+// Selection modes NONE and REST are left alone — they map to "empty" on
+// SQC, which is the default state after createPortfolios.
+//
+// When a portfolio's resolved projects span no migrated org (typically for
+// REGEXP/TAGS portfolios on an SQS instance that has not yet computed the
+// match), the task falls back to every migrated org so the portfolio is
+// still scoped and the PATCH still goes out.
 func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 	projectIndex := buildProjectCloudKeyIndex(e)
+	portfolioProjects := buildPortfolioProjectList(e, projectIndex)
 	portfolioOrgs := buildPortfolioOrgIndex(e, projectIndex)
+	allMigratedOrgs := collectAllMigratedOrgs(projectIndex)
 
 	orgUUIDs := map[string]string{}
 	counter := NewTaskCounter("configurePortfolios")
 	err := forEachMigrateItem(ctx, e, "configurePortfolios", "createPortfolios",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			selectionMode := strings.ToUpper(extractField(item, "selection_mode"))
-			if selectionMode != "REGEXP" && selectionMode != "TAGS" {
+			if selectionMode != "REGEXP" && selectionMode != "TAGS" && selectionMode != "MANUAL" {
 				return nil
 			}
 			portfolioID := extractField(item, "cloud_portfolio_id")
@@ -91,11 +87,17 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 			if portfolioID == "" || sourceKey == "" {
 				return nil
 			}
+
 			orgs := portfolioOrgs[sourceKey]
 			if len(orgs) == 0 {
-				e.Logger.Warn("configurePortfolios: no target organization found, skipping",
-					"portfolio", sourceKey)
-				return nil
+				if len(allMigratedOrgs) == 0 {
+					e.Logger.Warn("configurePortfolios: no target organization found and no migrated orgs, skipping",
+						"portfolio", sourceKey)
+					return nil
+				}
+				e.Logger.Info("configurePortfolios: no resolved projects on source, falling back to all migrated orgs",
+					"portfolio", sourceKey, "orgs", allMigratedOrgs)
+				orgs = allMigratedOrgs
 			}
 			orgIDs, err := resolveOrgUUIDs(ctx, e, orgUUIDs, orgs)
 			if err != nil || len(orgIDs) == 0 {
@@ -117,6 +119,15 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 				if tagsStr := extractField(item, "tags"); tagsStr != "" {
 					params.Tags = strings.Split(tagsStr, ",")
 				}
+			case "MANUAL":
+				cloudKeys := portfolioProjects[sourceKey]
+				if len(cloudKeys) == 0 {
+					e.Logger.Warn("configurePortfolios: MANUAL portfolio has no resolved cloud projects, skipping",
+						"portfolio", sourceKey)
+					return nil
+				}
+				params.Selection = "regex"
+				params.RegularExpression = manualPortfolioRegex(cloudKeys)
 			}
 
 			e.Logger.Info("configurePortfolios: sending PATCH",
@@ -174,6 +185,7 @@ func buildProjectCloudKeyIndex(e *Executor) map[string]cloudProjectInfo {
 func buildPortfolioProjectList(e *Executor, projectIndex map[string]cloudProjectInfo) map[string][]string {
 	items, _ := readExtractItems(e, "getPortfolioProjects")
 	out := make(map[string][]string)
+	seen := make(map[string]map[string]bool)
 	for _, item := range items {
 		portfolioKey := extractField(item.Data, "portfolioKey")
 		refKey := extractField(item.Data, "refKey")
@@ -181,6 +193,13 @@ func buildPortfolioProjectList(e *Executor, projectIndex map[string]cloudProject
 		if !ok || info.CloudKey == "" {
 			continue
 		}
+		if seen[portfolioKey] == nil {
+			seen[portfolioKey] = map[string]bool{}
+		}
+		if seen[portfolioKey][info.CloudKey] {
+			continue
+		}
+		seen[portfolioKey][info.CloudKey] = true
 		out[portfolioKey] = append(out[portfolioKey], info.CloudKey)
 	}
 	return out
@@ -208,6 +227,23 @@ func buildPortfolioOrgIndex(e *Executor, projectIndex map[string]cloudProjectInf
 		for orgKey := range set {
 			out[portfolioKey] = append(out[portfolioKey], orgKey)
 		}
+	}
+	return out
+}
+
+// collectAllMigratedOrgs returns the unique list of SonarQube Cloud
+// organization keys that received at least one project during the run.
+// Used as the fallback target set for portfolios whose resolved-projects
+// list is empty on the source side.
+func collectAllMigratedOrgs(projectIndex map[string]cloudProjectInfo) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, info := range projectIndex {
+		if info.OrgKey == "" || seen[info.OrgKey] {
+			continue
+		}
+		seen[info.OrgKey] = true
+		out = append(out, info.OrgKey)
 	}
 	return out
 }
@@ -273,4 +309,28 @@ func transformPortfolioRegex(regex string, orgKeys []string) string {
 		return "^" + prefix + regex[1:]
 	}
 	return prefix + regex
+}
+
+// manualPortfolioRegex builds an anchored alternation regex that matches
+// exactly the provided cloud project keys. Each key is regexp-escaped so
+// dots, dashes and similar metacharacters survive.
+//
+// Example: ["org1_proj1","org1_proj-2"] → "^(?:org1_proj1|org1_proj\\-2)$"
+func manualPortfolioRegex(cloudKeys []string) string {
+	if len(cloudKeys) == 0 {
+		return ""
+	}
+	seen := map[string]bool{}
+	parts := make([]string, 0, len(cloudKeys))
+	for _, k := range cloudKeys {
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		parts = append(parts, regexp.QuoteMeta(k))
+	}
+	if len(parts) == 1 {
+		return "^" + parts[0] + "$"
+	}
+	return "^(?:" + strings.Join(parts, "|") + ")$"
 }
