@@ -817,13 +817,18 @@ func TestEnterprisesUpdatePortfolioProjects(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestEnterprisesUpdatePortfolioRegexp(t *testing.T) {
+func TestEnterprisesUpdatePortfolioRegex(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc(pathEntPortfolioP1, func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-		assert.Equal(t, "regexp", body["selection"])
+		assert.Equal(t, "regex", body["selection"])
 		assert.Equal(t, "^org1_backend-.*$", body["regularExpression"])
+		// branchKey must be present even when empty — SQC rejects the PATCH
+		// otherwise when selection is set.
+		branchKey, hasBranchKey := body["branchKey"]
+		assert.True(t, hasBranchKey, "branchKey must always travel with selection")
+		assert.Equal(t, "", branchKey)
 		orgs := body["organizationIds"].([]any)
 		assert.Len(t, orgs, 1)
 		assert.Equal(t, "org-uuid", orgs[0])
@@ -838,7 +843,7 @@ func TestEnterprisesUpdatePortfolioRegexp(t *testing.T) {
 
 	err := cc.Enterprises.UpdatePortfolio(context.Background(), cloud.UpdatePortfolioParams{
 		PortfolioID:       "p1",
-		Selection:         "regexp",
+		Selection:         "regex",
 		RegularExpression: "^org1_backend-.*$",
 		OrganizationIDs:   []string{"org-uuid"},
 	})

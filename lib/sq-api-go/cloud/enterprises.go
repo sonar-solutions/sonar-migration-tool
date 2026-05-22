@@ -104,7 +104,9 @@ func (e *EnterprisesClient) UpdatePortfolio(ctx context.Context, params UpdatePo
 }
 
 // buildPortfolioPatchBody assembles the JSON body honouring the
-// "only-send-set-fields" rule. Exposed only for testability.
+// "only-send-set-fields" rule. branchKey is always included when Selection
+// is set — SQC rejects the PATCH otherwise (the field must be present,
+// even if its value is an empty string for "default branch").
 func buildPortfolioPatchBody(params UpdatePortfolioParams) map[string]any {
 	body := map[string]any{}
 	if params.Name != "" {
@@ -115,8 +117,9 @@ func buildPortfolioPatchBody(params UpdatePortfolioParams) map[string]any {
 	}
 	if params.Selection != "" {
 		body["selection"] = params.Selection
-	}
-	if params.BranchKey != "" {
+		// branchKey must travel with selection — empty string is acceptable.
+		body["branchKey"] = params.BranchKey
+	} else if params.BranchKey != "" {
 		body["branchKey"] = params.BranchKey
 	}
 	if params.RegularExpression != "" {

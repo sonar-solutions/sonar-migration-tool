@@ -108,11 +108,15 @@ func TestRunConfigurePortfoliosRegex(t *testing.T) {
 	if patchPath != "/enterprises/portfolios/cloud-portfolio-1" {
 		t.Errorf("expected PATCH on cloud-portfolio-1, got %q", patchPath)
 	}
-	if patchBody["selection"] != "regexp" {
-		t.Errorf("expected selection=regexp, got %v", patchBody["selection"])
+	if patchBody["selection"] != "regex" {
+		t.Errorf("expected selection=regex, got %v", patchBody["selection"])
 	}
 	if patchBody["regularExpression"] != "^myorg_backend-" {
 		t.Errorf("expected regex rewrite, got %q", patchBody["regularExpression"])
+	}
+	// branchKey must always be present alongside selection (SQC requirement).
+	if branchKey, ok := patchBody["branchKey"]; !ok || branchKey != "" {
+		t.Errorf("expected branchKey=\"\", got %v (present=%v)", branchKey, ok)
 	}
 	orgs, _ := patchBody["organizationIds"].([]any)
 	if len(orgs) != 1 || orgs[0] != "myorg-uuid" {

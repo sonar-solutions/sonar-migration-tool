@@ -109,7 +109,7 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 			}
 			switch selectionMode {
 			case "REGEXP":
-				params.Selection = "regexp"
+				params.Selection = "regex"
 				params.RegularExpression = transformPortfolioRegex(
 					extractField(item, "regexp"), orgs)
 			case "TAGS":
