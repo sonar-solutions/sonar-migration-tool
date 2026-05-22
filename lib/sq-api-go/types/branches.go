@@ -9,14 +9,18 @@ type BranchStatus struct {
 }
 
 // Branch represents a single project branch returned by
-// /api/project_branches/list.
+// /api/project_branches/list. BranchID is the UUID consumed by other
+// SonarQube Cloud endpoints (for example as projects[].branchId in the
+// enterprise portfolios PATCH body).
 type Branch struct {
-	Name               string       `json:"name"`
-	IsMain             bool         `json:"isMain"`
-	Type               string       `json:"type"`
-	Status             BranchStatus `json:"status"`
-	AnalysisDate       string       `json:"analysisDate"`
-	ExcludedFromPurge  bool         `json:"excludedFromPurge"`
+	Name              string       `json:"name"`
+	IsMain            bool         `json:"isMain"`
+	Type              string       `json:"type"`
+	Status            BranchStatus `json:"status"`
+	AnalysisDate      string       `json:"analysisDate"`
+	ExcludedFromPurge bool         `json:"excludedFromPurge"`
+	BranchID          string       `json:"branchId"`
+	BranchUUIDV1      string       `json:"branchUuidV1,omitempty"`
 }
 
 // BranchesResponse is the response envelope for /api/project_branches/list.
