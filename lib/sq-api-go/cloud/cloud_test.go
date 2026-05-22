@@ -800,14 +800,49 @@ func TestSettingsSetError(t *testing.T) {
 func TestSettingsSetValues(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc(pathSettingsSet, func(w http.ResponseWriter, r *http.Request) {
-		assertFormValue(t, r, "component", "proj1")
-		assertFormValue(t, r, "key", "sonar.exclusions")
-		assertFormValue(t, r, "value", "a.java,b.java,c.java")
+		_ = r.ParseForm()
+		assert.Equal(t, "proj1", r.FormValue("component"))
+		assert.Equal(t, "sonar.exclusions", r.FormValue("key"))
+		// Multi-value settings must be sent as repeated "values" form
+		// parameters (not as a single comma-joined "value") so SonarQube
+		// Cloud parses the list correctly.
+		assert.Equal(t, []string{"a.java", "b.java", "c.java"}, r.Form["values"])
+		assert.Empty(t, r.Form["value"], "single value param must not be present for multi-value settings")
 		w.WriteHeader(http.StatusNoContent)
 	})
 	cc := newTestCloud(t, mux)
 
 	err := cc.Settings.SetValues(context.Background(), "proj1", "sonar.exclusions", []string{"a.java", "b.java", "c.java"}, "myorg")
+	require.NoError(t, err)
+}
+
+func TestSettingsSetFieldValues(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathSettingsSet, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		assert.Equal(t, "proj1", r.FormValue("component"))
+		assert.Equal(t, "sonar.issue.ignore.allfile", r.FormValue("key"))
+		// Each property-set entry is JSON-encoded and sent as a separate
+		// "fieldValues" form parameter.
+		fv := r.Form["fieldValues"]
+		require.Len(t, fv, 2)
+		var entries []map[string]any
+		for _, raw := range fv {
+			var m map[string]any
+			require.NoError(t, json.Unmarshal([]byte(raw), &m))
+			entries = append(entries, m)
+		}
+		assert.Equal(t, "Generated test", entries[0]["fileRegexp"])
+		assert.Equal(t, "Mock data", entries[1]["fileRegexp"])
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Settings.SetFieldValues(context.Background(), "proj1", "sonar.issue.ignore.allfile",
+		[]map[string]any{
+			{"fileRegexp": "Generated test"},
+			{"fileRegexp": "Mock data"},
+		}, "myorg")
 	require.NoError(t, err)
 }
 

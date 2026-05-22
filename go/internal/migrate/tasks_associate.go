@@ -3,6 +3,7 @@ package migrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -175,6 +176,23 @@ func applyGroupPermissions(ctx context.Context, e *Executor, data json.RawMessag
 	}))
 }
 
+// runSetProjectSettings migrates every non-inherited project-level setting
+// extracted from the source server, including the analysis-scope keys
+// listed in issue #120 (sonar.exclusions, sonar.inclusions,
+// sonar.coverage.exclusions, sonar.cpd.exclusions, sonar.<language>.*,
+// sonar.scm.*, sonar.coverage.*, external-analyzer settings).
+//
+// SonarQube's /api/settings/values can return a setting in three shapes
+// depending on its definition:
+//
+//   - "value":       single scalar value (e.g. sonar.cfamily.ignoreHeaderComments=false)
+//   - "values":      multi-value array (e.g. sonar.exclusions=[a,b,c])
+//   - "fieldValues": property-set array of objects (e.g.
+//                    sonar.issue.ignore.allfile=[{fileRegexp:...}])
+//
+// Until this change only "value" was forwarded; multi-value and
+// property-set settings were silently dropped. Each shape now routes to
+// the matching SDK helper so the setting actually lands on SQC.
 func runSetProjectSettings(ctx context.Context, e *Executor) error {
 	// Build project lookup.
 	projects, _ := e.Store.ReadAll("createProjects")
@@ -197,17 +215,21 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 				return nil
 			}
 			settingKey := extractField(item.Data, "key")
-			value := extractField(item.Data, "value")
-			if settingKey == "" || value == "" {
+			if settingKey == "" {
 				return nil
 			}
-			e.Logger.Debug("project api call: POST /api/settings/set",
-				"project", pm.CloudKey, "key", settingKey, "value", value, "org", pm.OrgKey)
-			if err := e.Cloud.Settings.Set(ctx, pm.CloudKey, settingKey, value, pm.OrgKey); err != nil {
+
+			err := applyProjectSetting(ctx, e, pm, item.Data, settingKey)
+			switch {
+			case errors.Is(err, errSettingEmpty):
+				// Empty payload — skip silently, do not count as success
+				// or failure.
+				return nil
+			case err != nil:
 				counter.Fail()
 				logAPIWarn(e.Logger, "setProjectSettings failed", err,
 					"project", pm.CloudKey, "setting", settingKey)
-			} else {
+			default:
 				counter.Success()
 			}
 			_ = w.WriteOne(item.Data)
@@ -215,6 +237,52 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 		})
 	counter.LogSummary(e.Logger)
 	return err
+}
+
+// errSettingEmpty is the sentinel returned by applyProjectSetting when the
+// extract record had no value / values / fieldValues to send. It is not a
+// real error — the caller silently skips the record.
+var errSettingEmpty = errors.New("setting has no value")
+
+// applyProjectSetting dispatches a single getProjectSettings record to the
+// appropriate SDK call based on which of value / values / fieldValues is
+// populated.
+func applyProjectSetting(ctx context.Context, e *Executor, pm projectMapping, raw json.RawMessage, settingKey string) error {
+	if vals := extractStringArray(raw, "values"); len(vals) > 0 {
+		e.Logger.Debug("project api call: POST /api/settings/set (multi-value)",
+			"project", pm.CloudKey, "key", settingKey, "values", vals, "org", pm.OrgKey)
+		return e.Cloud.Settings.SetValues(ctx, pm.CloudKey, settingKey, vals, pm.OrgKey)
+	}
+	if fvs := extractObjectArray(raw, "fieldValues"); len(fvs) > 0 {
+		e.Logger.Debug("project api call: POST /api/settings/set (property-set)",
+			"project", pm.CloudKey, "key", settingKey, "field_values_count", len(fvs), "org", pm.OrgKey)
+		return e.Cloud.Settings.SetFieldValues(ctx, pm.CloudKey, settingKey, fvs, pm.OrgKey)
+	}
+	value := extractField(raw, "value")
+	if value == "" {
+		return errSettingEmpty
+	}
+	e.Logger.Debug("project api call: POST /api/settings/set",
+		"project", pm.CloudKey, "key", settingKey, "value", value, "org", pm.OrgKey)
+	return e.Cloud.Settings.Set(ctx, pm.CloudKey, settingKey, value, pm.OrgKey)
+}
+
+// extractObjectArray reads a []map[string]any from a JSON field. Returns
+// nil for missing fields, non-array shapes, or empty arrays.
+func extractObjectArray(raw json.RawMessage, key string) []map[string]any {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	arrRaw, ok := obj[key]
+	if !ok {
+		return nil
+	}
+	var arr []map[string]any
+	if err := json.Unmarshal(arrRaw, &arr); err != nil {
+		return nil
+	}
+	return arr
 }
 
 // runSetNewCodePeriods migrates per-branch new-code policy. It iterates the

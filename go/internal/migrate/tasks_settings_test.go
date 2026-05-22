@@ -1,0 +1,141 @@
+package migrate
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
+	"testing"
+)
+
+// TestRunSetProjectSettingsDispatchesByShape verifies that the migrate task
+// dispatches each /api/settings/values record to the right SQC PUT shape:
+//
+//   - single "value"   → "value" form field
+//   - multi  "values"  → repeated "values" form fields
+//   - "fieldValues"    → repeated "fieldValues" JSON-encoded form fields
+//
+// Records missing every payload (only a key) must be skipped silently —
+// not counted as a failure.
+func TestRunSetProjectSettingsDispatchesByShape(t *testing.T) {
+	type recorded struct {
+		key    string
+		value  string
+		values []string
+		fields []string
+	}
+	var (
+		mu   sync.Mutex
+		hits []recorded
+	)
+	cloudMux := http.NewServeMux()
+	cloudMux.HandleFunc("POST /api/settings/set", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		hits = append(hits, recorded{
+			key:    r.FormValue("key"),
+			value:  r.FormValue("value"),
+			values: append([]string(nil), r.Form["values"]...),
+			fields: append([]string(nil), r.Form["fieldValues"]...),
+		})
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	cloudSrv := httptest.NewServer(cloudMux)
+	defer cloudSrv.Close()
+
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+
+	extractDir := filepath.Join(dir, "extract-01", "getProjectSettings")
+	if err := os.MkdirAll(extractDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f, _ := os.Create(filepath.Join(extractDir, "results.1.jsonl"))
+	for _, rec := range []map[string]any{
+		// Single scalar value — should hit the "value" path.
+		{"projectKey": "proj1", "key": "sonar.cfamily.ignoreHeaderComments", "value": "false"},
+		// Multi-value list — should hit the SetValues path.
+		{"projectKey": "proj1", "key": "sonar.exclusions", "values": []string{"src/gen/**", "**/*.spec.ts"}},
+		// Property-set — should hit the SetFieldValues path.
+		{"projectKey": "proj1", "key": "sonar.issue.ignore.allfile",
+			"fieldValues": []map[string]any{{"fileRegexp": "Generated test"}}},
+		// Empty payload — must be skipped silently.
+		{"projectKey": "proj1", "key": "sonar.cleanup.something"},
+	} {
+		b, _ := json.Marshal(rec)
+		f.Write(b)
+		f.Write([]byte("\n"))
+	}
+	f.Close()
+
+	pw, _ := e.Store.Writer("createProjects")
+	b, _ := json.Marshal(map[string]any{
+		"key": "proj1", "server_url": testServerURL,
+		"sonarcloud_org_key": "org1", "cloud_project_key": "org1_proj1",
+	})
+	pw.WriteOne(b)
+
+	if err := runSetProjectSettings(context.Background(), e); err != nil {
+		t.Fatalf("runSetProjectSettings: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(hits) != 3 {
+		t.Fatalf("expected 3 settings calls (empty record skipped), got %d", len(hits))
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].key < hits[j].key })
+
+	// sonar.cfamily.ignoreHeaderComments — single value.
+	cfamily := hits[0]
+	if cfamily.key != "sonar.cfamily.ignoreHeaderComments" || cfamily.value != "false" {
+		t.Errorf("cfamily: got %+v", cfamily)
+	}
+	if len(cfamily.values) != 0 || len(cfamily.fields) != 0 {
+		t.Errorf("cfamily: must not send values/fieldValues, got %+v", cfamily)
+	}
+
+	// sonar.exclusions — multi-value list, repeated "values" param.
+	excl := hits[1]
+	if excl.key != "sonar.exclusions" {
+		t.Errorf("excl: wrong key %q", excl.key)
+	}
+	want := []string{"**/*.spec.ts", "src/gen/**"}
+	sort.Strings(excl.values)
+	for i := range want {
+		if i >= len(excl.values) || excl.values[i] != want[i] {
+			t.Errorf("excl: got values=%v, want %v", excl.values, want)
+			break
+		}
+	}
+	if excl.value != "" {
+		t.Errorf("excl: must not send single value param, got %q", excl.value)
+	}
+
+	// sonar.issue.ignore.allfile — property-set.
+	ifa := hits[2]
+	if ifa.key != "sonar.issue.ignore.allfile" {
+		t.Errorf("ifa: wrong key %q", ifa.key)
+	}
+	if len(ifa.fields) != 1 {
+		t.Fatalf("ifa: expected 1 fieldValues entry, got %d", len(ifa.fields))
+	}
+	var fv map[string]any
+	if err := json.Unmarshal([]byte(ifa.fields[0]), &fv); err != nil {
+		t.Fatalf("ifa: fieldValues JSON: %v", err)
+	}
+	if fv["fileRegexp"] != "Generated test" {
+		t.Errorf("ifa: wrong fieldValues content: %+v", fv)
+	}
+}
