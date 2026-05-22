@@ -147,6 +147,8 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 				if metric == "" || op == "" {
 					continue
 				}
+				e.Logger.Debug("gate api call: POST /api/qualitygates/create_condition",
+					"gate_id", gateID, "metric", metric, "op", op, "error", errorVal, "org", orgKey)
 				_, err := e.Cloud.QualityGates.CreateCondition(ctx, cloud.CreateConditionParams{
 					GateID: gateID, Organization: orgKey,
 					Metric: metric, Op: op, Error: errorVal,
@@ -173,6 +175,8 @@ func clearTargetGateConditions(ctx context.Context, e *Executor, counter *TaskCo
 	if gateName == "" {
 		return
 	}
+	e.Logger.Debug("gate api call: GET /api/qualitygates/show",
+		"name", gateName, "org", orgKey)
 	gate, err := e.Cloud.QualityGates.Show(ctx, gateName, orgKey)
 	if err != nil {
 		logAPIWarn(e.Logger, "addGateConditions: show gate failed during override cleanup", err,
@@ -183,6 +187,8 @@ func clearTargetGateConditions(ctx context.Context, e *Executor, counter *TaskCo
 		if cond.ID == 0 {
 			continue
 		}
+		e.Logger.Debug("gate api call: POST /api/qualitygates/delete_condition",
+			"gate", gateName, "condition_id", cond.ID, "metric", cond.Metric, "org", orgKey)
 		if err := e.Cloud.QualityGates.DeleteCondition(ctx, cond.ID, orgKey); err != nil {
 			counter.Fail()
 			logAPIWarn(e.Logger, "addGateConditions: delete existing condition failed", err,
@@ -226,8 +232,11 @@ func runSetDefaultGates(ctx context.Context, e *Executor) error {
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			gateIDStr := extractField(item, "cloud_gate_id")
+			gateName := extractField(item, "name")
 			gateID, _ := strconv.Atoi(gateIDStr)
 
+			e.Logger.Debug("gate api call: POST /api/qualitygates/set_as_default",
+				"name", gateName, "gate_id", gateIDStr, "org", orgKey)
 			err := e.Cloud.QualityGates.SetDefault(ctx, gateID, orgKey)
 			if err != nil {
 				counter.Fail()

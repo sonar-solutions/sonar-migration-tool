@@ -113,8 +113,11 @@ func runDeleteGates(ctx context.Context, e *Executor) error {
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			gateIDStr := extractField(item, "cloud_gate_id")
+			gateName := extractField(item, "name")
 			gateID, _ := strconv.Atoi(gateIDStr)
 
+			e.Logger.Debug("gate api call: POST /api/qualitygates/destroy",
+				"name", gateName, "gate_id", gateIDStr, "org", orgKey)
 			err := e.Cloud.QualityGates.Destroy(ctx, gateID, orgKey)
 			if err != nil {
 				counter.Fail()
