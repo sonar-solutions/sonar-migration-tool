@@ -62,6 +62,9 @@ func runCreateProjects(ctx context.Context, e *Executor) error {
 			ncdValue := extractAnyStr(item, "new_code_definition_value")
 
 			cloudKey := orgKey + "_" + key
+			e.Logger.Debug("project api call: POST /api/projects/create",
+				"source_key", key, "cloud_key", cloudKey, "name", name, "org", orgKey,
+				"new_code_type", ncdType, "new_code_value", ncdValue)
 			proj, err := e.Cloud.Projects.Create(ctx, cloud.CreateProjectParams{
 				ProjectKey:             cloudKey,
 				Name:                   name,
@@ -77,10 +80,12 @@ func runCreateProjects(ctx context.Context, e *Executor) error {
 					return nil
 				}
 				counter.Success()
-				e.Logger.Info("createProjects: already exists", "key", key)
+				e.Logger.Info("createProjects: already exists", "source_key", key, "cloud_key", cloudKey, "org", orgKey)
 			} else {
 				counter.Success()
 				cloudKey = proj.Key
+				e.Logger.Debug("project operation: created new project",
+					"source_key", key, "cloud_key", cloudKey, "name", name, "org", orgKey)
 			}
 
 			result := common.EnrichRaw(item, map[string]any{

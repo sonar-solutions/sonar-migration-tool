@@ -96,6 +96,8 @@ func runSetProjectBinding(ctx context.Context, e *Executor) error {
 				return nil
 			}
 
+			e.Logger.Debug("project api call: POST /dop-translation/project-bindings",
+				"project_id", projID, "repository_id", repoID)
 			err := e.Cloud.DOP.CreateProjectBinding(ctx, cloud.ProjectBindingParams{
 				ProjectID:    projID,
 				RepositoryID: repoID,

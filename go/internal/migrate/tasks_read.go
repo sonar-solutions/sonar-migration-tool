@@ -58,6 +58,8 @@ func runGetProjectIds(ctx context.Context, e *Executor) error {
 			if shouldSkipOrg(orgKey) || projectKey == "" {
 				return nil
 			}
+			e.Logger.Debug("project api call: GET /api/projects/search (lookup by key)",
+				"project", projectKey, "org", orgKey)
 			raw, err := e.Raw.GetPaginated(ctx, common.PaginatedOpts{
 				Path: "api/projects/search", ResultKey: "components",
 				Params: url.Values{
@@ -188,6 +190,8 @@ func runGetCreatedProjects(ctx context.Context, e *Executor) error {
 			if shouldSkipOrg(orgKey) {
 				return nil
 			}
+			e.Logger.Debug("project api call: GET /api/projects/search (list org projects)",
+				"org", orgKey)
 			raw, err := e.Raw.GetPaginated(ctx, common.PaginatedOpts{
 				Path: "api/projects/search", ResultKey: "components",
 				Params: url.Values{"organization": {orgKey}},

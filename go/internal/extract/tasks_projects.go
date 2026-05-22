@@ -23,6 +23,12 @@ func projectTasks() []TaskDef {
 				}, map[string]any{"serverUrl": e.ServerURL})
 			},
 		},
+		{
+			Name:         "getProjectTags",
+			Editions:     AllEditions,
+			Dependencies: []string{"getProjects"},
+			Run:          projectTagsTask(),
+		},
 		{Name: "getProjectDetails", Editions: AllEditions, Dependencies: []string{"getProjects"},
 			Run: perProjectSingle("getProjectDetails", "api/navigation/component", "component")},
 		{Name: "getProjectSettings", Editions: AllEditions, Dependencies: []string{"getProjects"},
@@ -42,6 +48,63 @@ func projectTasks() []TaskDef {
 		{Name: "getProjectUsersViewers", Editions: AllEditions, Dependencies: []string{"getProjects"},
 			Run: perProjectPermissionUsers("getProjectUsersViewers", "user")},
 	}
+}
+
+// projectTagsTask fetches every project's tags via
+// GET /api/components/show?component=<key> and writes one record per
+// project with {projectKey, tags, serverUrl}.
+//
+// Why per-project instead of a single bulk call: on some SonarQube Server
+// versions /api/projects/search returns tags=null even with f=tags, while
+// /api/components/show reliably exposes the project's tags array. Projects
+// with no tags are skipped to keep the output lean.
+func projectTagsTask() func(ctx context.Context, e *Executor) error {
+	return func(ctx context.Context, e *Executor) error {
+		return forEachDep(ctx, e, "getProjectTags", "getProjects",
+			func(ctx context.Context, item json.RawMessage, w *ChunkWriter) error {
+				key := extractField(item, "key")
+				if key == "" {
+					return nil
+				}
+				raw, err := e.Raw.Get(ctx, "api/components/show",
+					url.Values{"component": {key}})
+				if err != nil {
+					return nil // best-effort — don't fail the whole extract on one project
+				}
+				comp := extractSubKey(raw, "component")
+				tags := extractTagsArray(comp)
+				if len(tags) == 0 {
+					return nil
+				}
+				rec, err := json.Marshal(map[string]any{
+					"projectKey": key,
+					"tags":       tags,
+					"serverUrl":  e.ServerURL,
+				})
+				if err != nil {
+					return nil
+				}
+				return w.WriteOne(rec)
+			})
+	}
+}
+
+// extractTagsArray pulls a non-empty "tags" string array out of a JSON
+// record, tolerating absent or non-array shapes.
+func extractTagsArray(raw json.RawMessage) []string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	arrRaw, ok := obj["tags"]
+	if !ok {
+		return nil
+	}
+	var arr []string
+	if json.Unmarshal(arrRaw, &arr) != nil {
+		return nil
+	}
+	return arr
 }
 
 func projectSettingsTask() func(ctx context.Context, e *Executor) error {

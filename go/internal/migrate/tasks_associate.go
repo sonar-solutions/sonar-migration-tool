@@ -68,6 +68,8 @@ func runSetProjectProfiles(ctx context.Context, e *Executor) error {
 				if !profileLookup[orgKey+lang+name] {
 					continue
 				}
+				e.Logger.Debug("project api call: POST /api/qualityprofiles/add_project",
+					"project", projectKey, "language", lang, "profile", name, "org", orgKey)
 				if err := e.Cloud.QualityProfiles.AddProject(ctx, lang, name, projectKey, orgKey); err != nil {
 					counter.Fail()
 					logAPIWarn(e.Logger, "setProjectProfiles failed", err, "project", projectKey)
@@ -105,8 +107,8 @@ func runSetProjectGates(ctx context.Context, e *Executor) error {
 			if !ok {
 				return nil
 			}
-			e.Logger.Debug("gate api call: POST /api/qualitygates/select",
-				"gate_id", gateID, "gate_name", gateName, "project", projectKey, "org", orgKey)
+			e.Logger.Debug("project api call: POST /api/qualitygates/select",
+				"project", projectKey, "gate_id", gateID, "gate_name", gateName, "org", orgKey)
 			if err := e.Cloud.QualityGates.Select(ctx, gateID, projectKey, orgKey); err != nil {
 				counter.Fail()
 				logAPIWarn(e.Logger, "setProjectGates failed", err, "project", projectKey)
@@ -193,6 +195,8 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 			if settingKey == "" || value == "" {
 				return nil
 			}
+			e.Logger.Debug("project api call: POST /api/settings/set",
+				"project", pm.CloudKey, "key", settingKey, "value", value, "org", pm.OrgKey)
 			if err := e.Cloud.Settings.Set(ctx, pm.CloudKey, settingKey, value, pm.OrgKey); err != nil {
 				counter.Fail()
 				logAPIWarn(e.Logger, "setProjectSettings failed", err,
@@ -231,6 +235,8 @@ func runSetProjectTags(ctx context.Context, e *Executor) error {
 				return nil
 			}
 			tagStr := strings.Join(tags, ",")
+			e.Logger.Debug("project api call: POST /api/project_tags/set",
+				"project", pm.CloudKey, "tags", tagStr, "tag_count", len(tags))
 			if err := e.Cloud.Projects.SetTags(ctx, pm.CloudKey, tagStr); err != nil {
 				counter.Fail()
 				logAPIWarn(e.Logger, "setProjectTags failed", err, "project", pm.CloudKey)
