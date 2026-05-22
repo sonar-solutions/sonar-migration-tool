@@ -108,6 +108,11 @@ func runRestoreProfiles(ctx context.Context, e *Executor) error {
 }
 
 func runAddGateConditions(ctx context.Context, e *Executor) error {
+	// Sidecar JSONL recording per-condition mapping notes — used by the
+	// summary report to mark a quality gate as Partial when some of its
+	// conditions were either remapped to a close SQC equivalent (#143) or
+	// dropped because no SQC equivalent exists.
+	notesW, _ := e.Store.Writer("addGateConditions.notes")
 	counter := NewTaskCounter("addGateConditions")
 	err := forEachMigrateItem(ctx, e, "addGateConditions", "getGateConditions",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
@@ -152,6 +157,7 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 				if mapped && len(targets) == 0 {
 					e.Logger.Warn("addGateConditions: source metric has no SonarQube Cloud equivalent — condition skipped (#143)",
 						"gate", gateName, "metric", metric, "op", op, "error", errorVal)
+					recordGateConditionNote(notesW, gateIDStr, gateName, "dropped", metric, nil)
 					counter.Fail()
 					continue
 				}
@@ -160,6 +166,11 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 				} else {
 					e.Logger.Info("addGateConditions: source metric remapped to SonarQube Cloud equivalent(s) (#143)",
 						"gate", gateName, "source_metric", metric, "target_metrics", targets)
+					targetMetrics := make([]string, 0, len(targets))
+					for _, repl := range targets {
+						targetMetrics = append(targetMetrics, repl.Metric)
+					}
+					recordGateConditionNote(notesW, gateIDStr, gateName, "remapped", metric, targetMetrics)
 				}
 
 				for _, repl := range targets {
@@ -191,6 +202,27 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 		})
 	counter.LogSummary(e.Logger)
 	return err
+}
+
+// recordGateConditionNote appends a sidecar JSONL entry describing a
+// per-condition mapping decision (a metric remap per #143 or a dropped
+// condition with no SQC equivalent). The summary report reads this file to
+// mark the parent quality gate as Partial.
+func recordGateConditionNote(w *common.ChunkWriter, cloudGateID, gateName, action, sourceMetric string, targetMetrics []string) {
+	if w == nil || cloudGateID == "" {
+		return
+	}
+	rec := map[string]any{
+		"cloud_gate_id": cloudGateID,
+		"gate_name":     gateName,
+		"action":        action, // "remapped" | "dropped"
+		"source_metric": sourceMetric,
+	}
+	if len(targetMetrics) > 0 {
+		rec["target_metrics"] = targetMetrics
+	}
+	b, _ := json.Marshal(rec)
+	_ = w.WriteOne(b)
 }
 
 // clearTargetGateConditions removes every condition from a pre-existing target

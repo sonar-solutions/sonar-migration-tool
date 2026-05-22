@@ -523,6 +523,88 @@ func portfolioNames(items []EntityItem) []string {
 	return out
 }
 
+func TestCollectSummaryQualityGateMetricMappingMovesToPartial(t *testing.T) {
+	dir := t.TempDir()
+	runID := "run-01"
+	runDir := filepath.Join(dir, runID)
+	os.MkdirAll(runDir, 0o755)
+
+	// Two gates created. Only one of them has a sidecar mapping note.
+	writeTaskJSONL(t, runDir, "createGates", []map[string]any{
+		{"name": "Backend QG", "sonarcloud_org_key": "org1", "cloud_gate_id": "42"},
+		{"name": "Frontend QG", "sonarcloud_org_key": "org1", "cloud_gate_id": "99"},
+	})
+
+	// addGateConditions.notes — sidecar JSONL recording per-condition
+	// remap (#143) + dropped decisions for the Backend QG.
+	notesDir := filepath.Join(runDir, "addGateConditions.notes")
+	os.MkdirAll(notesDir, 0o755)
+	lines := []map[string]any{
+		{
+			"cloud_gate_id":  "42",
+			"gate_name":      "Backend QG",
+			"action":         "remapped",
+			"source_metric":  "new_security_rating_with_aica",
+			"target_metrics": []string{"new_security_rating"},
+		},
+		{
+			"cloud_gate_id": "42",
+			"gate_name":     "Backend QG",
+			"action":        "dropped",
+			"source_metric": "contains_ai_code",
+		},
+	}
+	f, _ := os.Create(filepath.Join(notesDir, "results.1.jsonl"))
+	for _, line := range lines {
+		b, _ := json.Marshal(line)
+		f.Write(b)
+		f.Write([]byte("\n"))
+	}
+	f.Close()
+
+	summary, err := CollectSummary(runDir, dir)
+	if err != nil {
+		t.Fatalf("CollectSummary: %v", err)
+	}
+
+	gates := findSection(summary, "Quality Gates")
+	if gates == nil {
+		t.Fatal("missing Quality Gates section")
+	}
+
+	// Backend QG should be moved to Partial; Frontend QG should remain
+	// in Succeeded untouched.
+	if len(gates.Succeeded) != 1 || gates.Succeeded[0].Name != "Frontend QG" {
+		t.Errorf("expected Frontend QG to remain in Succeeded, got %+v",
+			succeededNames(gates.Succeeded))
+	}
+	if len(gates.Partial) != 1 {
+		t.Fatalf("expected 1 Partial gate, got %d", len(gates.Partial))
+	}
+	item := gates.Partial[0]
+	if item.Name != "Backend QG" {
+		t.Errorf("expected Backend QG in Partial, got %q", item.Name)
+	}
+	joined := strings.Join(item.Issues, " | ")
+	if !strings.Contains(joined, "new_security_rating_with_aica → new_security_rating") {
+		t.Errorf("expected remap detail in Issues, got %q", joined)
+	}
+	if !strings.Contains(joined, "contains_ai_code") {
+		t.Errorf("expected dropped metric in Issues, got %q", joined)
+	}
+	if !strings.Contains(joined, "#143") {
+		t.Errorf("expected #143 reference in remap message, got %q", joined)
+	}
+}
+
+func succeededNames(items []EntityItem) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.Name)
+	}
+	return out
+}
+
 // --- helpers ---
 
 func findSection(s *MigrationSummary, name string) *Section {
