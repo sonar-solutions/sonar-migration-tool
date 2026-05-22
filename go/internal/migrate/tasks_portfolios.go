@@ -78,6 +78,10 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 	// (skipped because of missing data, etc.) so the summary report can mark
 	// them as Failed even when no HTTP request was issued.
 	failW, _ := e.Store.Writer("configurePortfolios.failures")
+	// Cache of cloud_project_key → main branch UUID, populated lazily via
+	// /api/project_branches/list. Required by SQC's PATCH endpoint when
+	// selection is "projects".
+	branchIDByCloudKey := map[string]string{}
 	counter := NewTaskCounter("configurePortfolios")
 	err := forEachMigrateItem(ctx, e, "configurePortfolios", "createPortfolios",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
@@ -121,8 +125,19 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 					recordPortfolioFailure(failW, portfolioID, name, msg)
 					return nil
 				}
-				params.Selection = "regex"
-				params.RegularExpression = manualPortfolioRegex(cloudKeys)
+				refs, lookupErr := resolveProjectBranchRefs(ctx, e, branchIDByCloudKey, cloudKeys)
+				if lookupErr != nil || len(refs) == 0 {
+					msg := "could not resolve main branch UUID for any MANUAL portfolio project"
+					if lookupErr != nil {
+						msg = msg + ": " + lookupErr.Error()
+					}
+					e.Logger.Warn("configurePortfolios: "+msg, "portfolio", sourceKey)
+					counter.Fail()
+					recordPortfolioFailure(failW, portfolioID, name, msg)
+					return nil
+				}
+				params.Selection = "projects"
+				params.Projects = refs
 			}
 
 			e.Logger.Info("configurePortfolios: sending PATCH",
@@ -131,6 +146,7 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 				"selection", params.Selection,
 				"regex", params.RegularExpression,
 				"tags", params.Tags,
+				"projects", len(params.Projects),
 			)
 			if err := e.CloudAPI.Enterprises.UpdatePortfolio(ctx, params); err != nil {
 				counter.Fail()
@@ -260,6 +276,47 @@ func recordPortfolioFailure(w *common.ChunkWriter, portfolioID, name, reason str
 	_ = w.WriteOne(rec)
 }
 
+// resolveProjectBranchRefs maps each cloud project key to its main branch
+// UUID via /api/project_branches/list and returns the list of
+// PortfolioProjectRef objects required by the SQC enterprise portfolios
+// PATCH endpoint when selection is "projects". The cache is populated
+// lazily so repeated portfolios with overlapping projects share lookups.
+//
+// If any individual lookup fails, it is logged at Warn level and the
+// project is skipped — the rest still get migrated. Returns an error only
+// when no UUIDs at all could be resolved (e.g. the endpoint is unreachable).
+func resolveProjectBranchRefs(ctx context.Context, e *Executor, cache map[string]string, cloudKeys []string) ([]cloud.PortfolioProjectRef, error) {
+	refs := make([]cloud.PortfolioProjectRef, 0, len(cloudKeys))
+	var firstErr error
+	for _, key := range cloudKeys {
+		if key == "" {
+			continue
+		}
+		uuid, ok := cache[key]
+		if !ok {
+			id, err := e.Cloud.Branches.MainBranchID(ctx, key)
+			if err != nil {
+				e.Logger.Warn("configurePortfolios: main branch UUID lookup failed, project will be omitted",
+					"project", key, "err", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			cache[key] = id
+			uuid = id
+		}
+		refs = append(refs, cloud.PortfolioProjectRef{BranchID: uuid})
+	}
+	if len(refs) == 0 {
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		return nil, nil
+	}
+	return refs, nil
+}
+
 // transformPortfolioRegex rewrites a source-side regex so that it matches
 // projects under the SQC project-key renaming scheme (cloud key =
 // <orgKey>_<sqsKey>). When the portfolio's projects span multiple orgs, the
@@ -302,26 +359,3 @@ func transformPortfolioRegex(regex string, orgKeys []string) string {
 	return prefix + regex
 }
 
-// manualPortfolioRegex builds an anchored alternation regex that matches
-// exactly the provided cloud project keys. Each key is regexp-escaped so
-// dots, dashes and similar metacharacters survive.
-//
-// Example: ["org1_proj1","org1_proj-2"] → "^(?:org1_proj1|org1_proj\\-2)$"
-func manualPortfolioRegex(cloudKeys []string) string {
-	if len(cloudKeys) == 0 {
-		return ""
-	}
-	seen := map[string]bool{}
-	parts := make([]string, 0, len(cloudKeys))
-	for _, k := range cloudKeys {
-		if k == "" || seen[k] {
-			continue
-		}
-		seen[k] = true
-		parts = append(parts, regexp.QuoteMeta(k))
-	}
-	if len(parts) == 1 {
-		return "^" + parts[0] + "$"
-	}
-	return "^(?:" + strings.Join(parts, "|") + ")$"
-}

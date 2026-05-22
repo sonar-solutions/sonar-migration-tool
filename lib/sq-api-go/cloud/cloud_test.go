@@ -615,6 +615,42 @@ func TestBranchesRenameError(t *testing.T) {
 	assert.True(t, sqapi.IsNotFound(err))
 }
 
+func TestBranchesListAndMainBranchID(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/project_branches/list", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "my-project", r.URL.Query().Get("project"))
+		writeJSON(w, types.BranchesResponse{
+			Branches: []types.Branch{
+				{Name: "feature/foo", IsMain: false, BranchID: "feature-uuid"},
+				{Name: "master", IsMain: true, BranchID: "main-uuid"},
+			},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	branches, err := cc.Branches.List(context.Background(), "my-project")
+	require.NoError(t, err)
+	assert.Len(t, branches, 2)
+	assert.Equal(t, "main-uuid", branches[1].BranchID)
+
+	id, err := cc.Branches.MainBranchID(context.Background(), "my-project")
+	require.NoError(t, err)
+	assert.Equal(t, "main-uuid", id)
+}
+
+func TestBranchesMainBranchIDMissing(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/project_branches/list", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, types.BranchesResponse{
+			Branches: []types.Branch{{Name: "feature/foo", IsMain: false, BranchID: "u1"}},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Branches.MainBranchID(context.Background(), "my-project")
+	require.Error(t, err)
+}
+
 // --- Rules ---
 
 func TestRulesUpdate(t *testing.T) {

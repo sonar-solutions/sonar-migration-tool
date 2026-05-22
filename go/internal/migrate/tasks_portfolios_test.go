@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -130,8 +129,30 @@ func TestRunConfigurePortfoliosRegex(t *testing.T) {
 // TestRunConfigurePortfoliosSkipsManual ensures portfolios that come through
 // with selection_mode empty / MANUAL are left untouched here (handled by
 // setPortfolioProjects instead).
-func TestRunConfigurePortfoliosManualBuildsRegex(t *testing.T) {
-	cloudSrv := newMockCloudServer()
+func TestRunConfigurePortfoliosManualSelectsProjects(t *testing.T) {
+	// MANUAL source portfolios are migrated as native project-selection on
+	// SQC (selection=projects + projects=[{branchId}]), looking up each
+	// project's main branch UUID via /api/project_branches/list.
+	cloudMux := http.NewServeMux()
+	// Stand up a /api/project_branches/list handler before delegating the
+	// rest of the cloud endpoints to the default mock so we control the
+	// branch UUIDs.
+	cloudMux.HandleFunc("GET /api/project_branches/list", func(w http.ResponseWriter, r *http.Request) {
+		project := r.URL.Query().Get("project")
+		// Synthesise a deterministic UUID-shaped id from the project key
+		// so the test can assert it back without parsing the input order.
+		uuid := "uuid-" + project
+		json.NewEncoder(w).Encode(map[string]any{
+			"branches": []map[string]any{
+				{"name": "feature/x", "isMain": false, "branchId": "feature-" + project},
+				{"name": "main", "isMain": true, "branchId": uuid},
+			},
+		})
+	})
+	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{})
+	})
+	cloudSrv := httptest.NewServer(cloudMux)
 	defer cloudSrv.Close()
 
 	var (
@@ -185,19 +206,25 @@ func TestRunConfigurePortfoliosManualBuildsRegex(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if patchBody["selection"] != "regex" {
-		t.Errorf("expected selection=regex for MANUAL→regex translation, got %v", patchBody["selection"])
+	if patchBody["selection"] != "projects" {
+		t.Errorf("expected selection=projects for MANUAL portfolio, got %v", patchBody["selection"])
 	}
-	got := patchBody["regularExpression"].(string)
-	// Both projects must be present in the alternation; ordering is not
-	// guaranteed because the input set comes from a map.
-	for _, want := range []string{"myorg_sqs-proj-a", "myorg_sqs-proj-b"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("expected %q in regex, got %q", want, got)
+	projects, ok := patchBody["projects"].([]any)
+	if !ok || len(projects) != 2 {
+		t.Fatalf("expected 2 projects refs, got %v", patchBody["projects"])
+	}
+	gotIDs := map[string]bool{}
+	for _, p := range projects {
+		m := p.(map[string]any)
+		gotIDs[m["branchId"].(string)] = true
+	}
+	for _, want := range []string{"uuid-myorg_sqs-proj-a", "uuid-myorg_sqs-proj-b"} {
+		if !gotIDs[want] {
+			t.Errorf("expected branchId %q in PATCH body, got %v", want, gotIDs)
 		}
 	}
-	if !strings.HasPrefix(got, "^(?:") || !strings.HasSuffix(got, ")$") {
-		t.Errorf("expected anchored alternation, got %q", got)
+	if _, hasRegex := patchBody["regularExpression"]; hasRegex {
+		t.Error("regularExpression should not be set for MANUAL projects selection")
 	}
 }
 
@@ -232,26 +259,6 @@ func TestRunConfigurePortfoliosSkipsNoneAndRest(t *testing.T) {
 	}
 }
 
-func TestManualPortfolioRegex(t *testing.T) {
-	cases := []struct {
-		name string
-		keys []string
-		want string
-	}{
-		{"single key", []string{"org_proj1"}, "^org_proj1$"},
-		{"two keys", []string{"org_a", "org_b"}, "^(?:org_a|org_b)$"},
-		{"escapes metachars", []string{"org_proj.1", "org-2_x"}, `^(?:org_proj\.1|org-2_x)$`},
-		{"dedups", []string{"a", "a", "b"}, "^(?:a|b)$"},
-		{"empty input", nil, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := manualPortfolioRegex(tc.keys); got != tc.want {
-				t.Errorf("manualPortfolioRegex(%v): got %q, want %q", tc.keys, got, tc.want)
-			}
-		})
-	}
-}
 
 func writeJSONLLine(t *testing.T, path string, item map[string]any) {
 	t.Helper()
