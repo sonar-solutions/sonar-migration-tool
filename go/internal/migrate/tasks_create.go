@@ -152,6 +152,7 @@ func runCreateGates(ctx context.Context, e *Executor) error {
 			name := extractField(item, "name")
 
 			var gateID string
+			wasPreexisting := false
 			gate, err := e.Cloud.QualityGates.Create(ctx, name, orgKey)
 			if err != nil {
 				if !sqapi.IsAlreadyExists(err) {
@@ -159,13 +160,14 @@ func runCreateGates(ctx context.Context, e *Executor) error {
 					logAPIWarn(e.Logger, "createGates: create failed", err, "name", name)
 					return nil
 				}
-				e.Logger.Info("createGates: already exists, looking up", "name", name)
+				e.Logger.Info("createGates: already exists, will override conditions", "name", name)
 				gateID, err = lookupExistingGate(ctx, e.Raw, name, orgKey)
 				if err != nil {
 					counter.Fail()
 					logAPIWarn(e.Logger, "createGates: lookup failed", err, "name", name)
 					return nil
 				}
+				wasPreexisting = true
 				counter.Success()
 			} else {
 				counter.Success()
@@ -175,6 +177,7 @@ func runCreateGates(ctx context.Context, e *Executor) error {
 			result := common.EnrichRaw(item, map[string]any{
 				"cloud_gate_id":      gateID,
 				"sonarcloud_org_key": orgKey,
+				"was_preexisting":    wasPreexisting,
 			})
 			return w.WriteOne(result)
 		})

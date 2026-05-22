@@ -49,6 +49,28 @@ func (q *QualityGatesClient) CreateCondition(ctx context.Context, params CreateC
 	return &result, nil
 }
 
+// Show returns the quality gate with its current conditions via
+// /api/qualitygates/show.
+func (q *QualityGatesClient) Show(ctx context.Context, name, organization string) (*types.QualityGate, error) {
+	v := url.Values{}
+	v.Set("name", name)
+	v.Set("organization", organization)
+	var result types.QualityGate
+	if err := q.getJSON(ctx, "api/qualitygates/show?"+v.Encode(), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// DeleteCondition removes a single condition from a quality gate via
+// /api/qualitygates/delete_condition.
+func (q *QualityGatesClient) DeleteCondition(ctx context.Context, conditionID int, organization string) error {
+	form := url.Values{}
+	form.Set("id", strconv.Itoa(conditionID))
+	form.Set("organization", organization)
+	return q.postForm(ctx, "api/qualitygates/delete_condition", form, nil)
+}
+
 // Destroy deletes a quality gate via /api/qualitygates/destroy.
 func (q *QualityGatesClient) Destroy(ctx context.Context, gateID int, organization string) error {
 	form := url.Values{}

@@ -428,6 +428,40 @@ func TestQualityGatesCreateConditionError(t *testing.T) {
 	assert.True(t, sqapi.IsForbidden(err))
 }
 
+func TestQualityGatesShow(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualitygates/show", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "MyGate", r.URL.Query().Get("name"))
+		assert.Equal(t, "myorg", r.URL.Query().Get("organization"))
+		writeJSON(w, types.QualityGate{
+			ID: 10, Name: "MyGate",
+			Conditions: []types.QualityGateCondition{
+				{ID: 100, Metric: "coverage", Op: "LT", Error: "80"},
+				{ID: 101, Metric: "new_bugs", Op: "GT", Error: "0"},
+			},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	gate, err := cc.QualityGates.Show(context.Background(), "MyGate", "myorg")
+	require.NoError(t, err)
+	assert.Equal(t, 10, gate.ID)
+	assert.Len(t, gate.Conditions, 2)
+	assert.Equal(t, 100, gate.Conditions[0].ID)
+}
+
+func TestQualityGatesDeleteCondition(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualitygates/delete_condition", func(w http.ResponseWriter, r *http.Request) {
+		assertFormValue(t, r, "id", "100")
+		assertFormValue(t, r, "organization", "myorg")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	require.NoError(t, cc.QualityGates.DeleteCondition(context.Background(), 100, "myorg"))
+}
+
 func TestQualityGatesDestroy(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/qualitygates/destroy", func(w http.ResponseWriter, r *http.Request) {

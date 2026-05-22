@@ -102,21 +102,48 @@ func runGetGateConditions(ctx context.Context, e *Executor) error {
 			gateName := extractField(item, "source_gate_key")
 			orgKey := extractField(item, "sonarcloud_org_key")
 			serverURL := extractField(item, "server_url")
-			// Read gate conditions from extract data.
-			items, _ := readExtractItems(e, "getGateConditions")
-			for _, ei := range items {
-				eiGate := extractField(ei.Data, "name")
-				if eiGate == gateName && ei.ServerURL == serverURL {
-					enriched := common.EnrichRaw(ei.Data, map[string]any{
-						"sonarcloud_org_key": orgKey,
-						"cloud_gate_id":     extractField(item, "cloud_gate_id"),
-					})
-					if err := w.WriteOne(enriched); err != nil {
-						return err
-					}
-				}
+			cloudGateID := extractField(item, "cloud_gate_id")
+			wasPreexisting := extractBool(item, "was_preexisting")
+			if cloudGateID == "" {
+				return nil
 			}
-			return nil
+
+			// The extract writes one record per source condition, each
+			// enriched with the parent gateName and serverUrl. Group every
+			// matching condition into a single per-gate record so the
+			// downstream addGateConditions task can decide once per gate
+			// whether to clear the target's pre-existing conditions first.
+			extractItems, _ := readExtractItems(e, "getGateConditions")
+			var conditions []map[string]any
+			for _, ei := range extractItems {
+				if extractField(ei.Data, "gateName") != gateName || ei.ServerURL != serverURL {
+					continue
+				}
+				var cond map[string]any
+				if err := json.Unmarshal(ei.Data, &cond); err != nil {
+					continue
+				}
+				// Drop the bookkeeping fields the extract added — only the
+				// condition payload itself is useful downstream.
+				delete(cond, "gateName")
+				delete(cond, "serverUrl")
+				conditions = append(conditions, cond)
+			}
+			if len(conditions) == 0 && !wasPreexisting {
+				return nil
+			}
+
+			out, err := json.Marshal(map[string]any{
+				"gate_name":          gateName,
+				"sonarcloud_org_key": orgKey,
+				"cloud_gate_id":      cloudGateID,
+				"was_preexisting":    wasPreexisting,
+				"conditions":         conditions,
+			})
+			if err != nil {
+				return err
+			}
+			return w.WriteOne(out)
 		})
 }
 

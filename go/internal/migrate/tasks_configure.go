@@ -113,14 +113,26 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
 			gateIDStr := extractField(item, "cloud_gate_id")
+			gateName := extractField(item, "gate_name")
+			wasPreexisting := extractBool(item, "was_preexisting")
 			if shouldSkipOrg(orgKey) || gateIDStr == "" {
 				return nil
 			}
 			gateID, _ := strconv.Atoi(gateIDStr)
 
+			// Override semantics: if the target gate already existed on SQC,
+			// wipe its current conditions first so the migrated set is the
+			// authoritative one — never a union of source + whatever was
+			// already on the target.
+			if wasPreexisting {
+				clearTargetGateConditions(ctx, e, counter, gateName, orgKey)
+			}
+
 			// Extract conditions from the gate data.
 			var obj map[string]json.RawMessage
-			json.Unmarshal(item, &obj)
+			if err := json.Unmarshal(item, &obj); err != nil {
+				return nil
+			}
 			conditionsRaw, ok := obj["conditions"]
 			if !ok {
 				return nil
@@ -150,6 +162,35 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 		})
 	counter.LogSummary(e.Logger)
 	return err
+}
+
+// clearTargetGateConditions removes every condition from a pre-existing target
+// quality gate before the migrated source conditions are added. Failures here
+// are logged at Warn level but do not abort the migration — the subsequent
+// CreateCondition calls will surface a conflict if the cleanup did not take
+// effect.
+func clearTargetGateConditions(ctx context.Context, e *Executor, counter *TaskCounter, gateName, orgKey string) {
+	if gateName == "" {
+		return
+	}
+	gate, err := e.Cloud.QualityGates.Show(ctx, gateName, orgKey)
+	if err != nil {
+		logAPIWarn(e.Logger, "addGateConditions: show gate failed during override cleanup", err,
+			"gate", gateName)
+		return
+	}
+	for _, cond := range gate.Conditions {
+		if cond.ID == 0 {
+			continue
+		}
+		if err := e.Cloud.QualityGates.DeleteCondition(ctx, cond.ID, orgKey); err != nil {
+			counter.Fail()
+			logAPIWarn(e.Logger, "addGateConditions: delete existing condition failed", err,
+				"gate", gateName, "condition_id", cond.ID, "metric", cond.Metric)
+		}
+	}
+	e.Logger.Info("addGateConditions: cleared pre-existing conditions on overridden gate",
+		"gate", gateName, "count", len(gate.Conditions))
 }
 
 func runSetDefaultProfiles(ctx context.Context, e *Executor) error {
