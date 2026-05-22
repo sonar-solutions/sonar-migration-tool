@@ -147,17 +147,36 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 				if metric == "" || op == "" {
 					continue
 				}
-				e.Logger.Debug("gate api call: POST /api/qualitygates/create_condition",
-					"gate_id", gateID, "metric", metric, "op", op, "error", errorVal, "org", orgKey)
-				_, err := e.Cloud.QualityGates.CreateCondition(ctx, cloud.CreateConditionParams{
-					GateID: gateID, Organization: orgKey,
-					Metric: metric, Op: op, Error: errorVal,
-				})
-				if err != nil {
+
+				targets, mapped := lookupMetricReplacement(metric)
+				if mapped && len(targets) == 0 {
+					e.Logger.Warn("addGateConditions: source metric has no SonarQube Cloud equivalent — condition skipped (#143)",
+						"gate", gateName, "metric", metric, "op", op, "error", errorVal)
 					counter.Fail()
-					logAPIWarn(e.Logger, "addGateConditions failed", err, "metric", metric)
+					continue
+				}
+				if !mapped {
+					targets = []string{metric}
 				} else {
-					counter.Success()
+					e.Logger.Info("addGateConditions: source metric remapped to SonarQube Cloud equivalent(s) (#143)",
+						"gate", gateName, "source_metric", metric, "target_metrics", targets)
+				}
+
+				for _, targetMetric := range targets {
+					e.Logger.Debug("gate api call: POST /api/qualitygates/create_condition",
+						"gate_id", gateID, "metric", targetMetric, "op", op, "error", errorVal, "org", orgKey,
+						"source_metric", metric)
+					_, err := e.Cloud.QualityGates.CreateCondition(ctx, cloud.CreateConditionParams{
+						GateID: gateID, Organization: orgKey,
+						Metric: targetMetric, Op: op, Error: errorVal,
+					})
+					if err != nil {
+						counter.Fail()
+						logAPIWarn(e.Logger, "addGateConditions failed", err,
+							"metric", targetMetric, "source_metric", metric)
+					} else {
+						counter.Success()
+					}
 				}
 			}
 			return nil
