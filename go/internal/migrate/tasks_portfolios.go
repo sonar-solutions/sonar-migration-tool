@@ -74,7 +74,10 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 	portfolioOrgs := buildPortfolioOrgIndex(e, projectIndex)
 	allMigratedOrgs := collectAllMigratedOrgs(projectIndex)
 
-	orgUUIDs := map[string]string{}
+	// Side-channel writer that records per-portfolio task-level failures
+	// (skipped because of missing data, etc.) so the summary report can mark
+	// them as Failed even when no HTTP request was issued.
+	failW, _ := e.Store.Writer("configurePortfolios.failures")
 	counter := NewTaskCounter("configurePortfolios")
 	err := forEachMigrateItem(ctx, e, "configurePortfolios", "createPortfolios",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
@@ -84,30 +87,20 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 			}
 			portfolioID := extractField(item, "cloud_portfolio_id")
 			sourceKey := extractField(item, "source_portfolio_key")
+			name := extractField(item, "name")
 			if portfolioID == "" || sourceKey == "" {
 				return nil
 			}
 
 			orgs := portfolioOrgs[sourceKey]
-			if len(orgs) == 0 {
-				if len(allMigratedOrgs) == 0 {
-					e.Logger.Warn("configurePortfolios: no target organization found and no migrated orgs, skipping",
-						"portfolio", sourceKey)
-					return nil
-				}
+			if len(orgs) == 0 && len(allMigratedOrgs) > 0 {
 				e.Logger.Info("configurePortfolios: no resolved projects on source, falling back to all migrated orgs",
 					"portfolio", sourceKey, "orgs", allMigratedOrgs)
 				orgs = allMigratedOrgs
 			}
-			orgIDs, err := resolveOrgUUIDs(ctx, e, orgUUIDs, orgs)
-			if err != nil || len(orgIDs) == 0 {
-				counter.Fail()
-				return nil
-			}
 
 			params := cloud.UpdatePortfolioParams{
-				PortfolioID:     portfolioID,
-				OrganizationIDs: orgIDs,
+				PortfolioID: portfolioID,
 			}
 			switch selectionMode {
 			case "REGEXP":
@@ -122,8 +115,10 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 			case "MANUAL":
 				cloudKeys := portfolioProjects[sourceKey]
 				if len(cloudKeys) == 0 {
-					e.Logger.Warn("configurePortfolios: MANUAL portfolio has no resolved cloud projects, skipping",
-						"portfolio", sourceKey)
+					msg := "MANUAL portfolio has no resolved cloud projects to migrate"
+					e.Logger.Warn("configurePortfolios: "+msg, "portfolio", sourceKey)
+					counter.Fail()
+					recordPortfolioFailure(failW, portfolioID, name, msg)
 					return nil
 				}
 				params.Selection = "regex"
@@ -132,16 +127,16 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 
 			e.Logger.Info("configurePortfolios: sending PATCH",
 				"portfolio", portfolioID,
-				"name", extractField(item, "name"),
+				"name", name,
 				"selection", params.Selection,
 				"regex", params.RegularExpression,
 				"tags", params.Tags,
-				"organizationIds", orgIDs,
 			)
 			if err := e.CloudAPI.Enterprises.UpdatePortfolio(ctx, params); err != nil {
 				counter.Fail()
 				logAPIWarn(e.Logger, "configurePortfolios failed", err,
 					"portfolio", portfolioID, "selection", selectionMode)
+				recordPortfolioFailure(failW, portfolioID, name, "PATCH /enterprises/portfolios/<id>: "+err.Error())
 			} else {
 				counter.Success()
 				e.Logger.Info("configurePortfolios: PATCH succeeded",
@@ -248,25 +243,21 @@ func collectAllMigratedOrgs(projectIndex map[string]cloudProjectInfo) []string {
 	return out
 }
 
-// resolveOrgUUIDs converts each org key to its UUID via the SonarQube Cloud
-// organizations API, caching results across calls.
-func resolveOrgUUIDs(ctx context.Context, e *Executor, cache map[string]string, orgKeys []string) ([]string, error) {
-	out := make([]string, 0, len(orgKeys))
-	for _, orgKey := range orgKeys {
-		uuid, ok := cache[orgKey]
-		if !ok {
-			id, err := e.Cloud.Organizations.LookupID(ctx, orgKey)
-			if err != nil {
-				e.Logger.Warn("configurePortfolios: organization UUID lookup failed",
-					"org", orgKey, "err", err)
-				continue
-			}
-			cache[orgKey] = id
-			uuid = id
-		}
-		out = append(out, uuid)
+// recordPortfolioFailure appends a sidecar JSONL entry describing a
+// per-portfolio failure inside configurePortfolios. The summary report
+// reads this file to surface task-level failures (e.g. "no resolved
+// projects on source") that never produced an HTTP request and therefore
+// don't appear in requests.log.
+func recordPortfolioFailure(w *common.ChunkWriter, portfolioID, name, reason string) {
+	if w == nil {
+		return
 	}
-	return out, nil
+	rec, _ := json.Marshal(map[string]any{
+		"cloud_portfolio_id": portfolioID,
+		"name":               name,
+		"reason":             reason,
+	})
+	_ = w.WriteOne(rec)
 }
 
 // transformPortfolioRegex rewrites a source-side regex so that it matches

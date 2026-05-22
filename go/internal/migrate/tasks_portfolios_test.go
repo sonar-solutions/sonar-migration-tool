@@ -119,9 +119,11 @@ func TestRunConfigurePortfoliosRegex(t *testing.T) {
 	if branchKey, ok := patchBody["branchKey"]; !ok || branchKey != "" {
 		t.Errorf("expected branchKey=\"\", got %v (present=%v)", branchKey, ok)
 	}
-	orgs, _ := patchBody["organizationIds"].([]any)
-	if len(orgs) != 1 || orgs[0] != "myorg-uuid" {
-		t.Errorf("expected organizationIds=[myorg-uuid], got %v", orgs)
+	// organizationIds is intentionally omitted — the SQC enterprise PATCH
+	// treats it as optional and the standard search endpoint doesn't expose
+	// the UUIDs anyway.
+	if _, ok := patchBody["organizationIds"]; ok {
+		t.Errorf("organizationIds should be omitted from the PATCH body, got %v", patchBody["organizationIds"])
 	}
 }
 

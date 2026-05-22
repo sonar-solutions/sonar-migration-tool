@@ -21,18 +21,32 @@ type portfolioFailure struct {
 	Error            string
 }
 
-// collectPortfolioFailures re-parses requests.log and returns one entry per
-// failed PATCH/DELETE on /enterprises/portfolios/{id}. Entries are keyed by
-// the cloud portfolio id pulled from the URL.
+// collectPortfolioFailures combines two sources of per-portfolio failures:
+//
+//  1. requests.log entries for failed PATCH/DELETE on
+//     /enterprises/portfolios/{id}.
+//  2. The configurePortfolios.failures JSONL sidecar, which records
+//     task-level failures (e.g. "no resolved projects on source") that
+//     never produced an HTTP request.
+//
+// Entries are keyed by the cloud portfolio id. When both sources have an
+// entry for the same portfolio, the HTTP failure wins (more specific).
 func collectPortfolioFailures(runDir string) map[string]portfolioFailure {
+	out := make(map[string]portfolioFailure)
+	mergePortfolioSidecar(runDir, out)
+	mergePortfolioRequestLog(runDir, out)
+	return out
+}
+
+// mergePortfolioRequestLog reads requests.log and records HTTP-level
+// portfolio failures.
+func mergePortfolioRequestLog(runDir string, out map[string]portfolioFailure) {
 	logPath := filepath.Join(runDir, "requests.log")
 	f, err := os.Open(logPath)
 	if err != nil {
-		return nil
+		return
 	}
 	defer f.Close()
-
-	out := make(map[string]portfolioFailure)
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 	for scanner.Scan() {
@@ -41,11 +55,55 @@ func collectPortfolioFailures(runDir string) map[string]portfolioFailure {
 			continue
 		}
 		if id, fail, ok := matchPortfolioFailure(entry); ok {
-			// Keep the most recent failure for an id.
-			out[id] = fail
+			out[id] = fail // Most recent / HTTP wins.
 		}
 	}
-	return out
+}
+
+// mergePortfolioSidecar reads the configurePortfolios.failures JSONL written
+// by the migrate task and records task-level failures (these don't produce
+// HTTP requests, so requests.log can't see them).
+func mergePortfolioSidecar(runDir string, out map[string]portfolioFailure) {
+	dir := filepath.Join(runDir, "configurePortfolios.failures")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
+			continue
+		}
+		f, err := os.Open(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			var rec struct {
+				CloudPortfolioID string `json:"cloud_portfolio_id"`
+				Reason           string `json:"reason"`
+			}
+			if json.Unmarshal([]byte(line), &rec) != nil {
+				continue
+			}
+			if rec.CloudPortfolioID == "" {
+				continue
+			}
+			if _, alreadyHTTPFailure := out[rec.CloudPortfolioID]; alreadyHTTPFailure {
+				continue
+			}
+			out[rec.CloudPortfolioID] = portfolioFailure{
+				CloudPortfolioID: rec.CloudPortfolioID,
+				Error:            rec.Reason,
+			}
+		}
+		f.Close()
+	}
 }
 
 func matchPortfolioFailure(entry map[string]any) (string, portfolioFailure, bool) {
