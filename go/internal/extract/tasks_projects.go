@@ -51,45 +51,41 @@ func projectTasks() []TaskDef {
 }
 
 // projectTagsTask fetches every project's tags via
-// GET /api/projects/search?f=tags and writes one record per project with
-// {projectKey, tags, serverUrl}. The plain getProjects task does not pass
-// f=tags, so its records always have tags=null — hence the dedicated
-// extract here. Projects with no tags are skipped to keep the output lean.
+// GET /api/components/show?component=<key> and writes one record per
+// project with {projectKey, tags, serverUrl}.
+//
+// Why per-project instead of a single bulk call: on some SonarQube Server
+// versions /api/projects/search returns tags=null even with f=tags, while
+// /api/components/show reliably exposes the project's tags array. Projects
+// with no tags are skipped to keep the output lean.
 func projectTagsTask() func(ctx context.Context, e *Executor) error {
 	return func(ctx context.Context, e *Executor) error {
-		items, err := e.Raw.GetPaginated(ctx, PaginatedOpts{
-			Path:      "api/projects/search",
-			ResultKey: "components",
-			Params:    url.Values{"f": {"tags"}},
-		})
-		if err != nil {
-			return err
-		}
-		out := make([]json.RawMessage, 0, len(items))
-		for _, it := range items {
-			key := extractField(it, "key")
-			if key == "" {
-				continue
-			}
-			tags := extractTagsArray(it)
-			if len(tags) == 0 {
-				continue
-			}
-			rec, err := json.Marshal(map[string]any{
-				"projectKey": key,
-				"tags":       tags,
-				"serverUrl":  e.ServerURL,
+		return forEachDep(ctx, e, "getProjectTags", "getProjects",
+			func(ctx context.Context, item json.RawMessage, w *ChunkWriter) error {
+				key := extractField(item, "key")
+				if key == "" {
+					return nil
+				}
+				raw, err := e.Raw.Get(ctx, "api/components/show",
+					url.Values{"component": {key}})
+				if err != nil {
+					return nil // best-effort — don't fail the whole extract on one project
+				}
+				comp := extractSubKey(raw, "component")
+				tags := extractTagsArray(comp)
+				if len(tags) == 0 {
+					return nil
+				}
+				rec, err := json.Marshal(map[string]any{
+					"projectKey": key,
+					"tags":       tags,
+					"serverUrl":  e.ServerURL,
+				})
+				if err != nil {
+					return nil
+				}
+				return w.WriteOne(rec)
 			})
-			if err != nil {
-				continue
-			}
-			out = append(out, rec)
-		}
-		w, err := e.Store.Writer("getProjectTags")
-		if err != nil {
-			return err
-		}
-		return w.WriteChunk(out)
 	}
 }
 

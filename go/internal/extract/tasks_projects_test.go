@@ -13,22 +13,29 @@ import (
 )
 
 // TestProjectTagsTaskFetchesAndFiltersEmpty verifies that getProjectTags
-// calls /api/projects/search with f=tags, emits one record per project
+// iterates over each project in getProjects, calls
+// /api/components/show?component=<key>, emits one record per project
 // whose tags array is non-empty, and skips projects with no tags.
 func TestProjectTagsTaskFetchesAndFiltersEmpty(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/projects/search", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("f") != "tags" {
-			t.Errorf("expected f=tags query param, got %q", r.URL.Query().Get("f"))
+	mux.HandleFunc("GET /api/components/show", func(w http.ResponseWriter, r *http.Request) {
+		comp := r.URL.Query().Get("component")
+		switch comp {
+		case "proj-with-tags":
+			json.NewEncoder(w).Encode(map[string]any{
+				"component": map[string]any{"key": comp, "name": "P1", "tags": []string{"java", "backend"}},
+			})
+		case "proj-empty":
+			json.NewEncoder(w).Encode(map[string]any{
+				"component": map[string]any{"key": comp, "name": "P2", "tags": []string{}},
+			})
+		case "proj-no-tags":
+			json.NewEncoder(w).Encode(map[string]any{
+				"component": map[string]any{"key": comp, "name": "P3"},
+			})
+		default:
+			http.NotFound(w, r)
 		}
-		json.NewEncoder(w).Encode(map[string]any{
-			"paging": map[string]any{"total": 3, "pageIndex": 1, "pageSize": 100},
-			"components": []map[string]any{
-				{"key": "proj-with-tags", "name": "P1", "tags": []string{"java", "backend"}},
-				{"key": "proj-empty", "name": "P2", "tags": []string{}},
-				{"key": "proj-no-tags", "name": "P3"},
-			},
-		})
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -43,6 +50,13 @@ func TestProjectTagsTaskFetchesAndFiltersEmpty(t *testing.T) {
 		ServerURL: "https://test.example.com/",
 		Logger:    slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 		Sem:       make(chan struct{}, 1),
+	}
+
+	// Pre-populate getProjects (the dependency this task iterates over).
+	pw, _ := store.Writer("getProjects")
+	for _, key := range []string{"proj-with-tags", "proj-empty", "proj-no-tags"} {
+		b, _ := json.Marshal(map[string]any{"key": key})
+		pw.WriteOne(b)
 	}
 
 	if err := projectTagsTask()(context.Background(), e); err != nil {
