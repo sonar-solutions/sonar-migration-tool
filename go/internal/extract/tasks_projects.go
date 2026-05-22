@@ -23,6 +23,12 @@ func projectTasks() []TaskDef {
 				}, map[string]any{"serverUrl": e.ServerURL})
 			},
 		},
+		{
+			Name:         "getProjectTags",
+			Editions:     AllEditions,
+			Dependencies: []string{"getProjects"},
+			Run:          projectTagsTask(),
+		},
 		{Name: "getProjectDetails", Editions: AllEditions, Dependencies: []string{"getProjects"},
 			Run: perProjectSingle("getProjectDetails", "api/navigation/component", "component")},
 		{Name: "getProjectSettings", Editions: AllEditions, Dependencies: []string{"getProjects"},
@@ -42,6 +48,67 @@ func projectTasks() []TaskDef {
 		{Name: "getProjectUsersViewers", Editions: AllEditions, Dependencies: []string{"getProjects"},
 			Run: perProjectPermissionUsers("getProjectUsersViewers", "user")},
 	}
+}
+
+// projectTagsTask fetches every project's tags via
+// GET /api/projects/search?f=tags and writes one record per project with
+// {projectKey, tags, serverUrl}. The plain getProjects task does not pass
+// f=tags, so its records always have tags=null — hence the dedicated
+// extract here. Projects with no tags are skipped to keep the output lean.
+func projectTagsTask() func(ctx context.Context, e *Executor) error {
+	return func(ctx context.Context, e *Executor) error {
+		items, err := e.Raw.GetPaginated(ctx, PaginatedOpts{
+			Path:      "api/projects/search",
+			ResultKey: "components",
+			Params:    url.Values{"f": {"tags"}},
+		})
+		if err != nil {
+			return err
+		}
+		out := make([]json.RawMessage, 0, len(items))
+		for _, it := range items {
+			key := extractField(it, "key")
+			if key == "" {
+				continue
+			}
+			tags := extractTagsArray(it)
+			if len(tags) == 0 {
+				continue
+			}
+			rec, err := json.Marshal(map[string]any{
+				"projectKey": key,
+				"tags":       tags,
+				"serverUrl":  e.ServerURL,
+			})
+			if err != nil {
+				continue
+			}
+			out = append(out, rec)
+		}
+		w, err := e.Store.Writer("getProjectTags")
+		if err != nil {
+			return err
+		}
+		return w.WriteChunk(out)
+	}
+}
+
+// extractTagsArray pulls a non-empty "tags" string array out of a JSON
+// record, tolerating absent or non-array shapes.
+func extractTagsArray(raw json.RawMessage) []string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	arrRaw, ok := obj["tags"]
+	if !ok {
+		return nil
+	}
+	var arr []string
+	if json.Unmarshal(arrRaw, &arr) != nil {
+		return nil
+	}
+	return arr
 }
 
 func projectSettingsTask() func(ctx context.Context, e *Executor) error {
