@@ -87,3 +87,27 @@ func IsAlreadyExists(err error) bool {
 	lower := strings.ToLower(apiErr.Body)
 	return strings.Contains(lower, "already exists")
 }
+
+// IsOrgLevelRejection reports whether err is an APIError with status 400
+// whose body indicates the setting key cannot be set at organization
+// level. Some SonarQube Cloud settings — notably analyzer report paths
+// like sonar.coverage.jacoco.xmlReportPaths and sonar.androidLint.reportPaths
+// — appear in /api/settings/list_definitions at org scope but the
+// /api/settings/set endpoint rejects org-scoped writes for them with
+// "Provided property can't be set at organization level". The migration
+// tool detects this runtime rejection so it can fall back to setting
+// the value on each project instead.
+//
+// Matches against the JSON-decoded message (via Message()) so the
+// detector is immune to SonarCloud's habit of escaping the apostrophe
+// as ' in the raw response body — the substring search uses
+// "at organization level", a phrase that contains no apostrophe and
+// is unique to this rejection class.
+func IsOrgLevelRejection(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	lower := strings.ToLower(apiErr.Message())
+	return strings.Contains(lower, "at organization level")
+}

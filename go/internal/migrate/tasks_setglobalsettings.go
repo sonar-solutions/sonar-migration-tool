@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	sqapi "github.com/sonar-solutions/sq-api-go"
 	"github.com/sonar-solutions/sq-api-go/types"
 	"golang.org/x/sync/errgroup"
 )
@@ -135,8 +136,32 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 	e.Logger.Info("starting task", "task", "setGlobalSettings",
 		"customized_settings", len(customized), "target_orgs", len(orgList))
 
-	// One list_definitions fetch per target org.
+	// One list_definitions fetch per target org (org scope).
 	defsByOrg := loadSettingDefinitionsForOrgs(ctx, e, orgs, "setGlobalSettings")
+
+	// Project-scope defs cover the superset of keys visible to a
+	// project (language settings, external-analyzer settings, etc.).
+	// Used below to distinguish "truly not on SQC" (warn) from "exists
+	// at project scope only — handled by setProjectSettings" (info).
+	// Issues #189 / #191.
+	projects, _ := e.Store.ReadAll("createProjects")
+	projectKeyMap := make(map[string]projectMapping, len(projects))
+	for _, p := range projects {
+		serverURL := extractField(p, "server_url")
+		key := extractField(p, "key")
+		projectKeyMap[serverURL+key] = projectMapping{
+			CloudKey: extractField(p, "cloud_project_key"),
+			OrgKey:   extractField(p, "sonarcloud_org_key"),
+		}
+	}
+	projectDefsByOrg := loadProjectScopedSettingDefinitionsForOrgs(ctx, e, projectKeyMap, "setGlobalSettings")
+
+	// Read getProjectSettings extract so the fan-out (below) knows
+	// which (project, key) pairs already have a per-project SQS
+	// override. setProjectSettings's per-record loop applies those in
+	// parallel with this task; without the coverage map the fan-out
+	// would race against — and potentially overwrite — those values.
+	overrideCovered := buildPerProjectOverrideCoverage(e)
 
 	counter := NewTaskCounter("setGlobalSettings")
 	w, err := e.Store.Writer("setGlobalSettings")
@@ -152,7 +177,7 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 			if gctx.Err() != nil {
 				return gctx.Err()
 			}
-			rec := applyOneGlobalSetting(gctx, e, raw, orgList, defsByOrg, counter)
+			rec := applyOneGlobalSetting(gctx, e, raw, orgList, defsByOrg, projectDefsByOrg, projectKeyMap, overrideCovered, counter)
 			b, _ := json.Marshal(rec)
 			mu.Lock()
 			defer mu.Unlock()
@@ -170,7 +195,10 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 // every target SQC org and returns a result record describing the per-org
 // outcomes plus a pre-built detail string for the report.
 func applyOneGlobalSetting(ctx context.Context, e *Executor, raw json.RawMessage, orgs []string,
-	defsByOrg map[string]map[string]types.SettingDefinition, counter *TaskCounter) globalSettingResult {
+	defsByOrg, projectDefsByOrg map[string]map[string]types.SettingDefinition,
+	projectKeyMap map[string]projectMapping,
+	overrideCovered map[string]map[string]bool,
+	counter *TaskCounter) globalSettingResult {
 
 	key := extractField(raw, "key")
 	rec := globalSettingResult{Key: key}
@@ -181,18 +209,58 @@ func applyOneGlobalSetting(ctx context.Context, e *Executor, raw json.RawMessage
 	// sonar.test.exclusions record).
 	rec.MergedFromGlobal = extractField(raw, "_merged_from")
 
+	// Memoize the "SQC rejects this key at org level" verdict across
+	// the orgs we iterate below. Without this, every org would try
+	// the same failing org-scope POST before falling back; with it,
+	// we try at most ONCE and reuse the result for the remaining
+	// orgs. The verdict is per-key but cached across orgs because
+	// SQC's list_definitions inconsistency is a property of the
+	// setting key, not of the org.
+	orgRejected := false
+
 	for _, org := range orgs {
 		def, hasDef := defsByOrg[org][key]
 		if !hasDef {
+			// Distinguish two cases here (issues #189 / #191):
+			//   - key NOT in org-scope and NOT in project-scope → truly
+			//     unknown to SQC; keep the existing Warn.
+			//   - key NOT in org-scope BUT IS in project-scope →
+			//     handled by setProjectSettings's propagation pass;
+			//     downgrade to Info and use a non-alarming reason so
+			//     the report doesn't flag it red.
+			if _, atProject := projectDefsByOrg[org][key]; atProject {
+				e.Logger.Info("setGlobalSettings: key exists only at SQC project scope, will be propagated by setProjectSettings",
+					"key", key, "org", org)
+				rec.SkippedOrgs = append(rec.SkippedOrgs, skippedOrg{Org: org, Reason: "project-scope-only"})
+				continue
+			}
 			e.Logger.Warn("setGlobalSettings: setting key not available on SQC, skipping",
 				"key", key, "org", org)
 			rec.SkippedOrgs = append(rec.SkippedOrgs, skippedOrg{Org: org, Reason: "not-on-sqc"})
 			continue
 		}
+		// If a previous org for THIS key already rejected the
+		// org-scope POST, skip the org attempt entirely and go
+		// straight to the project fan-out. Saves one wasted 400 per
+		// extra org.
+		if orgRejected {
+			fanOutForOrgRejection(ctx, e, raw, key, org, projectDefsByOrg, projectKeyMap, overrideCovered, counter, &rec, /*alreadyKnown=*/ true)
+			continue
+		}
+
 		err := applySettingByDef(ctx, e, "", org, raw, key, def, true)
 		switch {
 		case errors.Is(err, errSettingEmpty):
 			rec.SkippedOrgs = append(rec.SkippedOrgs, skippedOrg{Org: org, Reason: "empty"})
+		case sqapi.IsOrgLevelRejection(err):
+			// SQC's list_definitions falsely reported this key as
+			// settable at org scope (e.g. sonar.coverage.jacoco.xmlReportPaths,
+			// sonar.androidLint.reportPaths). Fall back to setting the
+			// value on each project in that org. Mark orgRejected so
+			// the remaining orgs in the loop skip the failing org-
+			// scope POST altogether.
+			orgRejected = true
+			fanOutForOrgRejection(ctx, e, raw, key, org, projectDefsByOrg, projectKeyMap, overrideCovered, counter, &rec, /*alreadyKnown=*/ false)
 		case err != nil:
 			counter.Fail()
 			logAPIWarn(e.Logger, "setGlobalSettings failed", err, "key", key, "org", org)
@@ -204,6 +272,134 @@ func applyOneGlobalSetting(ctx context.Context, e *Executor, raw json.RawMessage
 	}
 	rec.Detail = renderGlobalSettingDetail(rec)
 	return rec
+}
+
+// fanOutForOrgRejection handles the per-org fan-out when SQC rejected
+// the org-scope POST for a key (or when we've already seen that
+// rejection on a previous org during this run). Per-project SQS
+// overrides are skipped so we don't race against the parallel
+// setProjectSettings per-record loop.
+func fanOutForOrgRejection(ctx context.Context, e *Executor, raw json.RawMessage,
+	key, org string,
+	projectDefsByOrg map[string]map[string]types.SettingDefinition,
+	projectKeyMap map[string]projectMapping,
+	overrideCovered map[string]map[string]bool,
+	counter *TaskCounter, rec *globalSettingResult,
+	alreadyKnown bool) {
+
+	projectDef, hasProjDef := projectDefsByOrg[org][key]
+	if !hasProjDef {
+		// Pathological — org said yes, project says no.
+		rec.FailedOrgs = append(rec.FailedOrgs,
+			failedOrg{Org: org, Reason: "rejected at org scope, key absent from project scope"})
+		counter.Fail()
+		return
+	}
+	if alreadyKnown {
+		e.Logger.Info("setGlobalSettings: org-level write already rejected for this key, propagating to projects without retrying",
+			"key", key, "org", org)
+	} else {
+		e.Logger.Info("setGlobalSettings: key not settable at org level despite list_definitions claim, propagating to projects",
+			"key", key, "org", org)
+	}
+	applied, failed, skipped := fanOutGlobalToProjects(ctx, e, raw, key, org, projectDef, projectKeyMap, overrideCovered)
+	rec.AppliedOrgs = append(rec.AppliedOrgs, org)
+	for range applied {
+		counter.Success()
+	}
+	for _, p := range failed {
+		counter.Fail()
+		rec.FailedOrgs = append(rec.FailedOrgs, failedOrg{Org: org + "/" + p.project, Reason: p.reason})
+	}
+	for _, p := range skipped {
+		rec.SkippedOrgs = append(rec.SkippedOrgs,
+			skippedOrg{Org: org + "/" + p, Reason: "per-project-override"})
+	}
+}
+
+// projectFanOutFailure is returned from fanOutGlobalToProjects for each
+// project where the per-project apply failed, so the caller can roll
+// the error into its result record.
+type projectFanOutFailure struct {
+	project string
+	reason  string
+}
+
+// fanOutGlobalToProjects applies a global setting record to every
+// project in the given org using the same definition-aware dispatcher
+// that setProjectSettings uses. This is the runtime fallback when
+// SQC's list_definitions claims a key is settable at org-scope but
+// /api/settings/set?organization=... returns 400 — the key is in
+// reality project-scope-only.
+//
+// Projects whose source SQS has a per-project override for this key
+// (recorded in overrideCovered, keyed by serverURL+sourceKey) are
+// skipped here — setProjectSettings applies their specific value via
+// its per-record loop; the fan-out would race against it and could
+// clobber the override. Such projects are returned as `skipped` so
+// the caller can include them in the result record.
+func fanOutGlobalToProjects(ctx context.Context, e *Executor, raw json.RawMessage,
+	key, org string, def types.SettingDefinition,
+	projectKeyMap map[string]projectMapping,
+	overrideCovered map[string]map[string]bool,
+) (applied []string, failed []projectFanOutFailure, skipped []string) {
+
+	for projLookupKey, pm := range projectKeyMap {
+		if pm.OrgKey != org {
+			continue
+		}
+		if overrideCovered[projLookupKey][key] {
+			e.Logger.Debug("setGlobalSettings: per-project override wins, skipping fan-out",
+				"project", pm.CloudKey, "key", key, "org", org)
+			skipped = append(skipped, pm.CloudKey)
+			continue
+		}
+		err := applySettingByDef(ctx, e, pm.CloudKey, pm.OrgKey, raw, key, def, true)
+		switch {
+		case errors.Is(err, errSettingEmpty):
+			// nothing to do
+		case err != nil:
+			logAPIWarn(e.Logger, "setGlobalSettings: project fan-out failed", err,
+				"key", key, "project", pm.CloudKey, "org", org)
+			failed = append(failed, projectFanOutFailure{project: pm.CloudKey, reason: err.Error()})
+		default:
+			applied = append(applied, pm.CloudKey)
+		}
+	}
+	return applied, failed, skipped
+}
+
+// buildPerProjectOverrideCoverage scans the getProjectSettings extract
+// and returns a {serverURL+projectKey -> {settingKey -> true}} set of
+// per-project SQS overrides. setProjectSettings's per-record loop
+// applies these in parallel; the fan-out in fanOutGlobalToProjects
+// uses this map to avoid clobbering them. Errors are swallowed: an
+// empty map degrades gracefully to the previous behaviour (fan-out
+// over-writes overrides) rather than failing the migration.
+func buildPerProjectOverrideCoverage(e *Executor) map[string]map[string]bool {
+	items, err := readExtractItems(e, "getProjectSettings")
+	if err != nil {
+		e.Logger.Debug("setGlobalSettings: could not read getProjectSettings extract for override coverage",
+			"err", err)
+		return map[string]map[string]bool{}
+	}
+	out := make(map[string]map[string]bool)
+	for _, it := range items {
+		projectKey := extractField(it.Data, "project")
+		if projectKey == "" {
+			projectKey = extractField(it.Data, "projectKey")
+		}
+		settingKey := extractField(it.Data, "key")
+		if projectKey == "" || settingKey == "" {
+			continue
+		}
+		lookup := it.ServerURL + projectKey
+		if out[lookup] == nil {
+			out[lookup] = make(map[string]bool)
+		}
+		out[lookup][settingKey] = true
+	}
+	return out
 }
 
 // mergeGlobalIntoLocal folds the SQS-side patterns from a global-only

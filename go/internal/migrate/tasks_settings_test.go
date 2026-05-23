@@ -59,6 +59,25 @@ func mountSettingsDefinitions(mux *http.ServeMux, defs ...map[string]any) {
 	})
 }
 
+// mountSettingsDefinitionsScoped distinguishes the two flavours of the
+// list_definitions endpoint: when the SDK sends component=<projectKey>
+// SQC returns the SUPERSET of definitions visible at that project
+// (language settings, external-analyzer settings, etc.). The org-scope
+// response is the strict subset. Issues #189 / #191 hinge on that
+// difference — the migration tool uses it to decide which SQS global
+// settings have to be propagated to every SQC project instead of being
+// set at org level. Tests that exercise that code path mount BOTH
+// responses through this helper.
+func mountSettingsDefinitionsScoped(mux *http.ServeMux, orgScope, projectScope []map[string]any) {
+	mux.HandleFunc("GET /api/settings/list_definitions", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("component") != "" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"definitions": projectScope})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"definitions": orgScope})
+	})
+}
+
 // TestRunSetProjectSettingsDispatchesByShape covers the FALLBACK path:
 // when SQC's list_definitions has no entry for a setting key (custom or
 // plugin-defined settings), the task dispatches based on the extract
@@ -346,5 +365,198 @@ func TestRunSetProjectSettingsWarnsOnUnmappedProject(t *testing.T) {
 	// The mapped record (proj1/sonar.exclusions) should NOT produce a Warn.
 	if strings.Contains(logs, "proj1") && strings.Contains(logs, "not found") {
 		t.Errorf("mapped project must not Warn, got:\n%s", logs)
+	}
+}
+
+// runProjectSettingsPropagationTest wires up cloud + api + executor
+// for the propagation-pass tests below. perProjectExtract is what
+// projectSettingsTask would have written (per-project overrides);
+// sqsGlobals is what getServerSettings produced; sqsDefs is what
+// getServerSettingsDefinitions produced; orgDefs / projectDefs are the
+// SQC list_definitions responses for org-scope and project-scope.
+func runProjectSettingsPropagationTest(t *testing.T,
+	projects []map[string]any,
+	perProjectExtract []map[string]any,
+	sqsGlobals []map[string]any,
+	sqsDefs []map[string]any,
+	orgDefs, projectDefs []map[string]any,
+) (hits []settingsHit, logs string) {
+	t.Helper()
+	cloudMux := http.NewServeMux()
+	muHits, hitsPtr := mountSettingsSetCapture(cloudMux)
+	mountSettingsDefinitionsScoped(cloudMux, orgDefs, projectDefs)
+	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	cloudSrv := httptest.NewServer(cloudMux)
+	t.Cleanup(cloudSrv.Close)
+
+	apiSrv := newMockAPIServer()
+	t.Cleanup(apiSrv.Close)
+
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	var buf bytes.Buffer
+	e.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Per-project SQS extract → extract dir.
+	extractDir := filepath.Join(dir, "extract-01", "getProjectSettings")
+	if err := os.MkdirAll(extractDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f, _ := os.Create(filepath.Join(extractDir, "results.1.jsonl"))
+	for _, r := range perProjectExtract {
+		b, _ := json.Marshal(r)
+		f.Write(b)
+		f.Write([]byte("\n"))
+	}
+	f.Close()
+
+	// SQS global extracts → extract dir (the propagation pass reads
+	// from here via readExtractItems, NOT the migrate store).
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettings", sqsGlobals)
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettingsDefinitions", sqsDefs)
+	writeExtractMetaJSON(t, dir, "extract-01", testServerURL)
+
+	// createProjects → migrate store.
+	pw, _ := e.Store.Writer("createProjects")
+	for _, p := range projects {
+		b, _ := json.Marshal(p)
+		pw.WriteOne(b)
+	}
+
+	if err := runSetProjectSettings(context.Background(), e); err != nil {
+		t.Fatalf("runSetProjectSettings: %v", err)
+	}
+	muHits.Lock()
+	defer muHits.Unlock()
+	hits = append(hits, *hitsPtr...)
+	return hits, buf.String()
+}
+
+// Customized SQS global whose key is project-scope-only on SQC must be
+// applied to EVERY SQC project — that's the core requirement of #189
+// and #191 (language settings, external analyzer settings). Closes the
+// gap where SQS had a customized global value that SQC could only
+// store per-project.
+func TestRunSetProjectSettingsPropagatesGlobalToAllProjects(t *testing.T) {
+	hits, _ := runProjectSettingsPropagationTest(t,
+		// Two projects, same org.
+		[]map[string]any{
+			{"key": "projA", "server_url": testServerURL,
+				"sonarcloud_org_key": "org1", "cloud_project_key": "org1_projA"},
+			{"key": "projB", "server_url": testServerURL,
+				"sonarcloud_org_key": "org1", "cloud_project_key": "org1_projB"},
+		},
+		// No per-project overrides.
+		nil,
+		// SQS global sonar.java.file.suffixes is customized.
+		[]map[string]any{
+			{"key": "sonar.java.file.suffixes", "values": []string{".java", ".jav"}},
+		},
+		// SQS defaultValue empty, so the global is "customized".
+		[]map[string]any{
+			{"key": "sonar.java.file.suffixes", "type": "STRING", "multiValues": false, "defaultValue": ".java"},
+		},
+		// SQC org-scope: empty (the language key is NOT here).
+		[]map[string]any{},
+		// SQC project-scope: language key IS visible.
+		[]map[string]any{
+			{"key": "sonar.java.file.suffixes", "type": "STRING", "multiValues": false},
+		},
+	)
+	if len(hits) != 2 {
+		t.Fatalf("expected 2 settings.set calls (one per project), got %d (%+v)", len(hits), hits)
+	}
+	seen := map[string]string{}
+	for _, h := range hits {
+		seen[h.value] = h.key
+	}
+	// SDK's CSV join: ".java,.jav" because multiValues=false on SQC.
+	if _, ok := seen[".java,.jav"]; !ok {
+		t.Errorf("expected value=.java,.jav (CSV-joined), got hits %+v", hits)
+	}
+}
+
+// When a project has a per-project SQS override, the override must win
+// for that project — but the global value still propagates to the
+// other projects in the same org.
+func TestRunSetProjectSettingsPerProjectOverrideWinsOverGlobal(t *testing.T) {
+	hits, logs := runProjectSettingsPropagationTest(t,
+		[]map[string]any{
+			{"key": "projA", "server_url": testServerURL,
+				"sonarcloud_org_key": "org1", "cloud_project_key": "org1_projA"},
+			{"key": "projB", "server_url": testServerURL,
+				"sonarcloud_org_key": "org1", "cloud_project_key": "org1_projB"},
+		},
+		// projA has a per-project override; projB does NOT.
+		[]map[string]any{
+			{"project": "projA", "key": "sonar.java.file.suffixes",
+				"values": []string{".jjj"}},
+		},
+		// SQS global sonar.java.file.suffixes is customized.
+		[]map[string]any{
+			{"key": "sonar.java.file.suffixes", "values": []string{".java", ".jav"}},
+		},
+		[]map[string]any{
+			{"key": "sonar.java.file.suffixes", "type": "STRING", "multiValues": false, "defaultValue": ".java"},
+		},
+		[]map[string]any{},
+		[]map[string]any{
+			{"key": "sonar.java.file.suffixes", "type": "STRING", "multiValues": false},
+		},
+	)
+	// One call for the override (.jjj on projA), one for the
+	// propagated global (.java,.jav on projB). Project A's override
+	// must NOT be clobbered by the global propagation pass.
+	if len(hits) != 2 {
+		t.Fatalf("expected 2 settings.set calls, got %d", len(hits))
+	}
+	// SQC project-scope defs say sonar.java.file.suffixes is
+	// multiValues=false, so the SDK CSV-joins both calls into
+	// value=. Distinguish the two by content.
+	values := []string{hits[0].value, hits[1].value}
+	sort.Strings(values)
+	if values[0] != ".java,.jav" {
+		t.Errorf("expected propagated global value=.java,.jav, got %v", values)
+	}
+	if values[1] != ".jjj" {
+		t.Errorf("expected per-project override value=.jjj, got %v", values)
+	}
+	if !strings.Contains(logs, "per-project override wins") {
+		t.Errorf("expected Debug log noting the override-wins decision, got:\n%s", logs)
+	}
+}
+
+// When the customized SQS global's key DOES exist at SQC org-scope,
+// setProjectSettings's propagation pass must leave it alone —
+// setGlobalSettings is responsible for that one. Prevents double-apply
+// (org + every project) regressions.
+func TestRunSetProjectSettingsLeavesOrgScopeGlobalsToSetGlobalSettings(t *testing.T) {
+	hits, _ := runProjectSettingsPropagationTest(t,
+		[]map[string]any{
+			{"key": "projA", "server_url": testServerURL,
+				"sonarcloud_org_key": "org1", "cloud_project_key": "org1_projA"},
+		},
+		nil,
+		[]map[string]any{
+			// sonar.exclusions: SQC has it at org scope.
+			{"key": "sonar.exclusions", "values": []string{"**/*.gen"}},
+		},
+		[]map[string]any{
+			{"key": "sonar.exclusions", "type": "STRING", "multiValues": true, "defaultValue": ""},
+		},
+		// Org scope: includes sonar.exclusions.
+		[]map[string]any{
+			{"key": "sonar.exclusions", "type": "STRING", "multiValues": true},
+		},
+		// Project scope: superset.
+		[]map[string]any{
+			{"key": "sonar.exclusions", "type": "STRING", "multiValues": true},
+		},
+	)
+	if len(hits) != 0 {
+		t.Fatalf("setProjectSettings must NOT propagate org-scope globals (setGlobalSettings owns them), got %d hits: %+v",
+			len(hits), hits)
 	}
 }

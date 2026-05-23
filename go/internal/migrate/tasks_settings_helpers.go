@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/sonar-solutions/sq-api-go/types"
@@ -26,7 +27,7 @@ var errSettingEmpty = errors.New("setting has no value")
 func loadSettingDefinitionsForOrgs(ctx context.Context, e *Executor, orgs map[string]struct{}, taskName string) map[string]map[string]types.SettingDefinition {
 	out := make(map[string]map[string]types.SettingDefinition, len(orgs))
 	for org := range orgs {
-		defs, err := e.Cloud.Settings.ListDefinitions(ctx, org)
+		defs, err := e.Cloud.Settings.ListDefinitions(ctx, org, "")
 		if err != nil {
 			logAPIWarn(e.Logger, taskName+": list_definitions failed, falling back to extract-shape dispatch", err, "org", org)
 			out[org] = map[string]types.SettingDefinition{}
@@ -40,6 +41,90 @@ func loadSettingDefinitionsForOrgs(ctx context.Context, e *Executor, orgs map[st
 		e.Logger.Debug(taskName+": loaded definitions", "org", org, "count", len(defs))
 	}
 	return out
+}
+
+// loadProjectScopedSettingDefinitionsForOrgs is the project-scope
+// counterpart to loadSettingDefinitionsForOrgs: it picks one
+// representative project per org from projectKeyMap and calls
+// /api/settings/list_definitions?organization=...&component=... so SQC
+// returns the SUPERSET of definitions visible at that project
+// (including language and external-analyzer keys that have no org-level
+// counterpart). The diff project-scope − org-scope is what issue
+// #189/#191 uses to decide which SQS global settings to propagate to
+// every SQC project.
+//
+// If an org has no entry in projectKeyMap, it's skipped — there's no
+// component to scope by. A failed fetch yields an empty (not nil)
+// inner map so callers fall back to org-scope semantics.
+func loadProjectScopedSettingDefinitionsForOrgs(ctx context.Context, e *Executor, projectKeyMap map[string]projectMapping, taskName string) map[string]map[string]types.SettingDefinition {
+	// Pick one cloud_project_key per org. Stable choice (first one
+	// encountered in iteration order) — SQC's project-scope defs are
+	// the same across projects of the same org, so any project works.
+	probeByOrg := make(map[string]string)
+	for _, pm := range projectKeyMap {
+		if pm.OrgKey == "" || pm.CloudKey == "" {
+			continue
+		}
+		if _, seen := probeByOrg[pm.OrgKey]; !seen {
+			probeByOrg[pm.OrgKey] = pm.CloudKey
+		}
+	}
+	out := make(map[string]map[string]types.SettingDefinition, len(probeByOrg))
+	for org, probe := range probeByOrg {
+		defs, err := e.Cloud.Settings.ListDefinitions(ctx, org, probe)
+		if err != nil {
+			logAPIWarn(e.Logger, taskName+": project-scope list_definitions failed", err, "org", org, "probe_project", probe)
+			out[org] = map[string]types.SettingDefinition{}
+			continue
+		}
+		byKey := make(map[string]types.SettingDefinition, len(defs))
+		for _, d := range defs {
+			byKey[d.Key] = d
+		}
+		out[org] = byKey
+		e.Logger.Debug(taskName+": loaded project-scope definitions", "org", org, "probe", probe, "count", len(defs))
+	}
+	return out
+}
+
+// readCustomizedSQSGlobals reads getServerSettings +
+// getServerSettingsDefinitions from the extract and returns the SQS
+// global settings whose value differs from the declared defaultValue
+// — the same filter used by setGlobalSettings (issue #186) and now
+// reused by setProjectSettings (issue #189/#191) to feed the
+// project-scope propagation pass.
+//
+// Errors reading either extract are surfaced; callers downstream
+// treat them as fatal because they signal an incomplete extract.
+func readCustomizedSQSGlobals(e *Executor) ([]json.RawMessage, error) {
+	defItems, err := readExtractItems(e, "getServerSettingsDefinitions")
+	if err != nil {
+		return nil, fmt.Errorf("reading getServerSettingsDefinitions: %w", err)
+	}
+	defaults := make(map[string]string, len(defItems))
+	for _, d := range defItems {
+		k := extractField(d.Data, "key")
+		if k == "" {
+			continue
+		}
+		defaults[k] = extractField(d.Data, "defaultValue")
+	}
+	valueItems, err := readExtractItems(e, "getServerSettings")
+	if err != nil {
+		return nil, fmt.Errorf("reading getServerSettings: %w", err)
+	}
+	customized := make([]json.RawMessage, 0, len(valueItems))
+	for _, it := range valueItems {
+		key := extractField(it.Data, "key")
+		if key == "" {
+			continue
+		}
+		if !isSettingCustomized(it.Data, defaults[key]) {
+			continue
+		}
+		customized = append(customized, it.Data)
+	}
+	return customized, nil
 }
 
 // applySettingByDef is the shared definition-aware dispatcher used by both

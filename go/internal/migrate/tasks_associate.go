@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/sonar-solutions/sq-api-go/cloud"
 	"github.com/sonar-solutions/sq-api-go/types"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
+	"golang.org/x/sync/errgroup"
 )
 
 // associateTasks returns tasks that associate projects with profiles, gates, etc.
@@ -52,8 +55,12 @@ func associateTasks() []TaskDef {
 			// the SQS settings extract (values + definitions, the latter
 			// supplies the defaultValue used to detect customization).
 			// Issue #186.
+			// createProjects supplies a per-org "probe" project key so
+			// setGlobalSettings can fetch project-scope list_definitions
+			// and distinguish "truly not on SQC" from "exists at
+			// project scope only" (issues #189 / #191).
 			Name:         "setGlobalSettings",
-			Dependencies: []string{"generateOrganizationMappings"},
+			Dependencies: []string{"generateOrganizationMappings", "createProjects"},
 			Run:          runSetGlobalSettings,
 		},
 	}
@@ -230,6 +237,19 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 	// Reading list_definitions lets us pick the right form per setting key.
 	defsByOrg := loadSettingDefinitionsForOrgs(ctx, e, orgs, "setProjectSettings")
 
+	// Project-scope defs are a SUPERSET of org-scope: they include
+	// language settings (sonar.<lang>.*) and external-analyzer settings
+	// that SQC doesn't expose at org level. The diff is the set of keys
+	// where SQS globals need to be propagated to every project — see
+	// the post-pass below (issues #189, #191).
+	projectDefsByOrg := loadProjectScopedSettingDefinitionsForOrgs(ctx, e, projectKeyMap, "setProjectSettings")
+
+	// Track which (project × setting) pairs were already covered by a
+	// per-project SQS extract record so the post-pass doesn't overwrite
+	// an explicit project override with the global value.
+	var coveredMu sync.Mutex
+	covered := make(map[string]map[string]bool, len(projectKeyMap))
+
 	counter := NewTaskCounter("setProjectSettings")
 	err := forEachExtractItem(ctx, e, "setProjectSettings", "getProjectSettings",
 		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
@@ -255,7 +275,30 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 				return nil
 			}
 
-			def, hasDef := defsByOrg[pm.OrgKey][settingKey]
+			// Record the (project, settingKey) pair so the post-pass
+			// for global propagation knows to skip it (the per-project
+			// SQS override wins). Done BEFORE the API call: even if the
+			// SDK call fails we don't want the post-pass to overwrite a
+			// value the user explicitly set on SQS.
+			coveredMu.Lock()
+			cmap := covered[item.ServerURL+projectKey]
+			if cmap == nil {
+				cmap = make(map[string]bool)
+				covered[item.ServerURL+projectKey] = cmap
+			}
+			cmap[settingKey] = true
+			coveredMu.Unlock()
+
+			// Prefer project-scope defs for per-record dispatch:
+			// they're a superset that includes language and external-
+			// analyzer keys (single STRING with multiValues=false on
+			// SQC even though SQS exposes them as values=[...]). Using
+			// org-scope only would silently misdispatch those — the
+			// same regression issue #120 fixed for the project loop.
+			def, hasDef := projectDefsByOrg[pm.OrgKey][settingKey]
+			if !hasDef {
+				def, hasDef = defsByOrg[pm.OrgKey][settingKey]
+			}
 			err := applyProjectSetting(ctx, e, pm, item.Data, settingKey, def, hasDef)
 			switch {
 			case errors.Is(err, errSettingEmpty):
@@ -272,8 +315,111 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 			_ = w.WriteOne(item.Data)
 			return nil
 		})
+	if err != nil {
+		counter.LogSummary(e.Logger)
+		return err
+	}
+
+	// Post-pass: propagate customized SQS globals to every SQC project
+	// when the key is project-scope-only on SQC. Issues #189 (language
+	// settings) and #191 (external analyzer settings) — and any future
+	// global setting that has no SQC org-level counterpart.
+	if err := propagateGlobalsToProjects(ctx, e, projectKeyMap, defsByOrg, projectDefsByOrg, covered, counter); err != nil {
+		counter.LogSummary(e.Logger)
+		return err
+	}
+
 	counter.LogSummary(e.Logger)
-	return err
+	return nil
+}
+
+// propagateGlobalsToProjects applies each customized SQS global setting
+// to every target SQC project — but only for keys that exist on SQC at
+// project scope and NOT at org scope (the org-scope ones are handled by
+// setGlobalSettings), and only when the project doesn't already have a
+// per-project override on SQS (the override wins, recorded in
+// `covered`). Issues #189 / #191.
+func propagateGlobalsToProjects(ctx context.Context, e *Executor,
+	projectKeyMap map[string]projectMapping,
+	orgDefsByOrg, projectDefsByOrg map[string]map[string]types.SettingDefinition,
+	covered map[string]map[string]bool,
+	counter *TaskCounter,
+) error {
+	customizedGlobals, err := readCustomizedSQSGlobals(e)
+	if err != nil {
+		return fmt.Errorf("setProjectSettings: reading customized SQS globals: %w", err)
+	}
+	if len(customizedGlobals) == 0 {
+		return nil
+	}
+
+	// Pre-bucket customized globals by org: a key is propagated to an
+	// org's projects only if it's in projectDefsByOrg[org] but NOT in
+	// orgDefsByOrg[org]. Computed once per org rather than per project.
+	type globalEntry struct {
+		raw  json.RawMessage
+		def  types.SettingDefinition
+		key  string
+	}
+	bucketByOrg := make(map[string][]globalEntry)
+	for org := range projectDefsByOrg {
+		projectDefs := projectDefsByOrg[org]
+		orgDefs := orgDefsByOrg[org]
+		for _, raw := range customizedGlobals {
+			key := extractField(raw, "key")
+			if key == "" {
+				continue
+			}
+			def, atProject := projectDefs[key]
+			if !atProject {
+				continue
+			}
+			if _, atOrg := orgDefs[key]; atOrg {
+				continue // setGlobalSettings handles this one
+			}
+			bucketByOrg[org] = append(bucketByOrg[org], globalEntry{raw: raw, def: def, key: key})
+		}
+	}
+	if len(bucketByOrg) == 0 {
+		return nil
+	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
+	for projLookupKey, pm := range projectKeyMap {
+		bucket := bucketByOrg[pm.OrgKey]
+		if len(bucket) == 0 {
+			continue
+		}
+		coverSet := covered[projLookupKey]
+		for _, entry := range bucket {
+			if coverSet[entry.key] {
+				e.Logger.Debug("setProjectSettings: per-project override wins, skipping global propagation",
+					"project", pm.CloudKey, "key", entry.key, "org", pm.OrgKey)
+				continue
+			}
+			g.Go(func() error {
+				if gctx.Err() != nil {
+					return gctx.Err()
+				}
+				e.Logger.Debug("setProjectSettings: propagating SQS global to project",
+					"project", pm.CloudKey, "key", entry.key, "org", pm.OrgKey)
+				err := applySettingByDef(gctx, e, pm.CloudKey, pm.OrgKey, entry.raw, entry.key, entry.def, true)
+				switch {
+				case errors.Is(err, errSettingEmpty):
+					return nil
+				case err != nil:
+					counter.Fail()
+					logAPIWarn(e.Logger, "setProjectSettings: global propagation failed", err,
+						"project", pm.CloudKey, "setting", entry.key)
+				default:
+					counter.Success()
+				}
+				return nil
+			})
+		}
+	}
+	return g.Wait()
 }
 
 // applyProjectSetting dispatches a single getProjectSettings record via
