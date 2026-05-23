@@ -808,11 +808,30 @@ func TestSettingsSetValues(t *testing.T) {
 		// Cloud parses the list correctly.
 		assert.Equal(t, []string{"a.java", "b.java", "c.java"}, r.Form["values"])
 		assert.Empty(t, r.Form["value"], "single value param must not be present for multi-value settings")
+		// SonarQube Cloud rejects requests that send both component AND
+		// organization with HTTP 400 "Only component or organization can be
+		// set, not both". Project-level scope is conveyed by component only.
+		assert.Empty(t, r.Form["organization"], "organization must be omitted when component is set")
 		w.WriteHeader(http.StatusNoContent)
 	})
 	cc := newTestCloud(t, mux)
 
 	err := cc.Settings.SetValues(context.Background(), "proj1", "sonar.exclusions", []string{"a.java", "b.java", "c.java"}, "myorg")
+	require.NoError(t, err)
+}
+
+func TestSettingsSetUsesOrgWhenComponentEmpty(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathSettingsSet, func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		assert.Empty(t, r.Form["component"], "component must be absent for org-level settings")
+		assert.Equal(t, "myorg", r.FormValue("organization"))
+		assert.Equal(t, "sonar.example", r.FormValue("key"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Settings.Set(context.Background(), "", "sonar.example", "v", "myorg")
 	require.NoError(t, err)
 }
 
