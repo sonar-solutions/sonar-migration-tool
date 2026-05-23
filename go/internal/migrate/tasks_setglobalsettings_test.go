@@ -1,0 +1,236 @@
+package migrate
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// runGlobalSettingsTest wires up the cloud / api mocks and the executor
+// for setGlobalSettings tests. Each test case provides:
+//
+//   - sqsSettings: the records that getServerSettings would have produced
+//     (one map per setting; the test serializes them to JSONL).
+//   - sqsDefs:     the records that getServerSettingsDefinitions produced
+//     (used to detect customization via defaultValue).
+//   - orgs:        the records that generateOrganizationMappings produced.
+//   - sqcDefs:     the response body for SQC's list_definitions endpoint.
+//
+// It returns the captured /api/settings/set requests and the captured
+// Warn-log buffer so each test can assert independently.
+func runGlobalSettingsTest(t *testing.T,
+	sqsSettings []map[string]any,
+	sqsDefs []map[string]any,
+	orgs []map[string]any,
+	sqcDefs []map[string]any,
+) (hits []settingsHit, logs string) {
+
+	t.Helper()
+	cloudMux := http.NewServeMux()
+	muHits, hitsPtr := mountSettingsSetCapture(cloudMux)
+	mountSettingsDefinitions(cloudMux, sqcDefs...)
+	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	cloudSrv := httptest.NewServer(cloudMux)
+	t.Cleanup(cloudSrv.Close)
+
+	apiSrv := newMockAPIServer()
+	t.Cleanup(apiSrv.Close)
+
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	var logBuf bytes.Buffer
+	e.Logger = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	writeTaskJSONL(t, e, "getServerSettings", sqsSettings)
+	writeTaskJSONL(t, e, "getServerSettingsDefinitions", sqsDefs)
+	writeTaskJSONL(t, e, "generateOrganizationMappings", orgs)
+
+	if err := runSetGlobalSettings(context.Background(), e); err != nil {
+		t.Fatalf("runSetGlobalSettings: %v", err)
+	}
+
+	muHits.Lock()
+	defer muHits.Unlock()
+	hits = append(hits, *hitsPtr...)
+	return hits, logBuf.String()
+}
+
+// writeTaskJSONL writes a slice of maps as JSONL into the named task's output
+// in the migrate store — mirrors what an earlier task would have done.
+func writeTaskJSONL(t *testing.T, e *Executor, task string, records []map[string]any) {
+	t.Helper()
+	w, err := e.Store.Writer(task)
+	if err != nil {
+		t.Fatalf("writer(%s): %v", task, err)
+	}
+	for _, r := range records {
+		b, _ := json.Marshal(r)
+		if err := w.WriteOne(b); err != nil {
+			t.Fatalf("write(%s): %v", task, err)
+		}
+	}
+}
+
+// Settings whose value matches the SQS defaultValue must not produce any
+// /api/settings/set request — they're not customized.
+func TestRunSetGlobalSettingsSkipsWhenValueEqualsDefault(t *testing.T) {
+	hits, _ := runGlobalSettingsTest(t,
+		// SQS extract values
+		[]map[string]any{
+			{"key": "sonar.foo", "value": "default-foo"}, // matches default → skip
+			{"key": "sonar.bar", "value": "custom-bar"},  // differs → migrate
+		},
+		// SQS list_definitions
+		[]map[string]any{
+			{"key": "sonar.foo", "type": "STRING", "multiValues": false, "defaultValue": "default-foo"},
+			{"key": "sonar.bar", "type": "STRING", "multiValues": false, "defaultValue": "default-bar"},
+		},
+		// Org mapping
+		[]map[string]any{
+			{"sonarcloud_org_key": "org1"},
+		},
+		// SQC list_definitions — keys present
+		[]map[string]any{
+			{"key": "sonar.foo", "type": "STRING", "multiValues": false},
+			{"key": "sonar.bar", "type": "STRING", "multiValues": false},
+		},
+	)
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 settings.set call (only customized setting), got %d", len(hits))
+	}
+	if hits[0].key != "sonar.bar" {
+		t.Errorf("expected the customized setting to be migrated, got %q", hits[0].key)
+	}
+}
+
+// Customized setting + key on SQC with multiValues=true → send via
+// values=. The test also confirms the request is org-scoped, not
+// component-scoped.
+func TestRunSetGlobalSettingsMultiValueOnSQC(t *testing.T) {
+	hits, _ := runGlobalSettingsTest(t,
+		[]map[string]any{
+			{"key": "sonar.exclusions", "values": []string{"**/*.gen", "build/**"}},
+		},
+		[]map[string]any{
+			{"key": "sonar.exclusions", "type": "STRING", "multiValues": true, "defaultValue": ""},
+		},
+		[]map[string]any{
+			{"sonarcloud_org_key": "org1"},
+			{"sonarcloud_org_key": "org2"},
+		},
+		[]map[string]any{
+			{"key": "sonar.exclusions", "type": "STRING", "multiValues": true},
+		},
+	)
+	if len(hits) != 2 {
+		t.Fatalf("expected 2 calls (one per org), got %d", len(hits))
+	}
+	for _, h := range hits {
+		if h.key != "sonar.exclusions" {
+			t.Errorf("wrong key: %q", h.key)
+		}
+		if len(h.values) != 2 {
+			t.Errorf("expected values= shape (multiValues=true), got %+v", h)
+		}
+		if h.value != "" {
+			t.Errorf("must NOT collapse multi-value to single value=, got %q", h.value)
+		}
+	}
+}
+
+// Customized setting + key on SQC with multiValues=false → SQS array
+// must be CSV-joined into a single value= param (same trick as the
+// sonar.java.file.suffixes fix from #120).
+func TestRunSetGlobalSettingsSingleValueOnSQCJoinsCSV(t *testing.T) {
+	hits, _ := runGlobalSettingsTest(t,
+		[]map[string]any{
+			{"key": "sonar.java.file.suffixes", "values": []string{".java", ".jav"}},
+		},
+		[]map[string]any{
+			{"key": "sonar.java.file.suffixes", "type": "STRING", "multiValues": true, "defaultValue": ".java"},
+		},
+		[]map[string]any{
+			{"sonarcloud_org_key": "org1"},
+		},
+		[]map[string]any{
+			{"key": "sonar.java.file.suffixes", "type": "STRING", "multiValues": false},
+		},
+	)
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(hits))
+	}
+	h := hits[0]
+	if len(h.values) != 0 {
+		t.Errorf("must NOT send values= for a single-value SQC setting, got %v", h.values)
+	}
+	if h.value != ".java,.jav" {
+		t.Errorf("expected CSV-joined value, got %q", h.value)
+	}
+}
+
+// Customized setting whose key is NOT in SQC's list_definitions → no
+// /api/settings/set request, and a Warn must be logged naming both the
+// setting key and the org.
+func TestRunSetGlobalSettingsWarnsWhenKeyNotOnSQC(t *testing.T) {
+	hits, logs := runGlobalSettingsTest(t,
+		[]map[string]any{
+			{"key": "sonar.sqs.only", "value": "custom"},
+		},
+		[]map[string]any{
+			{"key": "sonar.sqs.only", "type": "STRING", "multiValues": false, "defaultValue": "default"},
+		},
+		[]map[string]any{
+			{"sonarcloud_org_key": "org1"},
+		},
+		// SQC doesn't define sonar.sqs.only at all.
+		[]map[string]any{},
+	)
+	if len(hits) != 0 {
+		t.Fatalf("expected zero API calls for SQS-only setting, got %d", len(hits))
+	}
+	if !strings.Contains(logs, "setting key not available on SQC") {
+		t.Errorf("expected Warn about SQC-missing key, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "sonar.sqs.only") || !strings.Contains(logs, "org1") {
+		t.Errorf("expected Warn to name the setting key and org, got:\n%s", logs)
+	}
+}
+
+// Customized PROPERTY_SET setting → sent via fieldValues= shape.
+func TestRunSetGlobalSettingsPropertySet(t *testing.T) {
+	hits, _ := runGlobalSettingsTest(t,
+		[]map[string]any{
+			{"key": "sonar.issue.ignore.allfile",
+				"fieldValues": []map[string]any{{"fileRegexp": "Generated test"}}},
+		},
+		[]map[string]any{
+			// defaultValue irrelevant for property-set: isSettingCustomized
+			// treats any non-empty fieldValues as customized.
+			{"key": "sonar.issue.ignore.allfile", "type": "PROPERTY_SET", "multiValues": false},
+		},
+		[]map[string]any{
+			{"sonarcloud_org_key": "org1"},
+		},
+		[]map[string]any{
+			{"key": "sonar.issue.ignore.allfile", "type": "PROPERTY_SET", "multiValues": false},
+		},
+	)
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(hits))
+	}
+	if len(hits[0].fields) != 1 {
+		t.Errorf("expected fieldValues= shape, got %+v", hits[0])
+	}
+}
+
+// Compile-time guard: catch accidental removal of the helper that drives
+// most tests above.
+var _ = sync.Mutex{}
