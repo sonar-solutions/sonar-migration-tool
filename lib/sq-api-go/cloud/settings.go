@@ -22,13 +22,28 @@ type SettingsClient struct{ baseClient }
 // 204 without persisting). Reading the target's definitions removes that
 // guesswork.
 //
-// organization scopes the call to a single SQC org (required for project-
-// level callers). Passing an empty organization returns the global
-// definitions.
-func (s *SettingsClient) ListDefinitions(ctx context.Context, organization string) ([]types.SettingDefinition, error) {
-	path := "api/settings/list_definitions"
+// organization scopes the call to a single SQC org (required for
+// project-level callers). Passing an empty organization returns the
+// global definitions.
+//
+// component, when non-empty, switches the call to project scope —
+// SQC returns the superset of definitions visible at that project,
+// including project-only keys (sonar.<lang>.* language settings,
+// external-analyzer settings, etc.) that are NOT visible at org
+// scope. Issue #189/#191 migration uses the difference between
+// project-scope and org-scope sets to detect which SQS global
+// settings need to be propagated to every SQC project.
+func (s *SettingsClient) ListDefinitions(ctx context.Context, organization, component string) ([]types.SettingDefinition, error) {
+	q := url.Values{}
 	if organization != "" {
-		path += "?organization=" + url.QueryEscape(organization)
+		q.Set("organization", organization)
+	}
+	if component != "" {
+		q.Set("component", component)
+	}
+	path := "api/settings/list_definitions"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
 	}
 	var resp types.SettingsListDefinitionsResponse
 	if err := s.getJSON(ctx, path, &resp); err != nil {

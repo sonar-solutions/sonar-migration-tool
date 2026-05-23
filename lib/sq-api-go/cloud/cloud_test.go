@@ -915,7 +915,7 @@ func TestSettingsListDefinitions(t *testing.T) {
 	})
 	cc := newTestCloud(t, mux)
 
-	defs, err := cc.Settings.ListDefinitions(context.Background(), "myorg")
+	defs, err := cc.Settings.ListDefinitions(context.Background(), "myorg", "")
 	require.NoError(t, err)
 	require.Len(t, defs, 3)
 
@@ -928,6 +928,34 @@ func TestSettingsListDefinitions(t *testing.T) {
 	assert.False(t, byKey["sonar.java.file.suffixes"].MultiValues,
 		"sonar.java.file.suffixes must round-trip multiValues=false — this is the bit that determines whether migrate sends value= or values=")
 	assert.Equal(t, "PROPERTY_SET", byKey["sonar.issue.ignore.allfile"].Type)
+}
+
+// TestSettingsListDefinitionsWithComponent exercises the project-scope
+// variant of /api/settings/list_definitions. SQC returns a SUPERSET of
+// the org-scope response when a component (project key) is supplied —
+// including language settings (sonar.java.file.suffixes, etc.) and
+// external-analyzer settings that have no org-level counterpart.
+// Issue #189/#191 migration uses the difference between the two
+// responses to decide which SQS global settings need to be propagated
+// to every SQC project.
+func TestSettingsListDefinitionsWithComponent(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/settings/list_definitions", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "myorg", r.URL.Query().Get("organization"))
+		assert.Equal(t, "myorg_someproject", r.URL.Query().Get("component"),
+			"the SDK must forward the project key as component= so SQC returns project-scope defs")
+		writeJSON(w, types.SettingsListDefinitionsResponse{
+			Definitions: []types.SettingDefinition{
+				{Key: "sonar.java.file.suffixes", Type: "STRING", MultiValues: false},
+			},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	defs, err := cc.Settings.ListDefinitions(context.Background(), "myorg", "myorg_someproject")
+	require.NoError(t, err)
+	require.Len(t, defs, 1)
+	assert.Equal(t, "sonar.java.file.suffixes", defs[0].Key)
 }
 
 // --- Enterprises ---
