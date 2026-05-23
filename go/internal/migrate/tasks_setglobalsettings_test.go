@@ -322,6 +322,290 @@ func TestRunSetGlobalSettingsUsesProjectScopeOnlyReasonWhenKeyAtProjectScope(t *
 	}
 }
 
+// SQC's /api/settings/list_definitions falsely reports certain keys
+// (e.g. sonar.coverage.jacoco.xmlReportPaths, sonar.androidLint.reportPaths)
+// as settable at org scope. The actual /api/settings/set call rejects
+// org-scoped writes for them with HTTP 400 "Provided property can't
+// be set at organization level". When this runtime rejection happens,
+// setGlobalSettings must fall back to setting the value on every
+// project in the org — otherwise the setting silently disappears
+// during migration.
+func TestRunSetGlobalSettingsFallsBackToProjectsOnOrgLevelRejection(t *testing.T) {
+	cloudMux := http.NewServeMux()
+
+	// Track org-vs-project requests independently so the test can
+	// assert: the org-scope POST fired once (and 400'd), and a
+	// project-scope POST fired for each of the two projects.
+	var (
+		mu          sync.Mutex
+		orgHits     []settingsHit
+		projectHits []settingsHit
+	)
+	cloudMux.HandleFunc("POST /api/settings/set", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		hit := settingsHit{
+			key:    r.FormValue("key"),
+			value:  r.FormValue("value"),
+			values: append([]string(nil), r.Form["values"]...),
+			fields: append([]string(nil), r.Form["fieldValues"]...),
+		}
+		mu.Lock()
+		if r.FormValue("component") != "" {
+			projectHits = append(projectHits, hit)
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			orgHits = append(orgHits, hit)
+			// Mimic the real SQC 400 message verbatim — the SDK's
+			// IsOrgLevelRejection helper greps the body for it.
+			http.Error(w, `{"errors":[{"msg":"Provided property can't be set at organization level: `+hit.key+`"}]}`, http.StatusBadRequest)
+		}
+		mu.Unlock()
+	})
+	mountSettingsDefinitionsScoped(cloudMux,
+		// Org scope INCLUDES the key (this is the SQC list_definitions
+		// inconsistency — the api reports it then refuses the write).
+		[]map[string]any{
+			{"key": "sonar.coverage.jacoco.xmlReportPaths", "type": "STRING", "multiValues": true},
+		},
+		// Project scope also includes it (rightly so).
+		[]map[string]any{
+			{"key": "sonar.coverage.jacoco.xmlReportPaths", "type": "STRING", "multiValues": true},
+		},
+	)
+	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	cloudSrv := httptest.NewServer(cloudMux)
+	defer cloudSrv.Close()
+
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	var logBuf bytes.Buffer
+	e.Logger = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettings", []map[string]any{
+		{"key": "sonar.coverage.jacoco.xmlReportPaths", "values": []string{"**/jacoco*.xml"}},
+	})
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettingsDefinitions", []map[string]any{
+		{"key": "sonar.coverage.jacoco.xmlReportPaths", "type": "STRING", "multiValues": true, "defaultValue": ""},
+	})
+	writeExtractMetaJSON(t, dir, "extract-01", testServerURL)
+	writeTaskJSONL(t, e, "generateOrganizationMappings", []map[string]any{
+		{"sonarcloud_org_key": "org1"},
+	})
+	// Two projects in the org — both should receive the fan-out call.
+	pw, _ := e.Store.Writer("createProjects")
+	for _, key := range []string{"projA", "projB"} {
+		b, _ := json.Marshal(map[string]any{
+			"key": key, "server_url": testServerURL,
+			"sonarcloud_org_key": "org1", "cloud_project_key": "org1_" + key,
+		})
+		pw.WriteOne(b)
+	}
+
+	if err := runSetGlobalSettings(context.Background(), e); err != nil {
+		t.Fatalf("runSetGlobalSettings: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(orgHits) != 1 {
+		t.Errorf("expected exactly one org-scope attempt (the one that 400'd), got %d", len(orgHits))
+	}
+	if len(projectHits) != 2 {
+		t.Fatalf("expected fan-out to BOTH projects after org-level rejection, got %d hits: %+v",
+			len(projectHits), projectHits)
+	}
+	for _, h := range projectHits {
+		if h.key != "sonar.coverage.jacoco.xmlReportPaths" {
+			t.Errorf("wrong key in fan-out: %q", h.key)
+		}
+		if len(h.values) != 1 || h.values[0] != "**/jacoco*.xml" {
+			t.Errorf("expected values=[**/jacoco*.xml] in fan-out, got %+v", h)
+		}
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "key not settable at org level despite list_definitions claim") {
+		t.Errorf("expected Info log noting the SQC inconsistency, got:\n%s", logs)
+	}
+}
+
+// Once SQC has rejected a key at org level for ONE org, the task
+// must not retry the same failing POST for any subsequent org —
+// it should reuse the verdict and go straight to project fan-out.
+// This bounds the wasted-request count at one per (key) instead of
+// one per (key × org).
+func TestRunSetGlobalSettingsOrgLevelRejectionTriedOncePerKey(t *testing.T) {
+	cloudMux := http.NewServeMux()
+
+	var (
+		mu      sync.Mutex
+		orgHits []settingsHit
+		projHit int
+	)
+	cloudMux.HandleFunc("POST /api/settings/set", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		defer mu.Unlock()
+		if r.FormValue("component") != "" {
+			projHit++
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		orgHits = append(orgHits, settingsHit{key: r.FormValue("key")})
+		http.Error(w, `{"errors":[{"msg":"Provided property can't be set at organization level: `+r.FormValue("key")+`"}]}`, http.StatusBadRequest)
+	})
+	mountSettingsDefinitionsScoped(cloudMux,
+		[]map[string]any{{"key": "sonar.coverage.jacoco.xmlReportPaths", "type": "STRING", "multiValues": true}},
+		[]map[string]any{{"key": "sonar.coverage.jacoco.xmlReportPaths", "type": "STRING", "multiValues": true}},
+	)
+	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	cloudSrv := httptest.NewServer(cloudMux)
+	defer cloudSrv.Close()
+
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	var logBuf bytes.Buffer
+	e.Logger = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettings", []map[string]any{
+		{"key": "sonar.coverage.jacoco.xmlReportPaths", "values": []string{"**/jacoco*.xml"}},
+	})
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettingsDefinitions", []map[string]any{
+		{"key": "sonar.coverage.jacoco.xmlReportPaths", "type": "STRING", "multiValues": true, "defaultValue": ""},
+	})
+	writeExtractMetaJSON(t, dir, "extract-01", testServerURL)
+	// Three orgs, one project each. The first org's POST rejects;
+	// the next two orgs must NOT re-issue the failing org POST.
+	writeTaskJSONL(t, e, "generateOrganizationMappings", []map[string]any{
+		{"sonarcloud_org_key": "orgA"},
+		{"sonarcloud_org_key": "orgB"},
+		{"sonarcloud_org_key": "orgC"},
+	})
+	pw, _ := e.Store.Writer("createProjects")
+	for i, org := range []string{"orgA", "orgB", "orgC"} {
+		b, _ := json.Marshal(map[string]any{
+			"key":                "p" + string(rune('A'+i)),
+			"server_url":         testServerURL,
+			"sonarcloud_org_key": org,
+			"cloud_project_key":  org + "_p" + string(rune('A'+i)),
+		})
+		pw.WriteOne(b)
+	}
+
+	if err := runSetGlobalSettings(context.Background(), e); err != nil {
+		t.Fatalf("runSetGlobalSettings: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(orgHits) != 1 {
+		t.Errorf("org-level POST must be tried at most ONCE per key (memoization across orgs), got %d hits: %+v",
+			len(orgHits), orgHits)
+	}
+	if projHit != 3 {
+		t.Errorf("expected fan-out to all 3 projects (one per org), got %d", projHit)
+	}
+	if !strings.Contains(logBuf.String(), "org-level write already rejected for this key") {
+		t.Errorf("expected Info log noting the memoized rejection on second org, got:\n%s", logBuf.String())
+	}
+}
+
+// During the runtime fan-out, projects that already have a
+// per-project SQS override for the same key must NOT be touched —
+// setProjectSettings's per-record loop applies their specific value
+// in parallel, and the fan-out would race against it (potentially
+// clobbering the override with the global value).
+func TestRunSetGlobalSettingsFanOutSkipsPerProjectOverrides(t *testing.T) {
+	cloudMux := http.NewServeMux()
+
+	var (
+		mu       sync.Mutex
+		projHits []settingsHit
+	)
+	cloudMux.HandleFunc("POST /api/settings/set", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		defer mu.Unlock()
+		if r.FormValue("component") != "" {
+			projHits = append(projHits, settingsHit{
+				key:    r.FormValue("key"),
+				values: append([]string(nil), r.Form["values"]...),
+			})
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, `{"errors":[{"msg":"Provided property can't be set at organization level: `+r.FormValue("key")+`"}]}`, http.StatusBadRequest)
+	})
+	mountSettingsDefinitionsScoped(cloudMux,
+		[]map[string]any{{"key": "sonar.coverage.jacoco.xmlReportPaths", "type": "STRING", "multiValues": true}},
+		[]map[string]any{{"key": "sonar.coverage.jacoco.xmlReportPaths", "type": "STRING", "multiValues": true}},
+	)
+	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	cloudSrv := httptest.NewServer(cloudMux)
+	defer cloudSrv.Close()
+
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	var logBuf bytes.Buffer
+	e.Logger = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// SQS extract: per-project override for projA only.
+	writeExtractTaskJSONL(t, dir, "extract-01", "getProjectSettings", []map[string]any{
+		{"project": "projA", "key": "sonar.coverage.jacoco.xmlReportPaths",
+			"values": []string{"specific-for-A.xml"}},
+	})
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettings", []map[string]any{
+		{"key": "sonar.coverage.jacoco.xmlReportPaths", "values": []string{"global-default.xml"}},
+	})
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettingsDefinitions", []map[string]any{
+		{"key": "sonar.coverage.jacoco.xmlReportPaths", "type": "STRING", "multiValues": true, "defaultValue": ""},
+	})
+	writeExtractMetaJSON(t, dir, "extract-01", testServerURL)
+	writeTaskJSONL(t, e, "generateOrganizationMappings", []map[string]any{
+		{"sonarcloud_org_key": "org1"},
+	})
+	pw, _ := e.Store.Writer("createProjects")
+	for _, key := range []string{"projA", "projB"} {
+		b, _ := json.Marshal(map[string]any{
+			"key": key, "server_url": testServerURL,
+			"sonarcloud_org_key": "org1", "cloud_project_key": "org1_" + key,
+		})
+		pw.WriteOne(b)
+	}
+
+	if err := runSetGlobalSettings(context.Background(), e); err != nil {
+		t.Fatalf("runSetGlobalSettings: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// projB receives the global; projA must be skipped because it
+	// has its own SQS override (setProjectSettings applies that).
+	if len(projHits) != 1 {
+		t.Fatalf("expected exactly one fan-out call (projB only), got %d: %+v", len(projHits), projHits)
+	}
+	if len(projHits[0].values) != 1 || projHits[0].values[0] != "global-default.xml" {
+		t.Errorf("fan-out value should be the global (global-default.xml), got %+v", projHits[0])
+	}
+	if !strings.Contains(logBuf.String(), "per-project override wins, skipping fan-out") {
+		t.Errorf("expected Debug log noting per-project override skip, got:\n%s", logBuf.String())
+	}
+}
+
 // Customized PROPERTY_SET setting → sent via fieldValues= shape.
 func TestRunSetGlobalSettingsPropertySet(t *testing.T) {
 	hits, _ := runGlobalSettingsTest(t,
