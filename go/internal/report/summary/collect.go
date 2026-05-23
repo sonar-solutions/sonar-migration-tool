@@ -333,7 +333,7 @@ func collectGlobalSettings(store *common.DataStore, def sectionDef) Section {
 	if err != nil {
 		return Section{Name: def.Name}
 	}
-	var succeeded, skipped, failed []EntityItem
+	var succeeded, partial, skipped, failed []EntityItem
 	for _, raw := range items {
 		key := jsonStr(raw, def.NameField)
 		for _, oc := range parseOutcomes(raw) {
@@ -345,6 +345,10 @@ func collectGlobalSettings(store *common.DataStore, def sectionDef) Section {
 			switch oc.Status {
 			case "applied", "applied-to-projects":
 				succeeded = append(succeeded, item)
+			case "partial":
+				// Per-row Detail already enumerates the
+				// exception projects — keep Issues unset.
+				partial = append(partial, item)
 			case "skipped":
 				item.SkipReason = oc.Reason
 				skipped = append(skipped, item)
@@ -357,6 +361,7 @@ func collectGlobalSettings(store *common.DataStore, def sectionDef) Section {
 	return Section{
 		Name:      def.Name,
 		Succeeded: succeeded,
+		Partial:   partial,
 		Skipped:   skipped,
 		Failed:    failed,
 	}

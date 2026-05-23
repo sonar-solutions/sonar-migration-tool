@@ -742,6 +742,42 @@ func TestCollectGlobalSettingsRoutesOutcomesByStatus(t *testing.T) {
 	}
 }
 
+// Mixed fan-out outcomes (some projects succeeded, others failed)
+// must land in the Section's Partial bucket — not Succeeded — so the
+// report distinguishes them from clean applies. Per-row Detail still
+// drives the wording.
+func TestCollectGlobalSettingsPartialOutcomeLandsInPartialBucket(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskJSONL(t, dir, "setGlobalSettings", []map[string]any{
+		{
+			"key":   "sonar.html.file.suffixes",
+			"value": "html",
+			"outcomes": []map[string]any{
+				{"org": "orgA", "status": "partial",
+					"detail": "Applied to 1 of 2 projects (values=[.html]) (failed: orgA_projX)"},
+			},
+		},
+	})
+
+	summary, err := CollectSummary(dir, "")
+	if err != nil {
+		t.Fatalf("CollectSummary: %v", err)
+	}
+	sec := findSection(summary, "Global Settings")
+	if sec == nil {
+		t.Fatal("missing Global Settings section")
+	}
+	if len(sec.Succeeded) != 0 {
+		t.Errorf("Succeeded must NOT contain partial outcomes, got %+v", sec.Succeeded)
+	}
+	if len(sec.Partial) != 1 || sec.Partial[0].Organization != "orgA" {
+		t.Fatalf("Partial: want one entry for orgA, got %+v", sec.Partial)
+	}
+	if !strings.Contains(sec.Partial[0].Detail, "Applied to 1 of 2 projects") {
+		t.Errorf("Partial[0].Detail: want N/M count text, got %q", sec.Partial[0].Detail)
+	}
+}
+
 // --- helpers ---
 
 func findSection(s *MigrationSummary, name string) *Section {

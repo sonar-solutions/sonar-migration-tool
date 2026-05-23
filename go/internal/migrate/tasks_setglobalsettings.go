@@ -367,21 +367,47 @@ func fanOutOutcome(ctx context.Context, e *Executor, raw json.RawMessage,
 		counter.Fail()
 	}
 
-	// Build the per-row Detail summary. Successes are aggregated
-	// ("Applied to all projects (value=…)") so the report doesn't
-	// list every project; failures and overrides are enumerated so
-	// the operator can chase them.
-	detail := "Applied to all projects (" + valueSummary + ")"
+	// Branch the Detail wording on actual per-project counts so the
+	// row doesn't say "Applied to all projects" while also listing
+	// failures — that's the contradictory text the report showed
+	// before. Three cases:
+	//
+	//   - applied=N, failed=0 → "Applied to all projects (value=…)"
+	//   - applied=N, failed=M → "Applied to N of (N+M) projects
+	//                            (value=…) (failed: …; skipped: …)"
+	//   - applied=0, failed=M → "Failed: N projects (e.g. <error>)"
+	//
+	// Override-skipped projects (per-project SQS override wins) are
+	// listed alongside failures but are not failures themselves.
+	a, f, s := len(applied), len(failed), len(skipped)
+	total := a + f
+	var detail string
+	var status string
+	switch {
+	case a > 0 && f == 0:
+		detail = "Applied to all projects (" + valueSummary + ")"
+		status = outcomeAppliedToProjects
+	case a > 0 && f > 0:
+		detail = fmt.Sprintf("Applied to %d of %d projects (%s)", a, total, valueSummary)
+		status = outcomePartial
+	default: // a == 0 — every fan-out project failed (or no targets).
+		if f > 0 {
+			detail = fmt.Sprintf("Failed: %d project(s), e.g. %s", f, failed[0].reason)
+		} else {
+			detail = "Failed: no eligible projects in org"
+		}
+		status = outcomeFailed
+	}
 	var notes []string
-	if len(failed) > 0 {
-		names := make([]string, 0, len(failed))
+	if f > 0 {
+		names := make([]string, 0, f)
 		for _, p := range failed {
 			names = append(names, p.project)
 		}
 		notes = append(notes, "failed: "+strings.Join(names, ", "))
 	}
-	if len(skipped) > 0 {
-		names := make([]string, 0, len(skipped))
+	if s > 0 {
+		names := make([]string, 0, s)
 		for _, p := range skipped {
 			names = append(names, p+" (override)")
 		}
@@ -391,16 +417,13 @@ func fanOutOutcome(ctx context.Context, e *Executor, raw json.RawMessage,
 		detail += " (" + strings.Join(notes, "; ") + ")"
 	}
 	detail += mergeSuffix
-
-	// Status reflects the overall outcome for this org. If every
-	// fan-out project failed, mark as failed; otherwise we consider
-	// the org applied (the report will still show exceptions in the
-	// Detail column).
-	status := outcomeAppliedToProjects
-	if len(applied) == 0 && len(failed) > 0 {
-		status = outcomeFailed
+	out := orgOutcome{Org: org, Status: status, Detail: detail}
+	if status == outcomeFailed && f > 0 {
+		// Surface a concrete API error message in the Reason so the
+		// report's Failed bucket can populate EntityItem.ErrorMessage.
+		out.Reason = failed[0].reason
 	}
-	return orgOutcome{Org: org, Status: status, Detail: detail}
+	return out
 }
 
 // projectFanOutFailure is returned from fanOutGlobalToProjects for each
@@ -670,6 +693,7 @@ type orgOutcome struct {
 const (
 	outcomeApplied           = "applied"
 	outcomeAppliedToProjects = "applied-to-projects"
+	outcomePartial           = "partial"
 	outcomeFailed            = "failed"
 	outcomeSkipped           = "skipped"
 )

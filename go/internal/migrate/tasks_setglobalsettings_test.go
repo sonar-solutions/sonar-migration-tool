@@ -842,6 +842,165 @@ func TestRenderValueSummary(t *testing.T) {
 	}
 }
 
+// When SQC rejects the org-scope POST AND every project in the org
+// also fails (e.g. the projects don't actually exist in SQC because
+// createProjects recorded phantom entries — issue #193), the row's
+// Detail must NOT say "Applied to all projects". The status switches
+// to "failed" and the wording reflects what actually happened so the
+// operator isn't misled.
+func TestRunSetGlobalSettingsFanOutAllFailedRendersAsFailed(t *testing.T) {
+	cloudMux := http.NewServeMux()
+	cloudMux.HandleFunc("POST /api/settings/set", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.FormValue("component") != "" {
+			// Every project fan-out fails — mimics #193 phantom
+			// projects that SQC says don't exist.
+			http.Error(w, `{"errors":[{"msg":"Project doesn't exist"}]}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"errors":[{"msg":"Provided property can't be set at organization level: `+r.FormValue("key")+`"}]}`, http.StatusBadRequest)
+	})
+	mountSettingsDefinitionsScoped(cloudMux,
+		[]map[string]any{{"key": "sonar.html.file.suffixes", "type": "STRING", "multiValues": true}},
+		[]map[string]any{{"key": "sonar.html.file.suffixes", "type": "STRING", "multiValues": true}},
+	)
+	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	cloudSrv := httptest.NewServer(cloudMux)
+	defer cloudSrv.Close()
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettings", []map[string]any{
+		{"key": "sonar.html.file.suffixes", "values": []string{".html", ".xhtml"}},
+	})
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettingsDefinitions", []map[string]any{
+		{"key": "sonar.html.file.suffixes", "type": "STRING", "multiValues": true, "defaultValue": ""},
+	})
+	writeExtractMetaJSON(t, dir, "extract-01", testServerURL)
+	writeTaskJSONL(t, e, "generateOrganizationMappings", []map[string]any{
+		{"sonarcloud_org_key": "org1"},
+	})
+	pw, _ := e.Store.Writer("createProjects")
+	for _, key := range []string{"projA", "projB"} {
+		b, _ := json.Marshal(map[string]any{
+			"key": key, "server_url": testServerURL,
+			"sonarcloud_org_key": "org1", "cloud_project_key": "org1_" + key,
+		})
+		pw.WriteOne(b)
+	}
+
+	if err := runSetGlobalSettings(context.Background(), e); err != nil {
+		t.Fatalf("runSetGlobalSettings: %v", err)
+	}
+
+	out, _ := e.Store.ReadAll("setGlobalSettings")
+	if len(out) != 1 {
+		t.Fatalf("expected one record, got %d", len(out))
+	}
+	var rec struct {
+		Outcomes []struct {
+			Org    string `json:"org"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+			Reason string `json:"reason"`
+		} `json:"outcomes"`
+	}
+	_ = json.Unmarshal(out[0], &rec)
+	if len(rec.Outcomes) != 1 || rec.Outcomes[0].Status != "failed" {
+		t.Fatalf("expected status=failed when every fan-out project 404s, got %+v", rec.Outcomes)
+	}
+	if strings.Contains(rec.Outcomes[0].Detail, "Applied to all projects") {
+		t.Errorf("Detail must NOT claim \"Applied to all projects\" when none succeeded, got %q", rec.Outcomes[0].Detail)
+	}
+	if !strings.HasPrefix(rec.Outcomes[0].Detail, "Failed:") {
+		t.Errorf("Detail should start with \"Failed:\", got %q", rec.Outcomes[0].Detail)
+	}
+	if rec.Outcomes[0].Reason == "" {
+		t.Errorf("Reason must carry the API error message for the Failed bucket, got empty")
+	}
+}
+
+// Mixed fan-out outcome: some projects succeed, others fail. The row
+// status becomes "partial" so the report puts it in the Partial
+// bucket, and the Detail wording reflects the actual N/M counts
+// instead of falsely claiming "all projects".
+func TestRunSetGlobalSettingsFanOutPartialRendersAsPartial(t *testing.T) {
+	cloudMux := http.NewServeMux()
+	var failProject = "org1_projA"
+	cloudMux.HandleFunc("POST /api/settings/set", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		comp := r.FormValue("component")
+		if comp == "" {
+			http.Error(w, `{"errors":[{"msg":"Provided property can't be set at organization level: `+r.FormValue("key")+`"}]}`, http.StatusBadRequest)
+			return
+		}
+		if comp == failProject {
+			http.Error(w, `{"errors":[{"msg":"Project doesn't exist"}]}`, http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mountSettingsDefinitionsScoped(cloudMux,
+		[]map[string]any{{"key": "sonar.html.file.suffixes", "type": "STRING", "multiValues": true}},
+		[]map[string]any{{"key": "sonar.html.file.suffixes", "type": "STRING", "multiValues": true}},
+	)
+	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	cloudSrv := httptest.NewServer(cloudMux)
+	defer cloudSrv.Close()
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettings", []map[string]any{
+		{"key": "sonar.html.file.suffixes", "values": []string{".html"}},
+	})
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettingsDefinitions", []map[string]any{
+		{"key": "sonar.html.file.suffixes", "type": "STRING", "multiValues": true, "defaultValue": ""},
+	})
+	writeExtractMetaJSON(t, dir, "extract-01", testServerURL)
+	writeTaskJSONL(t, e, "generateOrganizationMappings", []map[string]any{
+		{"sonarcloud_org_key": "org1"},
+	})
+	pw, _ := e.Store.Writer("createProjects")
+	for _, key := range []string{"projA", "projB"} {
+		b, _ := json.Marshal(map[string]any{
+			"key": key, "server_url": testServerURL,
+			"sonarcloud_org_key": "org1", "cloud_project_key": "org1_" + key,
+		})
+		pw.WriteOne(b)
+	}
+
+	if err := runSetGlobalSettings(context.Background(), e); err != nil {
+		t.Fatalf("runSetGlobalSettings: %v", err)
+	}
+
+	out, _ := e.Store.ReadAll("setGlobalSettings")
+	var rec struct {
+		Outcomes []struct {
+			Org    string `json:"org"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"outcomes"`
+	}
+	_ = json.Unmarshal(out[0], &rec)
+	if len(rec.Outcomes) != 1 || rec.Outcomes[0].Status != "partial" {
+		t.Fatalf("expected status=partial when fan-out is mixed, got %+v", rec.Outcomes)
+	}
+	if !strings.Contains(rec.Outcomes[0].Detail, "Applied to 1 of 2 projects") {
+		t.Errorf("Detail must report the N/M count, got %q", rec.Outcomes[0].Detail)
+	}
+	if !strings.Contains(rec.Outcomes[0].Detail, "failed: "+failProject) {
+		t.Errorf("Detail must enumerate the failed project, got %q", rec.Outcomes[0].Detail)
+	}
+}
+
 // Compile-time guard: catch accidental removal of the helper that drives
 // most tests above.
 var _ = sync.Mutex{}
