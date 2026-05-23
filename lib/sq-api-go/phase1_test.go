@@ -152,25 +152,40 @@ func TestIsAlreadyExistsFalse(t *testing.T) {
 // /api/settings/set rejects the write" — the runtime fallback for
 // keys like sonar.coverage.jacoco.xmlReportPaths.
 func TestIsOrgLevelRejection(t *testing.T) {
+	// SonarCloud serializes the apostrophe in "can't" as the JSON
+	// unicode escape ' in the raw response body. The detector
+	// must match against the DECODED message, not the raw body, or
+	// the substring search will silently fail to find the literal
+	// apostrophe.
 	err := &sqapi.APIError{
 		StatusCode: 400,
 		Body:       `{"errors":[{"msg":"Provided property can't be set at organization level: sonar.coverage.jacoco.xmlReportPaths"}]}`,
 	}
 	assert.True(t, sqapi.IsOrgLevelRejection(err))
 
-	// Case-insensitive: SQC has been observed to switch wording.
+	// Literal apostrophe variant — also matches.
 	err2 := &sqapi.APIError{
+		StatusCode: 400,
+		Body:       `{"errors":[{"msg":"Provided property can't be set at organization level: foo"}]}`,
+	}
+	assert.True(t, sqapi.IsOrgLevelRejection(err2))
+
+	// Different wording, still recognisable.
+	err3 := &sqapi.APIError{
 		StatusCode: 400,
 		Body:       `{"errors":[{"msg":"This setting cannot be set at organization level."}]}`,
 	}
-	assert.True(t, sqapi.IsOrgLevelRejection(err2))
+	assert.True(t, sqapi.IsOrgLevelRejection(err3))
 
 	// Different 400 (e.g. permission) — must NOT match.
 	assert.False(t, sqapi.IsOrgLevelRejection(&sqapi.APIError{StatusCode: 400, Body: "Forbidden"}))
 	// Non-API error must NOT match.
 	assert.False(t, sqapi.IsOrgLevelRejection(errors.New("network")))
 	// 500-level errors must NOT match.
-	assert.False(t, sqapi.IsOrgLevelRejection(&sqapi.APIError{StatusCode: 500, Body: "can't be set at organization level"}))
+	assert.False(t, sqapi.IsOrgLevelRejection(&sqapi.APIError{
+		StatusCode: 500,
+		Body:       `{"errors":[{"msg":"can't be set at organization level"}]}`,
+	}))
 }
 
 // ---- Options ----

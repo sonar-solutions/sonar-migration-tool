@@ -357,7 +357,12 @@ func TestRunSetGlobalSettingsFallsBackToProjectsOnOrgLevelRejection(t *testing.T
 			orgHits = append(orgHits, hit)
 			// Mimic the real SQC 400 message verbatim — the SDK's
 			// IsOrgLevelRejection helper greps the body for it.
-			http.Error(w, `{"errors":[{"msg":"Provided property can't be set at organization level: `+hit.key+`"}]}`, http.StatusBadRequest)
+			// Use SonarCloud's actual response shape: the apostrophe in
+		// "can't" is JSON-escaped as ' in the wire body. The SDK
+		// detector must match against the DECODED message, so this
+		// test verifies the integration end-to-end with realistic
+		// data instead of the simplified literal-apostrophe form.
+		http.Error(w, `{"errors":[{"msg":"Provided property can't be set at organization level: `+hit.key+`"}]}`, http.StatusBadRequest)
 		}
 		mu.Unlock()
 	})

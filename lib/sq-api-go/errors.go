@@ -97,12 +97,17 @@ func IsAlreadyExists(err error) bool {
 // "Provided property can't be set at organization level". The migration
 // tool detects this runtime rejection so it can fall back to setting
 // the value on each project instead.
+//
+// Matches against the JSON-decoded message (via Message()) so the
+// detector is immune to SonarCloud's habit of escaping the apostrophe
+// as ' in the raw response body — the substring search uses
+// "at organization level", a phrase that contains no apostrophe and
+// is unique to this rejection class.
 func IsOrgLevelRejection(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
 		return false
 	}
-	lower := strings.ToLower(apiErr.Body)
-	return strings.Contains(lower, "can't be set at organization level") ||
-		strings.Contains(lower, "cannot be set at organization level")
+	lower := strings.ToLower(apiErr.Message())
+	return strings.Contains(lower, "at organization level")
 }
