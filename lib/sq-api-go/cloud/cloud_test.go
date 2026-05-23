@@ -107,6 +107,33 @@ func TestProjectsCreateWithNewCode(t *testing.T) {
 	assert.Equal(t, "p1", proj.Key)
 }
 
+// SQC rejects /api/projects/create requests that include
+// newCodeDefinitionType without newCodeDefinitionValue (HTTP 400 "Both
+// newCodeDefinitionType and newCodeDefinitionValue must be provided"). For
+// "previous_version" — the SQC default, which has no value — every project
+// in the migration plan would otherwise cascade-fail and break downstream
+// tasks (setProjectSettings, setProjectGates, etc.). The SDK now omits both
+// fields whenever either side is empty.
+func TestProjectsCreateOmitsNewCodeWhenValueMissing(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(pathProjectsCreate, func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		assert.Empty(t, r.Form["newCodeDefinitionType"],
+			"type must be omitted when value is empty (SQC rejects the half-set pair)")
+		assert.Empty(t, r.Form["newCodeDefinitionValue"])
+		writeJSON(w, types.ProjectCreateResponse{Project: types.Project{Key: "p1"}})
+	})
+	cc := newTestCloud(t, mux)
+
+	_, err := cc.Projects.Create(context.Background(), cloud.CreateProjectParams{
+		ProjectKey:            "p1",
+		Name:                  "P",
+		Organization:          "o",
+		NewCodeDefinitionType: "previous_version",
+	})
+	require.NoError(t, err)
+}
+
 func TestProjectsCreateError(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc(pathProjectsCreate, func(w http.ResponseWriter, r *http.Request) {
