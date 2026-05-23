@@ -629,26 +629,75 @@ func unionPreservingOrder(a, b []string) []string {
 }
 
 // isSettingCustomized reports whether the SQS-side value for a setting
-// differs from its declared defaultValue. SQS exposes values in three
-// shapes (value / values / fieldValues); for the comparison we collapse
-// each into a comparable scalar string — fieldValues collapses to its
-// JSON encoding, values to a sorted CSV.
+// actually differs from its default. SQS reveals the default in two
+// places, in priority order:
+//
+//  1. parentValue / parentValues on the value record itself — SQS's
+//     own "this is the default the user is inheriting from" hint.
+//     Present whenever a global setting has been explicitly set,
+//     even if to the same value as the default.
+//  2. defaultValue on the list_definitions record — the static
+//     declared default. Some setting keys don't expose this field,
+//     which is why parentValue is the more reliable signal.
+//
+// Issue #196: after several SQS upgrades, operators sometimes end up
+// with global settings explicitly set to values identical to the
+// default. Without comparing against parentValue/parentValues those
+// settings would be migrated unnecessarily, inflating the SQC API
+// call count and noising up the migration report.
 func isSettingCustomized(raw json.RawMessage, defaultValue string) bool {
 	if fvs := extractObjectArray(raw, "fieldValues"); len(fvs) > 0 {
-		// PROPERTY_SET — defaultValue is unlikely to match a complex
-		// JSON payload, so treat any populated fieldValues as
-		// customized.
+		// PROPERTY_SET — comparing two arbitrary JSON object arrays
+		// for "is this the default" is non-trivial, and these
+		// settings are rarely set to default by accident. Treat any
+		// populated fieldValues as customized.
 		return true
 	}
 	if vals := extractStringArray(raw, "values"); len(vals) > 0 {
-		sorted := append([]string(nil), vals...)
-		sort.Strings(sorted)
-		joined := strings.Join(sorted, ",")
-		defSorted := strings.Split(defaultValue, ",")
-		sort.Strings(defSorted)
-		return joined != strings.Join(defSorted, ",")
+		// Prefer parentValues (SQS-side default for this very key)
+		// over defaultValue from list_definitions: parentValues is
+		// always populated when the setting is set; defaultValue is
+		// sometimes missing from list_definitions.
+		if pvals := extractStringArray(raw, "parentValues"); len(pvals) > 0 {
+			return !equalSortedStrings(vals, pvals)
+		}
+		return !equalSortedStrings(vals, splitDefaultCSV(defaultValue))
 	}
-	return extractField(raw, "value") != defaultValue
+	v := extractField(raw, "value")
+	if pv := extractField(raw, "parentValue"); pv != "" {
+		return v != pv
+	}
+	return v != defaultValue
+}
+
+// equalSortedStrings reports whether a and b contain the same set of
+// elements, ignoring order. Both slices are sorted on a copy so the
+// callers' originals are untouched.
+func equalSortedStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sa := append([]string(nil), a...)
+	sb := append([]string(nil), b...)
+	sort.Strings(sa)
+	sort.Strings(sb)
+	for i := range sa {
+		if sa[i] != sb[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// splitDefaultCSV turns SQS's comma-joined default representation
+// ("a,b,c") into a string slice, treating an empty defaultValue as the
+// empty slice (NOT a slice with one empty element, which is what
+// strings.Split returns by default).
+func splitDefaultCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
 }
 
 // readSettingPayload extracts the three possible value shapes from a

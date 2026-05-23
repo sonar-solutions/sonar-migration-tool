@@ -1001,6 +1001,105 @@ func TestRunSetGlobalSettingsFanOutPartialRendersAsPartial(t *testing.T) {
 	}
 }
 
+// isSettingCustomized's job is to filter out SQS-side global settings
+// whose value happens to equal the SQS default — those are not real
+// customizations and migrating them just inflates the SQC API call
+// count (issue #196). The comparison uses parentValue / parentValues
+// as the primary signal because list_definitions's defaultValue is
+// missing for some setting keys.
+func TestIsSettingCustomized(t *testing.T) {
+	mk := func(m map[string]any) json.RawMessage {
+		b, _ := json.Marshal(m)
+		return b
+	}
+	cases := []struct {
+		name        string
+		raw         map[string]any
+		defaultVal  string
+		wantCustom  bool
+		description string
+	}{
+		// Scalar paths
+		{
+			name:        "scalar value matches parentValue",
+			raw:         map[string]any{"value": "20", "parentValue": "20"},
+			wantCustom:  false,
+			description: "value=parentValue → not customized (issue #196 case)",
+		},
+		{
+			name:       "scalar value matches defaultValue (no parentValue)",
+			raw:        map[string]any{"value": "true"},
+			defaultVal: "true",
+			wantCustom: false,
+		},
+		{
+			name:       "scalar value differs from parentValue",
+			raw:        map[string]any{"value": "true", "parentValue": "false"},
+			wantCustom: true,
+		},
+		{
+			name:        "parentValue takes precedence when both available",
+			raw:         map[string]any{"value": "true", "parentValue": "true"},
+			defaultVal:  "false", // intentional mismatch; parentValue wins
+			wantCustom:  false,
+			description: "if parentValue agrees with value, it's not customized even when list_definitions says otherwise",
+		},
+
+		// Multi-value paths
+		{
+			name:        "multi values match parentValues (different order)",
+			raw:         map[string]any{"values": []string{".kt", ".kts"}, "parentValues": []string{".kts", ".kt"}},
+			wantCustom:  false,
+			description: "sorted equality — order doesn't matter",
+		},
+		{
+			name:       "multi values match defaultValue CSV (no parentValues)",
+			raw:        map[string]any{"values": []string{"a", "b"}},
+			defaultVal: "b,a",
+			wantCustom: false,
+		},
+		{
+			name:       "multi values differ in element count",
+			raw:        map[string]any{"values": []string{".kt"}, "parentValues": []string{".kt", ".kts"}},
+			wantCustom: true,
+		},
+		{
+			name:       "multi values differ in element content",
+			raw:        map[string]any{"values": []string{"a", "c"}, "parentValues": []string{"a", "b"}},
+			wantCustom: true,
+		},
+		{
+			name:       "parentValues takes precedence over defaultValue",
+			raw:        map[string]any{"values": []string{"a", "b"}, "parentValues": []string{"a", "b"}},
+			defaultVal: "x,y", // intentional mismatch
+			wantCustom: false,
+		},
+
+		// Property-set path — opaque, always treated as customized
+		{
+			name:       "property-set (fieldValues populated)",
+			raw:        map[string]any{"fieldValues": []map[string]any{{"k": "v"}}},
+			wantCustom: true,
+		},
+
+		// Missing both parentValue/parentValues AND defaultValue
+		{
+			name:       "scalar with no signal — treated as customized",
+			raw:        map[string]any{"value": "anything"},
+			wantCustom: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := isSettingCustomized(mk(c.raw), c.defaultVal)
+			if got != c.wantCustom {
+				t.Errorf("%s: want customized=%v, got %v (raw=%v default=%q)",
+					c.description, c.wantCustom, got, c.raw, c.defaultVal)
+			}
+		})
+	}
+}
+
 // Compile-time guard: catch accidental removal of the helper that drives
 // most tests above.
 var _ = sync.Mutex{}
