@@ -436,6 +436,35 @@ func TestRunSetGlobalSettingsFallsBackToProjectsOnOrgLevelRejection(t *testing.T
 	if !strings.Contains(logs, "key not settable at org level despite list_definitions claim") {
 		t.Errorf("expected Info log noting the SQC inconsistency, got:\n%s", logs)
 	}
+
+	// Output Outcome's Detail must use the new fan-out wording —
+	// "Applied to all projects (values=[...])" — instead of listing
+	// the individual projects. Issue follow-up requested this so the
+	// report stays readable when an org has many projects.
+	out, _ := e.Store.ReadAll("setGlobalSettings")
+	if len(out) != 1 {
+		t.Fatalf("expected one setGlobalSettings record, got %d", len(out))
+	}
+	var rec struct {
+		Outcomes []struct {
+			Org    string `json:"org"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"outcomes"`
+	}
+	_ = json.Unmarshal(out[0], &rec)
+	if len(rec.Outcomes) != 1 || rec.Outcomes[0].Status != "applied-to-projects" {
+		t.Fatalf("expected one applied-to-projects outcome, got %+v", rec.Outcomes)
+	}
+	if !strings.Contains(rec.Outcomes[0].Detail, "Applied to all projects") {
+		t.Errorf("Detail must say \"Applied to all projects\", got %q", rec.Outcomes[0].Detail)
+	}
+	if !strings.Contains(rec.Outcomes[0].Detail, "values=[**/jacoco*.xml]") {
+		t.Errorf("Detail must include the value summary, got %q", rec.Outcomes[0].Detail)
+	}
+	if strings.Contains(rec.Outcomes[0].Detail, "projA") || strings.Contains(rec.Outcomes[0].Detail, "projB") {
+		t.Errorf("Detail must NOT list individual projects when fan-out applied to ALL, got %q", rec.Outcomes[0].Detail)
+	}
 }
 
 // Once SQC has rejected a key at org level for ONE org, the task
@@ -788,42 +817,27 @@ func TestRunSetGlobalSettingsAppliesGlobalTestExclusionsWhenTestExclusionsAtDefa
 	}
 }
 
-// renderGlobalSettingDetail must annotate the merged record so the
-// summary report displays the cross-key provenance — this is the report
-// requirement called out in the issue. The detail string is formed from
-// the carried global-key name so the same code path covers every pair
-// in globalExclusionPairs.
-func TestRenderGlobalSettingDetailMentionsMerge(t *testing.T) {
+// renderValueSummary picks the compact value representation each
+// orgOutcome.Detail string uses for the parenthesised data tag —
+// "Applied (value=X)", "Applied (values=[a,b])", or
+// "Applied (fieldValues=[...])". Pinning this directly keeps the
+// per-row wording stable across refactors.
+func TestRenderValueSummary(t *testing.T) {
 	cases := []struct {
-		name   string
-		rec    globalSettingResult
-		expect string
+		name string
+		rec  globalSettingResult
+		want string
 	}{
-		{
-			name: "exclusions",
-			rec: globalSettingResult{
-				Key:              "sonar.exclusions",
-				Values:           []string{"a", "b"},
-				AppliedOrgs:      []string{"org1"},
-				MergedFromGlobal: "sonar.global.exclusions",
-			},
-			expect: "merged from sonar.global.exclusions + sonar.exclusions",
-		},
-		{
-			name: "test exclusions",
-			rec: globalSettingResult{
-				Key:              "sonar.test.exclusions",
-				Values:           []string{"a"},
-				AppliedOrgs:      []string{"org1"},
-				MergedFromGlobal: "sonar.global.test.exclusions",
-			},
-			expect: "merged from sonar.global.test.exclusions + sonar.test.exclusions",
-		},
+		{"single", globalSettingResult{Value: "true"}, "value=true"},
+		{"multi", globalSettingResult{Values: []string{"a", "b"}}, "values=[a,b]"},
+		{"fieldValues", globalSettingResult{
+			FieldValues: []map[string]any{{"fileRegexp": "x"}},
+		}, `fieldValues=[{"fileRegexp":"x"}]`},
 	}
 	for _, c := range cases {
-		got := renderGlobalSettingDetail(c.rec)
-		if !strings.Contains(got, c.expect) {
-			t.Errorf("%s: expected detail to contain %q, got: %s", c.name, c.expect, got)
+		got := renderValueSummary(c.rec)
+		if got != c.want {
+			t.Errorf("%s: want %q, got %q", c.name, c.want, got)
 		}
 	}
 }
