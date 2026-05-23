@@ -42,6 +42,19 @@ func miscTasks() []TaskDef {
 		},
 		{Name: "getNewCodePeriods", Editions: AllEditions, Dependencies: []string{"getProjects"},
 			Run: perProjectArray("getNewCodePeriods", "api/new_code_periods/list", "newCodePeriods", "project", "project")},
+		{
+			// SonarQube Server's platform-wide new-code-period default —
+			// /api/new_code_periods/show with neither project nor branch
+			// returns the global setting. The migrate phase propagates
+			// it to every SonarQube Cloud org so SQC orgs inherit the
+			// same default (issue #136).
+			Name: "getGlobalNewCodePeriod", Editions: AllEditions,
+			Run: func(ctx context.Context, e *Executor) error {
+				return fetchAndWriteSingle(ctx, e, "getGlobalNewCodePeriod",
+					"api/new_code_periods/show", nil, "",
+					map[string]any{"serverUrl": e.ServerURL})
+			},
+		},
 	}
 }
 

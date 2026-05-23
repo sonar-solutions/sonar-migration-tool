@@ -50,6 +50,15 @@ func associateTasks() []TaskDef {
 			Run:          runSetNewCodePeriods,
 		},
 		{
+			// Propagates SonarQube Server's platform-wide new-code-period
+			// default to every SonarQube Cloud org's org-level default
+			// (issue #136). Depends on the org mapping for the fan-out
+			// target list.
+			Name:         "setGlobalNewCodePeriod",
+			Dependencies: []string{"generateOrganizationMappings"},
+			Run:          runSetGlobalNewCodePeriod,
+		},
+		{
 			// Migrates non-default SQS global settings to every SQC org
 			// in scope. Depends on the org mapping plus both halves of
 			// the SQS settings extract (values + definitions, the latter
@@ -502,6 +511,96 @@ var sqcNewCodeType = map[string]string{
 	"PREVIOUS_VERSION":  "previous_version",
 	"REFERENCE_BRANCH":  "reference_branch",
 	"SPECIFIC_ANALYSIS": "specific_analysis",
+}
+
+// runSetGlobalNewCodePeriod propagates SonarQube Server's platform-wide
+// new-code-period default to every SonarQube Cloud organization
+// (issue #136).
+//
+// SonarQube Cloud's /api/new_code_periods/set works for per-project
+// writes but the org-level default is set through the legacy settings
+// keys instead — same approach as the reference sonar-tools/Python
+// implementation (sonar/settings.py::set_new_code_period). The task
+// issues two POST /api/settings/set calls per org:
+//
+//	sonar.leak.period.type = NUMBER_OF_DAYS | REFERENCE_BRANCH | SPECIFIC_ANALYSIS
+//	sonar.leak.period      = <value>   (omitted when type has no value)
+//
+// PREVIOUS_VERSION is SQC's own default, so the task no-ops in that
+// case — issue #196's "don't migrate settings equal to the default"
+// principle applies here too.
+func runSetGlobalNewCodePeriod(ctx context.Context, e *Executor) error {
+	ncdItems, err := readExtractItems(e, "getGlobalNewCodePeriod")
+	if err != nil {
+		return fmt.Errorf("setGlobalNewCodePeriod: reading getGlobalNewCodePeriod: %w", err)
+	}
+	if len(ncdItems) == 0 {
+		e.Logger.Info("setGlobalNewCodePeriod: no global NCD extracted, nothing to migrate")
+		return nil
+	}
+	// We expect ONE record (single-server) but iterate defensively.
+	src := ncdItems[0].Data
+	sqsType := extractField(src, "type")
+	if sqsType == "" {
+		e.Logger.Info("setGlobalNewCodePeriod: SQS global NCD has no type, skipping")
+		return nil
+	}
+	// Normalize the legacy alias seen in older SQS exports — the SQC
+	// settings endpoint expects NUMBER_OF_DAYS. Matches sonar-tools.
+	if sqsType == "DAYS" {
+		sqsType = "NUMBER_OF_DAYS"
+	}
+	if _, mapped := sqcNewCodeType[sqsType]; !mapped {
+		e.Logger.Warn("setGlobalNewCodePeriod: unmapped SQS NCD type, skipping",
+			"source_type", sqsType)
+		return nil
+	}
+	if sqsType == "PREVIOUS_VERSION" {
+		e.Logger.Info("setGlobalNewCodePeriod: SQS global NCD is PREVIOUS_VERSION (== SQC default), skipping",
+			"source_type", sqsType)
+		return nil
+	}
+	value := extractAnyStr(src, "value")
+
+	// Org fan-out.
+	orgItems, _ := e.Store.ReadAll("generateOrganizationMappings")
+	seen := make(map[string]struct{})
+	counter := NewTaskCounter("setGlobalNewCodePeriod")
+	for _, o := range orgItems {
+		orgKey := extractField(o, "sonarcloud_org_key")
+		if shouldSkipOrg(orgKey) {
+			continue
+		}
+		if _, dup := seen[orgKey]; dup {
+			continue
+		}
+		seen[orgKey] = struct{}{}
+
+		// 1/2 — type. Required.
+		e.Logger.Debug("setGlobalNewCodePeriod: POST /api/settings/set (sonar.leak.period.type)",
+			"org", orgKey, "type", sqsType)
+		if err := e.Cloud.Settings.Set(ctx, "", "sonar.leak.period.type", sqsType, orgKey); err != nil {
+			counter.Fail()
+			logAPIWarn(e.Logger, "setGlobalNewCodePeriod failed setting type", err,
+				"org", orgKey, "type", sqsType)
+			continue
+		}
+		// 2/2 — value. Skipped when SQS has no value (e.g. for
+		// REFERENCE_BRANCH from a global setting that didn't carry one).
+		if value != "" {
+			e.Logger.Debug("setGlobalNewCodePeriod: POST /api/settings/set (sonar.leak.period)",
+				"org", orgKey, "value", value)
+			if err := e.Cloud.Settings.Set(ctx, "", "sonar.leak.period", value, orgKey); err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "setGlobalNewCodePeriod failed setting value", err,
+					"org", orgKey, "value", value)
+				continue
+			}
+		}
+		counter.Success()
+	}
+	counter.LogSummary(e.Logger)
+	return nil
 }
 
 func runSetProjectTags(ctx context.Context, e *Executor) error {
