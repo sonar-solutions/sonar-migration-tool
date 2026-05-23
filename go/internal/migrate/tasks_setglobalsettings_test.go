@@ -253,6 +253,75 @@ func TestRunSetGlobalSettingsWarnsWhenKeyNotOnSQC(t *testing.T) {
 	}
 }
 
+// When a customized SQS global key is missing from SQC's org-scope
+// definitions but IS present at project scope, setGlobalSettings must
+// NOT log a Warn — that key is handled by setProjectSettings's
+// propagation pass. The skip reason switches from "not-on-sqc" to
+// "project-scope-only". Issues #189 / #191.
+func TestRunSetGlobalSettingsUsesProjectScopeOnlyReasonWhenKeyAtProjectScope(t *testing.T) {
+	cloudMux := http.NewServeMux()
+	muHits, hitsPtr := mountSettingsSetCapture(cloudMux)
+	mountSettingsDefinitionsScoped(cloudMux,
+		// Org-scope defs: no sonar.java.file.suffixes.
+		[]map[string]any{},
+		// Project-scope defs: includes it.
+		[]map[string]any{
+			{"key": "sonar.java.file.suffixes", "type": "STRING", "multiValues": false},
+		},
+	)
+	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	cloudSrv := httptest.NewServer(cloudMux)
+	defer cloudSrv.Close()
+
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	var logBuf bytes.Buffer
+	// Capture Info + Warn so the test can assert the Info case fires
+	// and the Warn case does NOT.
+	e.Logger = slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettings", []map[string]any{
+		{"key": "sonar.java.file.suffixes", "values": []string{".java", ".jav"}},
+	})
+	writeExtractTaskJSONL(t, dir, "extract-01", "getServerSettingsDefinitions", []map[string]any{
+		{"key": "sonar.java.file.suffixes", "type": "STRING", "multiValues": false, "defaultValue": ".java"},
+	})
+	writeExtractMetaJSON(t, dir, "extract-01", testServerURL)
+	writeTaskJSONL(t, e, "generateOrganizationMappings", []map[string]any{
+		{"sonarcloud_org_key": "org1"},
+	})
+	// createProjects record so loadProjectScopedSettingDefinitionsForOrgs
+	// has a probe project to query SQC with component=.
+	pw, _ := e.Store.Writer("createProjects")
+	b, _ := json.Marshal(map[string]any{
+		"key": "proj1", "server_url": testServerURL,
+		"sonarcloud_org_key": "org1", "cloud_project_key": "org1_proj1",
+	})
+	pw.WriteOne(b)
+
+	if err := runSetGlobalSettings(context.Background(), e); err != nil {
+		t.Fatalf("runSetGlobalSettings: %v", err)
+	}
+
+	muHits.Lock()
+	defer muHits.Unlock()
+	if len(*hitsPtr) != 0 {
+		t.Fatalf("setGlobalSettings must NOT issue API calls for project-scope-only keys, got %d", len(*hitsPtr))
+	}
+	logs := logBuf.String()
+	if strings.Contains(logs, "setting key not available on SQC") {
+		t.Errorf("must NOT log the not-on-sqc Warn for a project-scope-only key, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "will be propagated by setProjectSettings") {
+		t.Errorf("expected Info log about delegation to setProjectSettings, got:\n%s", logs)
+	}
+}
+
 // Customized PROPERTY_SET setting → sent via fieldValues= shape.
 func TestRunSetGlobalSettingsPropertySet(t *testing.T) {
 	hits, _ := runGlobalSettingsTest(t,

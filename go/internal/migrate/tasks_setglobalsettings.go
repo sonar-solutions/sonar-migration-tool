@@ -135,8 +135,25 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 	e.Logger.Info("starting task", "task", "setGlobalSettings",
 		"customized_settings", len(customized), "target_orgs", len(orgList))
 
-	// One list_definitions fetch per target org.
+	// One list_definitions fetch per target org (org scope).
 	defsByOrg := loadSettingDefinitionsForOrgs(ctx, e, orgs, "setGlobalSettings")
+
+	// Project-scope defs cover the superset of keys visible to a
+	// project (language settings, external-analyzer settings, etc.).
+	// Used below to distinguish "truly not on SQC" (warn) from "exists
+	// at project scope only — handled by setProjectSettings" (info).
+	// Issues #189 / #191.
+	projects, _ := e.Store.ReadAll("createProjects")
+	projectKeyMap := make(map[string]projectMapping, len(projects))
+	for _, p := range projects {
+		serverURL := extractField(p, "server_url")
+		key := extractField(p, "key")
+		projectKeyMap[serverURL+key] = projectMapping{
+			CloudKey: extractField(p, "cloud_project_key"),
+			OrgKey:   extractField(p, "sonarcloud_org_key"),
+		}
+	}
+	projectDefsByOrg := loadProjectScopedSettingDefinitionsForOrgs(ctx, e, projectKeyMap, "setGlobalSettings")
 
 	counter := NewTaskCounter("setGlobalSettings")
 	w, err := e.Store.Writer("setGlobalSettings")
@@ -152,7 +169,7 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 			if gctx.Err() != nil {
 				return gctx.Err()
 			}
-			rec := applyOneGlobalSetting(gctx, e, raw, orgList, defsByOrg, counter)
+			rec := applyOneGlobalSetting(gctx, e, raw, orgList, defsByOrg, projectDefsByOrg, counter)
 			b, _ := json.Marshal(rec)
 			mu.Lock()
 			defer mu.Unlock()
@@ -170,7 +187,8 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 // every target SQC org and returns a result record describing the per-org
 // outcomes plus a pre-built detail string for the report.
 func applyOneGlobalSetting(ctx context.Context, e *Executor, raw json.RawMessage, orgs []string,
-	defsByOrg map[string]map[string]types.SettingDefinition, counter *TaskCounter) globalSettingResult {
+	defsByOrg, projectDefsByOrg map[string]map[string]types.SettingDefinition,
+	counter *TaskCounter) globalSettingResult {
 
 	key := extractField(raw, "key")
 	rec := globalSettingResult{Key: key}
@@ -184,6 +202,19 @@ func applyOneGlobalSetting(ctx context.Context, e *Executor, raw json.RawMessage
 	for _, org := range orgs {
 		def, hasDef := defsByOrg[org][key]
 		if !hasDef {
+			// Distinguish two cases here (issues #189 / #191):
+			//   - key NOT in org-scope and NOT in project-scope → truly
+			//     unknown to SQC; keep the existing Warn.
+			//   - key NOT in org-scope BUT IS in project-scope →
+			//     handled by setProjectSettings's propagation pass;
+			//     downgrade to Info and use a non-alarming reason so
+			//     the report doesn't flag it red.
+			if _, atProject := projectDefsByOrg[org][key]; atProject {
+				e.Logger.Info("setGlobalSettings: key exists only at SQC project scope, will be propagated by setProjectSettings",
+					"key", key, "org", org)
+				rec.SkippedOrgs = append(rec.SkippedOrgs, skippedOrg{Org: org, Reason: "project-scope-only"})
+				continue
+			}
 			e.Logger.Warn("setGlobalSettings: setting key not available on SQC, skipping",
 				"key", key, "org", org)
 			rec.SkippedOrgs = append(rec.SkippedOrgs, skippedOrg{Org: org, Reason: "not-on-sqc"})
