@@ -526,6 +526,35 @@ func TestQualityGatesSetDefault(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestQualityGatesList exercises /api/qualitygates/list. Reset uses
+// the response's IsBuiltIn flag to locate the built-in "Sonar way"
+// gate when restoring an org's default before deletion.
+func TestQualityGatesList(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualitygates/list", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "myorg", r.URL.Query().Get("organization"))
+		// SonarCloud returns "default" as a numeric id; mirror that
+		// shape in the mock so we exercise the same unmarshal path as
+		// production. json.RawMessage on the type accepts either
+		// string (SonarQube Server) or number (SonarCloud).
+		writeJSON(w, map[string]any{
+			"default": 2,
+			"qualitygates": []map[string]any{
+				{"id": 1, "name": "Sonar way", "isBuiltIn": true, "isDefault": false},
+				{"id": 2, "name": "Custom Gate", "isBuiltIn": false, "isDefault": true},
+			},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	gates, err := cc.QualityGates.List(context.Background(), "myorg")
+	require.NoError(t, err)
+	require.Len(t, gates, 2)
+	assert.Equal(t, "Sonar way", gates[0].Name)
+	assert.True(t, gates[0].IsBuiltIn)
+}
+
 // --- Permissions ---
 
 func TestPermissionsCreateTemplate(t *testing.T) {
