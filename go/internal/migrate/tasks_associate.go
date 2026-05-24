@@ -528,30 +528,22 @@ func runSetNewCodePeriods(ctx context.Context, e *Executor) error {
 					"project", pm.CloudKey, "source_type", sqsType)
 				return nil
 			}
-			value := extractAnyStr(item.Data, "value")
-			// previous_version must travel with an empty value; SQC rejects
-			// the call otherwise.
+			// SonarCloud exposes project-level NCD via the legacy
+			// sonar.leak.period setting (POST /api/settings/set with
+			// component=<projectKey>); the /api/new_code_periods/set
+			// endpoint that SonarQube Server uses does NOT exist on
+			// SonarCloud and would 404. Days takes the raw integer
+			// string as the value; previous_version takes the
+			// literal string "previous_version".
+			rawValue := extractAnyStr(item.Data, "value")
+			settingValue := rawValue
 			if sqcType == "previous_version" {
-				value = ""
+				settingValue = "previous_version"
 			}
-
-			// The branch parameter is intentionally omitted. By the
-			// time we reach this call the record has been filtered to
-			// branchKey == mainBranch, i.e. the project-level NCD.
-			// SonarCloud's /api/new_code_periods/set with branch=main
-			// would create a per-branch override that's invisible on
-			// the project settings page; without branch the call
-			// updates the project-level default (which is what SQS
-			// represented as "main branch inherits from project").
-			e.Logger.Debug("project api call: POST /api/new_code_periods/set",
+			e.Logger.Debug("project api call: POST /api/settings/set (sonar.leak.period)",
 				"project", pm.CloudKey, "type", sqcType,
-				"value", value, "org", pm.OrgKey, "source_type", sqsType)
-			err := e.Cloud.NewCodePeriods.Set(ctx, cloud.SetNewCodePeriodParams{
-				Project:      pm.CloudKey,
-				Type:         sqcType,
-				Value:        value,
-				Organization: pm.OrgKey,
-			})
+				"value", settingValue, "source_type", sqsType)
+			err := e.Cloud.Settings.Set(ctx, pm.CloudKey, "sonar.leak.period", settingValue, "")
 			if err != nil {
 				counter.Fail()
 				logAPIWarn(e.Logger, "setNewCodePeriods failed", err,

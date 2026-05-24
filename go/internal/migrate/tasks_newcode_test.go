@@ -295,27 +295,28 @@ func TestRunSetGlobalNewCodePeriodNormalizesLegacyDaysAlias(t *testing.T) {
 }
 
 // TestRunSetNewCodePeriodsTranslatesAndSets verifies that runSetNewCodePeriods
-// translates SQS NCD types to their SQC equivalents, omits the value for
-// previous_version, and resolves projectKey + branch to the right cloud
-// project + organization.
+// posts the project-level new code definition via the SonarCloud
+// settings endpoint (POST /api/settings/set, key=sonar.leak.period)
+// using days as a raw integer string and previous_version as the
+// literal "previous_version", and that it skips per-branch overrides
+// and unsupported types.
 func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 	type call struct {
-		project, branch, ncdType, value, org string
+		project, branch, settingKey, value string
 	}
 	var (
 		mu       sync.Mutex
 		recorded []call
 	)
 	cloudMux := http.NewServeMux()
-	cloudMux.HandleFunc("POST /api/new_code_periods/set", func(w http.ResponseWriter, r *http.Request) {
+	cloudMux.HandleFunc("POST /api/settings/set", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		mu.Lock()
 		recorded = append(recorded, call{
-			project: r.FormValue("project"),
-			branch:  r.FormValue("branch"),
-			ncdType: r.FormValue("type"),
-			value:   r.FormValue("value"),
-			org:     r.FormValue("organization"),
+			project:    r.FormValue("component"),
+			branch:     r.FormValue("branch"),
+			settingKey: r.FormValue("key"),
+			value:      r.FormValue("value"),
 		})
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
@@ -392,13 +393,16 @@ func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 	}
 	sort.Slice(recorded, func(i, j int) bool { return recorded[i].project < recorded[j].project })
 
-	// branch is intentionally empty — main-branch records describe
-	// the project-level NCD and must be applied WITHOUT a branch
-	// param (which would create a per-branch override invisible on
-	// the project settings page).
+	// Each call must go to /api/settings/set with key=sonar.leak.period
+	// (SonarCloud's project-level NCD setter — /api/new_code_periods
+	// /set does not exist on SQC). Days carries the raw integer;
+	// previous_version carries the literal string. The component is
+	// the cloud project key; no branch param (would be ignored by
+	// the settings endpoint anyway, but explicitly omitted to make
+	// intent clear).
 	want := []call{
-		{project: "org1_proj-days", branch: "", ncdType: "days", value: "14", org: "org1"},
-		{project: "org1_proj-prev", branch: "", ncdType: "previous_version", value: "", org: "org1"},
+		{project: "org1_proj-days", branch: "", settingKey: "sonar.leak.period", value: "14"},
+		{project: "org1_proj-prev", branch: "", settingKey: "sonar.leak.period", value: "previous_version"},
 	}
 	for i, w := range want {
 		if recorded[i] != w {
@@ -406,11 +410,11 @@ func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 		}
 	}
 	for _, c := range recorded {
-		if c.ncdType == "reference_branch" {
-			t.Errorf("REFERENCE_BRANCH must not be applied at project scope (issue #135), got %+v", c)
+		if c.settingKey != "sonar.leak.period" {
+			t.Errorf("setting key must be sonar.leak.period, got %q", c.settingKey)
 		}
 		if c.branch != "" {
-			t.Errorf("branch param must be omitted (sets project-level NCD, not per-branch override), got %+v", c)
+			t.Errorf("branch param must be omitted, got %+v", c)
 		}
 	}
 }
