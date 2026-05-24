@@ -354,6 +354,14 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 		}
 
 		checkPageBreak(pdf, rowHeight)
+		// Capture the row's start position so we can explicitly
+		// advance to the next row after drawing all columns. The
+		// original code relied on the trailing MultiCell auto-
+		// advancing the cursor; drawWrappedCell deliberately does
+		// not (it stays flush right of its own cell so the caller
+		// can place the next column), so we restore the X+Y here.
+		rowStartX := pdf.GetX()
+		rowStartY := pdf.GetY()
 		if i%2 == 0 {
 			setFillColor(pdf, colorLightGray)
 		} else {
@@ -402,6 +410,11 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 		// Name so the cell always reaches rowHeight. Issue #207.
 		drawWrappedCell(pdf, widths[col], lineH, lineCount, pdf.SplitLines([]byte(detailsText), widths[col]))
 		pdf.SetFont(pdfFontFamily, "", bodyFontSize)
+		// Advance to the next row. drawWrappedCell leaves the cursor
+		// flush right of the cell at the row's start Y; explicitly
+		// move to (rowStartX, rowStartY + rowHeight) so the next
+		// iteration's GetXY() reports the correct position.
+		pdf.SetXY(rowStartX, rowStartY+rowHeight)
 	}
 }
 
