@@ -522,10 +522,22 @@ func runSetNewCodePeriods(ctx context.Context, e *Executor) error {
 			sqsType := extractField(item.Data, "type")
 			sqcType, mapped := sqcProjectNewCodeType[sqsType]
 			if !mapped {
-				// (3) Type not supported at project scope on SQC
-				// (issue #135). Project is left with the org default.
-				e.Logger.Info("setNewCodePeriods: NCD type not supported on SonarQube Cloud, skipping",
+				// Type not supported at project scope on SQC (issue
+				// #135). Actively RESET the project-level NCD on SQC
+				// so it falls back to the org default — a bare skip
+				// would leave any stale project-level setting from a
+				// prior migrate run in place.
+				e.Logger.Info("setNewCodePeriods: NCD type not supported on SonarQube Cloud, resetting project to org default",
 					"project", pm.CloudKey, "source_type", sqsType)
+				if err := e.Cloud.Settings.Reset(ctx, pm.CloudKey,
+					[]string{"sonar.leak.period", "sonar.leak.period.type"}, ""); err != nil {
+					counter.Fail()
+					logAPIWarn(e.Logger, "setNewCodePeriods reset failed", err,
+						"project", pm.CloudKey, "source_type", sqsType)
+				} else {
+					counter.Success()
+				}
+				_ = w.WriteOne(item.Data)
 				return nil
 			}
 			// SonarCloud sets the project-level new code definition via

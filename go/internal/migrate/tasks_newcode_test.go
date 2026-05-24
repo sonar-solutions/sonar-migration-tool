@@ -296,17 +296,23 @@ func TestRunSetGlobalNewCodePeriodNormalizesLegacyDaysAlias(t *testing.T) {
 
 // TestRunSetNewCodePeriodsTranslatesAndSets verifies that runSetNewCodePeriods
 // posts the project-level new code definition to SonarCloud as two
-// /api/settings/set calls: first key=sonar.leak.period.type with
-// value="days"|"previous_version", and then (only for days)
-// key=sonar.leak.period with the integer value. It also skips
-// per-branch overrides and unsupported types.
+// /api/settings/set calls (sonar.leak.period then sonar.leak.period.type)
+// for supported types, and ACTIVELY RESETS the same two settings via
+// /api/settings/reset for unsupported types (issue #135 — projects
+// fall back to the org default rather than retaining stale state
+// from a prior migrate). Per-branch overrides are skipped silently.
 func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 	type call struct {
 		project, branch, settingKey, value string
 	}
+	type resetCall struct {
+		project string
+		keys    string
+	}
 	var (
-		mu       sync.Mutex
-		recorded []call
+		mu          sync.Mutex
+		recorded    []call
+		resetCalls  []resetCall
 	)
 	cloudMux := http.NewServeMux()
 	cloudMux.HandleFunc("POST /api/settings/set", func(w http.ResponseWriter, r *http.Request) {
@@ -317,6 +323,16 @@ func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 			branch:     r.FormValue("branch"),
 			settingKey: r.FormValue("key"),
 			value:      r.FormValue("value"),
+		})
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cloudMux.HandleFunc("POST /api/settings/reset", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		resetCalls = append(resetCalls, resetCall{
+			project: r.FormValue("component"),
+			keys:    r.FormValue("keys"),
 		})
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
@@ -423,6 +439,36 @@ func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 	for _, c := range recorded {
 		if c.branch != "" {
 			t.Errorf("branch param must be omitted, got %+v", c)
+		}
+	}
+
+	// Every record whose type isn't in sqcProjectNewCodeType — both
+	// the well-known unsupported types (REFERENCE_BRANCH,
+	// SPECIFIC_ANALYSIS) and any other future / unknown type — must
+	// trigger a /api/settings/reset on the matching project so that
+	// SQC falls back to the org default. Any stale project-level
+	// NCD from a prior migrate run is cleared. /api/settings/set
+	// must NOT be called for these projects.
+	if len(resetCalls) != 2 {
+		t.Fatalf("expected 2 reset calls (proj-ref + proj-unknown), got %d: %+v", len(resetCalls), resetCalls)
+	}
+	resetProjects := map[string]string{}
+	for _, c := range resetCalls {
+		resetProjects[c.project] = c.keys
+	}
+	for _, project := range []string{"org1_proj-ref", "org1_proj-unknown"} {
+		keys, ok := resetProjects[project]
+		if !ok {
+			t.Errorf("expected reset call for %s", project)
+			continue
+		}
+		if !strings.Contains(keys, "sonar.leak.period") || !strings.Contains(keys, "sonar.leak.period.type") {
+			t.Errorf("%s reset keys must include sonar.leak.period and sonar.leak.period.type, got %q", project, keys)
+		}
+	}
+	for _, c := range recorded {
+		if c.project == "org1_proj-ref" || c.project == "org1_proj-unknown" {
+			t.Errorf("unsupported-type project %s must not receive a settings/set call; we reset instead. got %+v", c.project, c)
 		}
 	}
 }
