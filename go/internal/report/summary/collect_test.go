@@ -778,6 +778,63 @@ func TestCollectGlobalSettingsPartialOutcomeLandsInPartialBucket(t *testing.T) {
 	}
 }
 
+// The Global Settings section must surface setGlobalNewCodePeriod's
+// outcomes alongside setGlobalSettings's, so the report documents the
+// org-level NCD migration on the same page. Issue #136 reporting
+// follow-up.
+func TestCollectGlobalSettingsIncludesNewCodePeriod(t *testing.T) {
+	dir := t.TempDir()
+	// Regular global setting record.
+	writeTaskJSONL(t, dir, "setGlobalSettings", []map[string]any{
+		{
+			"key": "sonar.cleanasyoucode.enabled", "value": "true",
+			"outcomes": []map[string]any{
+				{"org": "orgA", "status": "applied",
+					"detail": "Applied (value=true)"},
+			},
+		},
+	})
+	// NCD record from the dedicated task.
+	writeTaskJSONL(t, dir, "setGlobalNewCodePeriod", []map[string]any{
+		{
+			"key": "newCodePeriod", "value": "61",
+			"outcomes": []map[string]any{
+				{"org": "orgA", "status": "applied",
+					"detail": "Applied (defaultLeakPeriodType=days, defaultLeakPeriod=61)"},
+				{"org": "orgB", "status": "applied",
+					"detail": "Applied (defaultLeakPeriodType=days, defaultLeakPeriod=61)"},
+			},
+		},
+	})
+
+	summary, err := CollectSummary(dir, "")
+	if err != nil {
+		t.Fatalf("CollectSummary: %v", err)
+	}
+	sec := findSection(summary, "Global Settings")
+	if sec == nil {
+		t.Fatal("missing Global Settings section")
+	}
+	// 1 regular setting × 1 org + 1 NCD × 2 orgs = 3 succeeded rows.
+	if len(sec.Succeeded) != 3 {
+		t.Fatalf("Succeeded: want 3, got %d: %+v", len(sec.Succeeded), sec.Succeeded)
+	}
+	// Look for a newCodePeriod row to confirm the NCD task's output
+	// reached the section.
+	foundNCD := false
+	for _, it := range sec.Succeeded {
+		if it.Name == "newCodePeriod" {
+			foundNCD = true
+			if !strings.Contains(it.Detail, "defaultLeakPeriodType=days") {
+				t.Errorf("NCD Detail must include the type+value, got %q", it.Detail)
+			}
+		}
+	}
+	if !foundNCD {
+		t.Errorf("Global Settings section is missing the newCodePeriod row, got %+v", sec.Succeeded)
+	}
+}
+
 // --- helpers ---
 
 func findSection(s *MigrationSummary, name string) *Section {

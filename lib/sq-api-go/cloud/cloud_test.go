@@ -1235,6 +1235,58 @@ func TestOrganizationsLookupIDNotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestOrganizationsUpdateLeakPeriod pins the contract used by issue #136:
+// PATCH /organizations/{id} on api.sonarcloud.io with a JSON body
+// carrying defaultLeakPeriodType and defaultLeakPeriod. The body must
+// include ONLY the fields the caller set — sending name, description,
+// etc. as their zero values would silently overwrite them.
+func TestOrganizationsUpdateLeakPeriod(t *testing.T) {
+	var (
+		gotMethod string
+		gotPath   string
+		gotBody   map[string]any
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/organizations/organizations/", func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	})
+	cc := newTestCloud(t, mux)
+
+	days := "30"
+	dtype := "days"
+	err := cc.Organizations.UpdateOrganization(context.Background(), "uuid-1",
+		cloud.UpdateOrganizationParams{
+			DefaultLeakPeriod:     &days,
+			DefaultLeakPeriodType: &dtype,
+		})
+	require.NoError(t, err)
+	assert.Equal(t, http.MethodPatch, gotMethod)
+	assert.Equal(t, "/organizations/organizations/uuid-1", gotPath)
+	assert.Equal(t, "30", gotBody["defaultLeakPeriod"])
+	assert.Equal(t, "days", gotBody["defaultLeakPeriodType"])
+	// Untouched fields must be absent — the PATCH is supposed to be
+	// minimal so it doesn't clobber name/description/etc.
+	for _, untouched := range []string{"name", "description", "url", "avatar",
+		"newProjectPrivate", "onlyPrivateProjects"} {
+		if _, present := gotBody[untouched]; present {
+			t.Errorf("body must not include unset field %q, got %v", untouched, gotBody[untouched])
+		}
+	}
+}
+
+func TestOrganizationsUpdateRequiresID(t *testing.T) {
+	mux := http.NewServeMux()
+	cc := newTestCloud(t, mux)
+	err := cc.Organizations.UpdateOrganization(context.Background(), "",
+		cloud.UpdateOrganizationParams{})
+	require.Error(t, err)
+}
+
 // --- DOP ---
 
 func TestDOPCreateProjectBinding(t *testing.T) {

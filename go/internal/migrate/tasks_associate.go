@@ -50,6 +50,15 @@ func associateTasks() []TaskDef {
 			Run:          runSetNewCodePeriods,
 		},
 		{
+			// Propagates SonarQube Server's platform-wide new-code-period
+			// default to every SonarQube Cloud org's org-level default
+			// (issue #136). Depends on the org mapping for the fan-out
+			// target list.
+			Name:         "setGlobalNewCodePeriod",
+			Dependencies: []string{"generateOrganizationMappings"},
+			Run:          runSetGlobalNewCodePeriod,
+		},
+		{
 			// Migrates non-default SQS global settings to every SQC org
 			// in scope. Depends on the org mapping plus both halves of
 			// the SQS settings extract (values + definitions, the latter
@@ -502,6 +511,166 @@ var sqcNewCodeType = map[string]string{
 	"PREVIOUS_VERSION":  "previous_version",
 	"REFERENCE_BRANCH":  "reference_branch",
 	"SPECIFIC_ANALYSIS": "specific_analysis",
+}
+
+// runSetGlobalNewCodePeriod propagates SonarQube Server's platform-wide
+// new-code-period default to every SonarQube Cloud organization
+// (issue #136).
+//
+// SonarCloud exposes the org-level NCD default through the
+// Enterprise API: PATCH /organizations/{organizationId} on
+// api.sonarcloud.io, with body { "defaultLeakPeriodType": "days",
+// "defaultLeakPeriod": "30" }. The other endpoints we tried —
+// /api/settings/set with sonar.leak.period.type and
+// /api/new_code_periods/set?organization=<key> — both 400 with
+// "can't be set at organization level" on current SonarCloud.
+//
+// The task therefore:
+//
+//  1. Looks up the org UUID for each migration-scope SQC org key
+//     (regular sonarcloud.io base — /api/organizations/search).
+//  2. PATCHes /organizations/{uuid} on the api.sonarcloud.io base
+//     with defaultLeakPeriodType + defaultLeakPeriod set.
+//
+// PREVIOUS_VERSION is SQC's own default, so the task no-ops in that
+// case to avoid useless API calls (issue #196 principle).
+func runSetGlobalNewCodePeriod(ctx context.Context, e *Executor) error {
+	ncdItems, err := readExtractItems(e, "getGlobalNewCodePeriod")
+	if err != nil {
+		return fmt.Errorf("setGlobalNewCodePeriod: reading getGlobalNewCodePeriod: %w", err)
+	}
+	if len(ncdItems) == 0 {
+		e.Logger.Info("setGlobalNewCodePeriod: no global NCD extracted, nothing to migrate")
+		return nil
+	}
+	src := ncdItems[0].Data
+	sqsType := extractField(src, "type")
+	if sqsType == "" {
+		e.Logger.Info("setGlobalNewCodePeriod: SQS global NCD has no type, skipping")
+		return nil
+	}
+	if sqsType == "DAYS" {
+		sqsType = "NUMBER_OF_DAYS"
+	}
+	sqcType, mapped := sqcNewCodeType[sqsType]
+	if !mapped {
+		e.Logger.Warn("setGlobalNewCodePeriod: unmapped SQS NCD type, skipping",
+			"source_type", sqsType)
+		return nil
+	}
+	// Note: we do NOT short-circuit PREVIOUS_VERSION. The target SQC
+	// org might already be at a non-default value (e.g. an operator
+	// manually set "32 days" earlier); skipping would leave that
+	// stale value in place. We always PATCH.
+	value := extractAnyStr(src, "value")
+	// SonarCloud's PATCH /organizations/organizations/{key} validates
+	// the (defaultLeakPeriodType, defaultLeakPeriod) pair and rejects
+	// previous_version with an empty defaultLeakPeriod
+	// ("Invalid default leak period for type PREVIOUS_VERSION"). The
+	// UI sends "previous_version" as the value too — mirror that.
+	if sqcType == "previous_version" {
+		value = "previous_version"
+	}
+
+	orgItems, _ := e.Store.ReadAll("generateOrganizationMappings")
+	seen := make(map[string]struct{})
+	counter := NewTaskCounter("setGlobalNewCodePeriod")
+
+	// Build per-org outcomes so the report's Global Settings section
+	// can render one row per (NCD, org) just like every other global
+	// setting (issue #136 follow-up). The schema matches
+	// setGlobalSettings's globalSettingResult; collectGlobalSettings
+	// reads both tasks' outputs into the same Section.
+	var outcomes []orgOutcome
+	ncdSummary := "defaultLeakPeriodType=" + sqcType
+	if value != "" {
+		ncdSummary += ", defaultLeakPeriod=" + value
+	}
+
+	for _, o := range orgItems {
+		orgKey := extractField(o, "sonarcloud_org_key")
+		if shouldSkipOrg(orgKey) {
+			continue
+		}
+		if _, dup := seen[orgKey]; dup {
+			continue
+		}
+		seen[orgKey] = struct{}{}
+
+		// Resolve the org's current name. SonarCloud's PATCH
+		// endpoint requires the name field in the body even when
+		// it's not changing — sending only defaultLeakPeriod fields
+		// without name has been observed to be rejected. The regular
+		// sonarcloud.io /api/organizations/search returns name (it
+		// does NOT return the UUID, which is why we don't bother
+		// with LookupID).
+		orgName := orgKey // fallback if the lookup misses
+		if orgs, err := e.Cloud.Organizations.Search(ctx, orgKey); err != nil {
+			e.Logger.Warn("setGlobalNewCodePeriod: org name lookup failed, using key as name",
+				"org", orgKey, "err", err)
+		} else {
+			for _, o := range orgs {
+				if o.Key == orgKey && o.Name != "" {
+					orgName = o.Name
+					break
+				}
+			}
+		}
+
+		// PATCH /organizations/organizations/{key} on api.sonarcloud.io.
+		// Pointer-based params: only the three fields we set end up
+		// in the body, so SonarCloud keeps everything else (url,
+		// avatar, description, ...) unchanged.
+		e.Logger.Debug("setGlobalNewCodePeriod: PATCH /organizations/organizations/{key}",
+			"org", orgKey, "name", orgName,
+			"defaultLeakPeriodType", sqcType, "defaultLeakPeriod", value,
+			"source_type", sqsType)
+		// Always include defaultLeakPeriod (even when empty) so SQC
+		// explicitly clears any previous value when the type is
+		// previous_version. Pointer-to-empty-string sends
+		// `"defaultLeakPeriod":""` in the JSON; nil omits the field
+		// entirely. We want the former.
+		params := cloud.UpdateOrganizationParams{
+			Name:                  &orgName,
+			DefaultLeakPeriodType: &sqcType,
+			DefaultLeakPeriod:     &value,
+		}
+		if err := e.CloudAPI.Organizations.UpdateOrganization(ctx, orgKey, params); err != nil {
+			counter.Fail()
+			logAPIWarn(e.Logger, "setGlobalNewCodePeriod failed", err,
+				"org", orgKey, "type", sqcType)
+			outcomes = append(outcomes, orgOutcome{
+				Org: orgKey, Status: outcomeFailed, Reason: apiErrMessage(err),
+				Detail: "Failed: " + apiErrMessage(err),
+			})
+			continue
+		}
+		counter.Success()
+		outcomes = append(outcomes, orgOutcome{
+			Org: orgKey, Status: outcomeApplied,
+			Detail: "Applied (" + ncdSummary + ")",
+		})
+	}
+	counter.LogSummary(e.Logger)
+
+	// Write a single record describing the migration so the report
+	// section picks it up. Using key="newCodePeriod" — a synthetic
+	// pseudo-setting-key — makes the row distinct from real settings
+	// like sonar.exclusions in the Section's Name column.
+	if len(outcomes) > 0 {
+		w, err := e.Store.Writer("setGlobalNewCodePeriod")
+		if err != nil {
+			return err
+		}
+		rec := globalSettingResult{
+			Key:      "newCodePeriod",
+			Value:    value,
+			Outcomes: outcomes,
+		}
+		b, _ := json.Marshal(rec)
+		_ = w.WriteOne(b)
+	}
+	return nil
 }
 
 func runSetProjectTags(ctx context.Context, e *Executor) error {

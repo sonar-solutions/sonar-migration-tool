@@ -22,3 +22,23 @@ func (n *NewCodeClient) List(ctx context.Context, projectKey string) ([]types.Ne
 	}
 	return result.NewCodePeriods, nil
 }
+
+// Show returns the new code period definition for a (project, branch).
+// When both projectKey and branchKey are empty, SonarQube Server
+// returns the platform-global default — that's the form the migration
+// tool uses to discover the global NCD it should propagate to every
+// SonarQube Cloud organization (issue #136).
+func (n *NewCodeClient) Show(ctx context.Context, projectKey, branchKey string) (*types.NewCodePeriod, error) {
+	params := url.Values{}
+	if projectKey != "" {
+		params.Set("project", projectKey)
+	}
+	if branchKey != "" {
+		params.Set("branch", branchKey)
+	}
+	var ncd types.NewCodePeriod
+	if err := n.get(ctx, "api/new_code_periods/show", params, &ncd); err != nil {
+		return nil, err
+	}
+	return &ncd, nil
+}

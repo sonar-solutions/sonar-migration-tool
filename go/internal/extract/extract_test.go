@@ -303,6 +303,14 @@ func newMockServer() *httptest.Server {
 		})
 	})
 
+	mux.HandleFunc("GET /api/new_code_periods/show", func(w http.ResponseWriter, r *http.Request) {
+		// global form (no project, no branch) — used by issue #136
+		// extract to surface the SQS platform-wide NCD default.
+		json.NewEncoder(w).Encode(map[string]any{
+			"type": "PREVIOUS_VERSION",
+		})
+	})
+
 	mux.HandleFunc("GET /api/components/search", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"paging":     map[string]any{"total": 0},
@@ -397,7 +405,7 @@ func TestRunExtractFull(t *testing.T) {
 		"getBranches", "getProjectPullRequests",
 		"getProjectIssues", "getAcceptedIssues", "getSafeHotspots",
 		"getProjectIssueTypes", "getProjectFixedIssueTypes", "getProjectRecentIssueTypes",
-		"getNewCodePeriods", "getProjectAnalyses", "getProjectTasks",
+		"getNewCodePeriods", "getGlobalNewCodePeriod", "getProjectAnalyses", "getProjectTasks",
 		// Per-profile tasks
 		"getProfileBackups", "getActiveProfileRules",
 		// getDeactivatedProfileRules depends on parentKey being non-null — "Custom" profile has it

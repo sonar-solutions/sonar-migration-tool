@@ -575,6 +575,42 @@ func TestNewCodeList(t *testing.T) {
 	assert.Equal(t, "main", periods[0].BranchKey)
 }
 
+// Show is used by the migration tool (issue #136) to read SonarQube
+// Server's global new-code-period definition — passing empty project
+// and empty branch returns the platform-wide default which then gets
+// applied as the default to every SonarQube Cloud org.
+func TestNewCodeShowGlobal(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/new_code_periods/show", func(w http.ResponseWriter, r *http.Request) {
+		// Global form: NEITHER project NOR branch should be present.
+		assert.Empty(t, r.URL.Query().Get("project"))
+		assert.Empty(t, r.URL.Query().Get("branch"))
+		writeJSON(w, types.NewCodePeriod{Type: "NUMBER_OF_DAYS", Value: "30"})
+	})
+	sc := newTestServer(t, mux)
+
+	ncd, err := sc.NewCode.Show(context.Background(), "", "")
+	require.NoError(t, err)
+	require.NotNil(t, ncd)
+	assert.Equal(t, "NUMBER_OF_DAYS", ncd.Type)
+	assert.Equal(t, "30", ncd.Value)
+}
+
+func TestNewCodeShowProjectBranch(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/new_code_periods/show", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "myproj", r.URL.Query().Get("project"))
+		assert.Equal(t, "release", r.URL.Query().Get("branch"))
+		writeJSON(w, types.NewCodePeriod{Type: "REFERENCE_BRANCH", Value: "main"})
+	})
+	sc := newTestServer(t, mux)
+
+	ncd, err := sc.NewCode.Show(context.Background(), "myproj", "release")
+	require.NoError(t, err)
+	assert.Equal(t, "REFERENCE_BRANCH", ncd.Type)
+	assert.Equal(t, "main", ncd.Value)
+}
+
 func TestNewCodeListError(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/new_code_periods/list", func(w http.ResponseWriter, r *http.Request) {
