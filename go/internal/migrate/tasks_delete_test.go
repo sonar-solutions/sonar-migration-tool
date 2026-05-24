@@ -392,6 +392,157 @@ func TestRunResetDefaultGatesSkipsWhenAlreadyDefault(t *testing.T) {
 	}
 }
 
+// TestRunResetDefaultProfilesPerLanguage verifies the task lists the
+// org's profiles via /api/qualityprofiles/search, identifies every
+// language whose current default is non-built-in, and posts
+// /api/qualityprofiles/set_default with the built-in for that
+// language. Defaults are per-language on SonarCloud, so the task
+// must dispatch one set_default call per language that needs
+// restoring. Issue #214.
+func TestRunResetDefaultProfilesPerLanguage(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		setDefault  []map[string]string
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/qualityprofiles/search", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"profiles": []map[string]any{
+				// Java — built-in present, custom is current default. Needs restore.
+				{"key": "j1", "name": "Sonar way", "language": "java", "isBuiltIn": true, "isDefault": false},
+				{"key": "j2", "name": "Custom Java", "language": "java", "isBuiltIn": false, "isDefault": true},
+				// Python — built-in already default. No-op for this language.
+				{"key": "p1", "name": "Sonar way", "language": "py", "isBuiltIn": true, "isDefault": true},
+				{"key": "p2", "name": "Custom Py", "language": "py", "isBuiltIn": false, "isDefault": false},
+				// JS — built-in present, custom is current default. Needs restore.
+				{"key": "js1", "name": "Sonar way", "language": "js", "isBuiltIn": true, "isDefault": false},
+				{"key": "js2", "name": "Custom JS", "language": "js", "isBuiltIn": false, "isDefault": true},
+			},
+		})
+	})
+	mux.HandleFunc("POST /api/qualityprofiles/set_default", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		setDefault = append(setDefault, map[string]string{
+			"language":       r.FormValue("language"),
+			"qualityProfile": r.FormValue("qualityProfile"),
+			"organization":   r.FormValue("organization"),
+		})
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cloudSrv := httptest.NewServer(mux)
+	defer cloudSrv.Close()
+
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	setupExtractData(dir)
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+
+	w, _ := e.Store.Writer("generateOrganizationMappings")
+	b, _ := json.Marshal(map[string]any{"sonarcloud_org_key": testCloudOrg})
+	w.WriteOne(b)
+
+	if err := runResetDefaultProfiles(context.Background(), e); err != nil {
+		t.Fatalf("runResetDefaultProfiles: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(setDefault) != 2 {
+		t.Fatalf("expected 2 set_default calls (java + js), got %d: %v", len(setDefault), setDefault)
+	}
+	// Build a language -> profile map to assert without depending on call order.
+	got := map[string]string{}
+	for _, call := range setDefault {
+		got[call["language"]] = call["qualityProfile"]
+		if call["organization"] != testCloudOrg {
+			t.Errorf("set_default organization: got %q want %q", call["organization"], testCloudOrg)
+		}
+	}
+	if got["java"] != "Sonar way" {
+		t.Errorf("java default: got %q want \"Sonar way\"", got["java"])
+	}
+	if got["js"] != "Sonar way" {
+		t.Errorf("js default: got %q want \"Sonar way\"", got["js"])
+	}
+	if _, restored := got["py"]; restored {
+		t.Errorf("py must NOT be restored: built-in is already default")
+	}
+}
+
+// TestRunDeleteProfilesDeletesOnlyNonBuiltIn confirms the rewritten
+// deleteProfiles enumerates via search and deletes every non-built-in
+// profile (regardless of whether the migration created it), and
+// never touches a built-in. Issue #214.
+func TestRunDeleteProfilesDeletesOnlyNonBuiltIn(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		deleted  []map[string]string
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/qualityprofiles/search", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"profiles": []map[string]any{
+				{"key": "k1", "name": "Sonar way", "language": "java", "isBuiltIn": true, "isDefault": true},
+				{"key": "k2", "name": "Custom Java", "language": "java", "isBuiltIn": false, "isDefault": false},
+				{"key": "k3", "name": "Admin Java", "language": "java", "isBuiltIn": false, "isDefault": false},
+				{"key": "k4", "name": "Sonar way", "language": "py", "isBuiltIn": true, "isDefault": true},
+			},
+		})
+	})
+	mux.HandleFunc("POST /api/qualityprofiles/delete", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		deleted = append(deleted, map[string]string{
+			"language":       r.FormValue("language"),
+			"qualityProfile": r.FormValue("qualityProfile"),
+		})
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cloudSrv := httptest.NewServer(mux)
+	defer cloudSrv.Close()
+
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	setupExtractData(dir)
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+
+	w, _ := e.Store.Writer("generateOrganizationMappings")
+	b, _ := json.Marshal(map[string]any{"sonarcloud_org_key": testCloudOrg})
+	w.WriteOne(b)
+
+	if err := runDeleteProfiles(context.Background(), e); err != nil {
+		t.Fatalf("runDeleteProfiles: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(deleted) != 2 {
+		t.Fatalf("expected 2 deletes (Custom Java + Admin Java), got %d: %v", len(deleted), deleted)
+	}
+	deletedNames := map[string]bool{}
+	for _, d := range deleted {
+		deletedNames[d["qualityProfile"]] = true
+		if d["language"] != "java" {
+			t.Errorf("unexpected language %q in delete: %v", d["language"], d)
+		}
+	}
+	if !deletedNames["Custom Java"] || !deletedNames["Admin Java"] {
+		t.Errorf("expected Custom Java + Admin Java both deleted, got %v", deletedNames)
+	}
+	if deletedNames["Sonar way"] {
+		t.Error("built-in \"Sonar way\" must never be deleted")
+	}
+}
+
 // TestRunResetGlobalSettingsAllInherited verifies that when an org has
 // no customized settings (everything inherited), the task still
 // succeeds and does NOT call POST /api/settings/reset (which would 400

@@ -25,8 +25,25 @@ func isBuiltInGate(g types.QualityGate) bool {
 	if g.IsBuiltIn {
 		return true
 	}
-	name := strings.ToLower(strings.TrimSpace(g.Name))
-	return name == "sonar way" || name == "sonar way (built-in)"
+	return matchesSonarWayName(g.Name)
+}
+
+// isBuiltInProfile is the profile analogue of isBuiltInGate. SonarCloud
+// reports built-in language profiles with IsBuiltIn=true; the name
+// fallback covers responses that omit the flag.
+func isBuiltInProfile(p types.QualityProfile) bool {
+	if p.IsBuiltIn {
+		return true
+	}
+	return matchesSonarWayName(p.Name)
+}
+
+// matchesSonarWayName performs the case-insensitive, trimmed match
+// against the canonical built-in name variants. Centralised so the
+// gate and profile helpers stay in sync.
+func matchesSonarWayName(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == "sonar way" || n == "sonar way (built-in)"
 }
 
 // deleteTasks returns tasks for deleting/resetting entities in Cloud.
@@ -40,8 +57,15 @@ func deleteTasks() []TaskDef {
 			Run:          runDeleteProjects,
 		},
 		{
-			Name:         "deleteProfiles",
-			Dependencies: []string{"createProfiles"},
+			Name: "deleteProfiles",
+			// deleteProfiles enumerates the org's profiles via the
+			// SonarCloud API rather than reading createProfiles'
+			// output — issue #214 requires deleting EVERY non-built-in
+			// profile, not just those the migration created.
+			// resetDefaultProfiles is pinned first so the built-in is
+			// the per-language default before any delete call (SQC
+			// refuses to delete a language's current default profile).
+			Dependencies: []string{"generateOrganizationMappings", "resetDefaultProfiles"},
 			Run:          runDeleteProfiles,
 		},
 		{
@@ -73,8 +97,14 @@ func deleteTasks() []TaskDef {
 			Run:          runDeletePortfolios,
 		},
 		{
+			// Restores the built-in "Sonar way" as each language's
+			// default profile before deleteProfiles runs. SonarCloud
+			// rejects /api/qualityprofiles/delete on whichever profile
+			// is the current per-language default, so without this
+			// step the profile that migration (or an admin) promoted
+			// to default survives reset. Issue #214.
 			Name:         "resetDefaultProfiles",
-			Dependencies: []string{"setDefaultProfiles"},
+			Dependencies: []string{"generateOrganizationMappings"},
 			Run:          runResetDefaultProfiles,
 		},
 		{
@@ -128,22 +158,43 @@ func runDeleteProjects(ctx context.Context, e *Executor) error {
 	return err
 }
 
+// runDeleteProfiles enumerates every quality profile in each mapped
+// org via /api/qualityprofiles/search and deletes the non-built-in
+// ones. Issue #214 requires reset to delete EVERY non-built-in
+// profile, not just those the migration created — including profiles
+// an admin added manually. resetDefaultProfiles is a dependency, so
+// by the time this runs the built-in is the per-language default and
+// the previously-default custom profile is deletable.
 func runDeleteProfiles(ctx context.Context, e *Executor) error {
 	counter := NewTaskCounter("deleteProfiles")
-	err := forEachMigrateItemFiltered(ctx, e, "deleteProfiles", "createProfiles",
-		func(item json.RawMessage) bool {
-			return !extractBool(item, "is_default")
-		},
+	err := forEachMigrateItem(ctx, e, "deleteProfiles", "generateOrganizationMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
-			name := extractField(item, "name")
-			lang := extractField(item, "language")
-
-			err := e.Cloud.QualityProfiles.Delete(ctx, lang, name, orgKey)
+			if shouldSkipOrg(orgKey) {
+				return nil
+			}
+			profiles, err := e.Cloud.QualityProfiles.Search(ctx, orgKey)
 			if err != nil {
 				counter.Fail()
-				logAPIWarn(e.Logger, "deleteProfiles failed", err, "name", name)
-			} else {
+				logAPIWarn(e.Logger, "deleteProfiles: listing profiles failed", err, "org", orgKey)
+				return nil
+			}
+			e.Logger.Info("deleteProfiles: listed profiles",
+				"org", orgKey, "count", len(profiles), "summary", summariseProfiles(profiles))
+			for _, p := range profiles {
+				if isBuiltInProfile(p) {
+					e.Logger.Info("deleteProfiles: keeping built-in profile",
+						"org", orgKey, "profile", p.Name, "language", p.Language)
+					continue
+				}
+				e.Logger.Info("deleteProfiles: deleting non-built-in profile",
+					"org", orgKey, "profile", p.Name, "language", p.Language, "isDefault", p.IsDefault)
+				if err := e.Cloud.QualityProfiles.Delete(ctx, p.Language, p.Name, orgKey); err != nil {
+					counter.Fail()
+					logAPIWarn(e.Logger, "deleteProfiles failed", err,
+						"profile", p.Name, "language", p.Language, "org", orgKey, "isDefault", p.IsDefault)
+					continue
+				}
 				counter.Success()
 			}
 			return nil
@@ -314,10 +365,87 @@ func runResetGlobalSettings(ctx context.Context, e *Executor) error {
 	return err
 }
 
-func runResetDefaultProfiles(_ context.Context, e *Executor) error {
-	// No-op: Cloud resets defaults when profiles are deleted.
-	w, _ := e.Store.Writer("resetDefaultProfiles")
-	return w.WriteChunk(nil)
+// runResetDefaultProfiles restores the built-in "Sonar way" profile
+// as each language's default in every mapped org, so deleteProfiles
+// can subsequently delete the previously-default custom profile.
+// SonarCloud rejects /api/qualityprofiles/delete on whichever profile
+// is the current default for a language; without this step the
+// migration-promoted custom default profile survives reset.
+// Issue #214.
+//
+// Defaults are per-language. The task groups the org's profiles by
+// language, finds the built-in for each language that has a
+// non-built-in default, and posts /api/qualityprofiles/set_default
+// for that language + built-in profile name.
+func runResetDefaultProfiles(ctx context.Context, e *Executor) error {
+	counter := NewTaskCounter("resetDefaultProfiles")
+	err := forEachMigrateItem(ctx, e, "resetDefaultProfiles", "generateOrganizationMappings",
+		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
+			orgKey := extractField(item, "sonarcloud_org_key")
+			if shouldSkipOrg(orgKey) {
+				return nil
+			}
+			profiles, err := e.Cloud.QualityProfiles.Search(ctx, orgKey)
+			if err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "resetDefaultProfiles: listing profiles failed", err, "org", orgKey)
+				return nil
+			}
+			e.Logger.Info("resetDefaultProfiles: listed profiles",
+				"org", orgKey, "count", len(profiles), "summary", summariseProfiles(profiles))
+
+			// Languages whose current default is non-built-in.
+			needsRestore := make(map[string]bool)
+			// Built-in profile per language (first one wins).
+			builtInByLang := make(map[string]types.QualityProfile)
+			for _, p := range profiles {
+				if p.Language == "" {
+					continue
+				}
+				if isBuiltInProfile(p) {
+					if _, seen := builtInByLang[p.Language]; !seen {
+						builtInByLang[p.Language] = p
+					}
+				}
+				if p.IsDefault && !isBuiltInProfile(p) {
+					needsRestore[p.Language] = true
+				}
+			}
+
+			for lang := range needsRestore {
+				bi, ok := builtInByLang[lang]
+				if !ok {
+					e.Logger.Warn("resetDefaultProfiles: no built-in profile found for language; deleteProfiles may fail to delete the current default",
+						"org", orgKey, "language", lang)
+					counter.Fail()
+					continue
+				}
+				e.Logger.Info("resetDefaultProfiles: promoting built-in to default",
+					"org", orgKey, "language", lang, "profile", bi.Name)
+				if err := e.Cloud.QualityProfiles.SetDefault(ctx, lang, bi.Name, orgKey); err != nil {
+					counter.Fail()
+					logAPIWarn(e.Logger, "resetDefaultProfiles: set_default failed", err,
+						"org", orgKey, "language", lang, "profile", bi.Name)
+					continue
+				}
+				counter.Success()
+			}
+			return nil
+		})
+	counter.LogSummary(e.Logger)
+	return err
+}
+
+// summariseProfiles renders a compact, log-friendly summary of an
+// org's profiles. Mirrors summariseGates so operators get the same
+// shape across the gate and profile reset paths.
+func summariseProfiles(profiles []types.QualityProfile) string {
+	parts := make([]string, 0, len(profiles))
+	for _, p := range profiles {
+		parts = append(parts, fmt.Sprintf("%q [%s] (builtIn=%t, default=%t)",
+			p.Name, p.Language, p.IsBuiltIn, p.IsDefault))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // runResetDefaultGates restores the built-in "Sonar way" as each
