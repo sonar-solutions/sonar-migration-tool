@@ -295,11 +295,11 @@ func TestRunSetGlobalNewCodePeriodNormalizesLegacyDaysAlias(t *testing.T) {
 }
 
 // TestRunSetNewCodePeriodsTranslatesAndSets verifies that runSetNewCodePeriods
-// posts the project-level new code definition via the SonarCloud
-// settings endpoint (POST /api/settings/set, key=sonar.leak.period)
-// using days as a raw integer string and previous_version as the
-// literal "previous_version", and that it skips per-branch overrides
-// and unsupported types.
+// posts the project-level new code definition to SonarCloud as two
+// /api/settings/set calls: first key=sonar.leak.period.type with
+// value="days"|"previous_version", and then (only for days)
+// key=sonar.leak.period with the integer value. It also skips
+// per-branch overrides and unsupported types.
 func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 	type call struct {
 		project, branch, settingKey, value string
@@ -385,34 +385,42 @@ func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	// Expect 2 calls — REFERENCE_BRANCH (unsupported), UNKNOWN_MODE
-	// (unmapped), and the per-branch NUMBER_OF_DAYS on feature-x must
-	// all be skipped.
-	if len(recorded) != 2 {
-		t.Fatalf("expected 2 calls, got %d: %+v", len(recorded), recorded)
+	// Four calls total — REFERENCE_BRANCH (unsupported), UNKNOWN_MODE
+	// (unmapped), and the per-branch NUMBER_OF_DAYS on feature-x are
+	// all skipped; the remaining migrated records each dispatch TWO
+	// /api/settings/set calls:
+	//   - proj-days: sonar.leak.period.type=days + sonar.leak.period=14
+	//   - proj-prev: sonar.leak.period.type=previous_version +
+	//                sonar.leak.period=previous_version
+	if len(recorded) != 4 {
+		t.Fatalf("expected 4 calls (2 per project), got %d: %+v", len(recorded), recorded)
 	}
-	sort.Slice(recorded, func(i, j int) bool { return recorded[i].project < recorded[j].project })
 
-	// Each call must go to /api/settings/set with key=sonar.leak.period
-	// (SonarCloud's project-level NCD setter — /api/new_code_periods
-	// /set does not exist on SQC). Days carries the raw integer;
-	// previous_version carries the literal string. The component is
-	// the cloud project key; no branch param (would be ignored by
-	// the settings endpoint anyway, but explicitly omitted to make
-	// intent clear).
-	want := []call{
-		{project: "org1_proj-days", branch: "", settingKey: "sonar.leak.period", value: "14"},
-		{project: "org1_proj-prev", branch: "", settingKey: "sonar.leak.period", value: "previous_version"},
-	}
-	for i, w := range want {
-		if recorded[i] != w {
-			t.Errorf("call %d: got %+v, want %+v", i, recorded[i], w)
-		}
-	}
+	byProject := map[string][]call{}
 	for _, c := range recorded {
-		if c.settingKey != "sonar.leak.period" {
-			t.Errorf("setting key must be sonar.leak.period, got %q", c.settingKey)
+		byProject[c.project] = append(byProject[c.project], c)
+	}
+
+	// Order matters: SonarCloud rejects sonar.leak.period.type when
+	// the existing sonar.leak.period value is inconsistent with the
+	// new type, so value goes first then type.
+	check := func(t *testing.T, project, wantValue, wantType string) {
+		t.Helper()
+		calls := byProject[project]
+		if len(calls) != 2 {
+			t.Fatalf("%s: expected 2 calls (value then type), got %d: %+v", project, len(calls), calls)
 		}
+		if calls[0].settingKey != "sonar.leak.period" || calls[0].value != wantValue {
+			t.Errorf("%s: first call must be sonar.leak.period=%q, got %+v", project, wantValue, calls[0])
+		}
+		if calls[1].settingKey != "sonar.leak.period.type" || calls[1].value != wantType {
+			t.Errorf("%s: second call must be sonar.leak.period.type=%q, got %+v", project, wantType, calls[1])
+		}
+	}
+	check(t, "org1_proj-days", "14", "days")
+	check(t, "org1_proj-prev", "previous_version", "previous_version")
+
+	for _, c := range recorded {
 		if c.branch != "" {
 			t.Errorf("branch param must be omitted, got %+v", c)
 		}

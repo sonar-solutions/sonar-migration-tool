@@ -528,22 +528,30 @@ func runSetNewCodePeriods(ctx context.Context, e *Executor) error {
 					"project", pm.CloudKey, "source_type", sqsType)
 				return nil
 			}
-			// SonarCloud exposes project-level NCD via the legacy
-			// sonar.leak.period setting (POST /api/settings/set with
-			// component=<projectKey>); the /api/new_code_periods/set
-			// endpoint that SonarQube Server uses does NOT exist on
-			// SonarCloud and would 404. Days takes the raw integer
-			// string as the value; previous_version takes the
-			// literal string "previous_version".
-			rawValue := extractAnyStr(item.Data, "value")
-			settingValue := rawValue
+			// SonarCloud sets the project-level new code definition via
+			// TWO settings on POST /api/settings/set (the legacy
+			// /api/new_code_periods/set endpoint that SonarQube Server
+			// uses does NOT exist on SonarCloud — calls 404).
+			//
+			// Order matters — sonar.leak.period must be set BEFORE
+			// sonar.leak.period.type, otherwise the type write rejects
+			// against a value SonarCloud considers inconsistent:
+			//
+			//   1. key=sonar.leak.period,
+			//      value=<n> for days | "previous_version" for previous_version
+			//   2. key=sonar.leak.period.type, value=days | previous_version
+			leakValue := extractAnyStr(item.Data, "value")
 			if sqcType == "previous_version" {
-				settingValue = "previous_version"
+				leakValue = "previous_version"
 			}
 			e.Logger.Debug("project api call: POST /api/settings/set (sonar.leak.period)",
-				"project", pm.CloudKey, "type", sqcType,
-				"value", settingValue, "source_type", sqsType)
-			err := e.Cloud.Settings.Set(ctx, pm.CloudKey, "sonar.leak.period", settingValue, "")
+				"project", pm.CloudKey, "value", leakValue, "source_type", sqsType)
+			err := e.Cloud.Settings.Set(ctx, pm.CloudKey, "sonar.leak.period", leakValue, "")
+			if err == nil {
+				e.Logger.Debug("project api call: POST /api/settings/set (sonar.leak.period.type)",
+					"project", pm.CloudKey, "type", sqcType)
+				err = e.Cloud.Settings.Set(ctx, pm.CloudKey, "sonar.leak.period.type", sqcType, "")
+			}
 			if err != nil {
 				counter.Fail()
 				logAPIWarn(e.Logger, "setNewCodePeriods failed", err,
