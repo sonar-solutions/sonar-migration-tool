@@ -972,6 +972,81 @@ func TestCollectSummaryMentionsUnmigratedApplications(t *testing.T) {
 	}
 }
 
+// TestCollectSummaryNCDLimitations is a regression for #134 + #135.
+// Seeds a getNewCodePeriods extract with:
+//
+//   - one inherited:true record → must be ignored (defaults aren't
+//     overrides).
+//   - one per-branch override (branchKey="feature-x" while the
+//     project's main branch is "main") → must count as a per-branch
+//     limitation (#134).
+//   - two project-main-branch records of type REFERENCE_BRANCH (one
+//     for projA, one for projB) → both projects must count as
+//     having an unsupported NCD type (#135).
+//   - one SPECIFIC_ANALYSIS record on a third project's main branch
+//     → counts as an unsupported NCD type project (#135).
+//   - one NUMBER_OF_DAYS record on a project's main branch → must
+//     NOT count (it's the supported case).
+func TestCollectSummaryNCDLimitations(t *testing.T) {
+	dir := t.TempDir()
+	runID := "run-ncd"
+	runDir := filepath.Join(dir, runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	extractDir := filepath.Join(dir, "extract-01")
+	writeExtractMeta(t, extractDir, "https://sq.example.com")
+	writeTaskJSONL(t, extractDir, "getNewCodePeriods", []map[string]any{
+		// Inherited default — must be ignored.
+		{"projectKey": "projA", "branchKey": "main", "type": "PREVIOUS_VERSION", "inherited": true},
+		// Per-branch override → #134.
+		{"projectKey": "projA", "branchKey": "feature-x", "type": "NUMBER_OF_DAYS", "value": "7"},
+		// Project main-branch unsupported types → #135 (two distinct projects).
+		{"projectKey": "projA", "branchKey": "main", "type": "REFERENCE_BRANCH", "value": "develop"},
+		{"projectKey": "projB", "branchKey": "main", "type": "REFERENCE_BRANCH", "value": "main"},
+		{"projectKey": "projC", "branchKey": "main", "type": "SPECIFIC_ANALYSIS", "value": "abc123"},
+		// Supported case — must NOT count.
+		{"projectKey": "projD", "branchKey": "main", "type": "NUMBER_OF_DAYS", "value": "30"},
+	})
+
+	// createProjects in the run directory carries the main_branch per
+	// project — collectLimitations consults it to decide which records
+	// are per-branch vs. project-main-branch.
+	writeTaskJSONL(t, runDir, "createProjects", []map[string]any{
+		{"key": "projA", "server_url": "https://sq.example.com", "main_branch": "main"},
+		{"key": "projB", "server_url": "https://sq.example.com", "main_branch": "main"},
+		{"key": "projC", "server_url": "https://sq.example.com", "main_branch": "main"},
+		{"key": "projD", "server_url": "https://sq.example.com", "main_branch": "main"},
+	})
+
+	summary, err := CollectSummary(runDir, dir)
+	if err != nil {
+		t.Fatalf("CollectSummary: %v", err)
+	}
+
+	var perBranch, unsupportedType string
+	for _, msg := range summary.Limitations {
+		if strings.Contains(msg, "per-branch new-code-definition") {
+			perBranch = msg
+		}
+		if strings.Contains(msg, "reference_branch or specific_analysis") {
+			unsupportedType = msg
+		}
+	}
+	if perBranch == "" {
+		t.Fatalf("expected per-branch NCD limitation bullet, got %v", summary.Limitations)
+	}
+	if !strings.Contains(perBranch, "1 branch-level") {
+		t.Errorf("per-branch bullet should mention 1 branch-level entry, got %q", perBranch)
+	}
+	if unsupportedType == "" {
+		t.Fatalf("expected unsupported-type NCD limitation bullet, got %v", summary.Limitations)
+	}
+	if !strings.Contains(unsupportedType, "3 project(s)") {
+		t.Errorf("unsupported-type bullet should mention 3 project(s) (projA, projB, projC), got %q", unsupportedType)
+	}
+}
+
 // When the SQS instance had no applications, the limitations list
 // must NOT include the applications entry — otherwise every report
 // would carry an irrelevant note.

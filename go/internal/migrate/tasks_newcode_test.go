@@ -332,8 +332,13 @@ func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 	dir := t.TempDir()
 	e := newTestExecutor(cloudSrv, apiSrv, dir)
 
-	// Three extract records covering each translated NCD type plus an
-	// unmapped one (UNKNOWN) which the task should skip with a warning.
+	// Five extract records exercising the four classes:
+	//   - NUMBER_OF_DAYS / PREVIOUS_VERSION on the main branch → applied.
+	//   - REFERENCE_BRANCH on the main branch → skipped (issue #135 —
+	//     unsupported at SQC project scope).
+	//   - UNKNOWN_MODE → skipped (unmapped).
+	//   - PREVIOUS_VERSION on a non-main branch → skipped (issue #134
+	//     — SQC has no per-branch NCD concept).
 	extractDir := filepath.Join(dir, "extract-01", "getNewCodePeriods")
 	if err := os.MkdirAll(extractDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -344,6 +349,7 @@ func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 		{"projectKey": "proj-prev", "branchKey": "main", "type": "PREVIOUS_VERSION", "value": nil},
 		{"projectKey": "proj-ref", "branchKey": "main", "type": "REFERENCE_BRANCH", "value": "develop"},
 		{"projectKey": "proj-unknown", "branchKey": "main", "type": "UNKNOWN_MODE"},
+		{"projectKey": "proj-days", "branchKey": "feature-x", "type": "NUMBER_OF_DAYS", "value": "7"},
 	} {
 		b, _ := json.Marshal(rec)
 		f.Write(b)
@@ -353,10 +359,10 @@ func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 
 	pw, _ := e.Store.Writer("createProjects")
 	for _, src := range []map[string]any{
-		{"key": "proj-days", "server_url": testServerURL, "sonarcloud_org_key": "org1", "cloud_project_key": "org1_proj-days"},
-		{"key": "proj-prev", "server_url": testServerURL, "sonarcloud_org_key": "org1", "cloud_project_key": "org1_proj-prev"},
-		{"key": "proj-ref", "server_url": testServerURL, "sonarcloud_org_key": "org1", "cloud_project_key": "org1_proj-ref"},
-		{"key": "proj-unknown", "server_url": testServerURL, "sonarcloud_org_key": "org1", "cloud_project_key": "org1_proj-unknown"},
+		{"key": "proj-days", "server_url": testServerURL, "sonarcloud_org_key": "org1", "cloud_project_key": "org1_proj-days", "main_branch": "main"},
+		{"key": "proj-prev", "server_url": testServerURL, "sonarcloud_org_key": "org1", "cloud_project_key": "org1_proj-prev", "main_branch": "main"},
+		{"key": "proj-ref", "server_url": testServerURL, "sonarcloud_org_key": "org1", "cloud_project_key": "org1_proj-ref", "main_branch": "main"},
+		{"key": "proj-unknown", "server_url": testServerURL, "sonarcloud_org_key": "org1", "cloud_project_key": "org1_proj-unknown", "main_branch": "main"},
 	} {
 		b, _ := json.Marshal(src)
 		pw.WriteOne(b)
@@ -368,20 +374,29 @@ func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	// Expect 3 calls — the UNKNOWN_MODE record should be skipped.
-	if len(recorded) != 3 {
-		t.Fatalf("expected 3 calls, got %d: %+v", len(recorded), recorded)
+	// Expect 2 calls — REFERENCE_BRANCH (unsupported), UNKNOWN_MODE
+	// (unmapped), and the per-branch NUMBER_OF_DAYS on feature-x must
+	// all be skipped.
+	if len(recorded) != 2 {
+		t.Fatalf("expected 2 calls, got %d: %+v", len(recorded), recorded)
 	}
 	sort.Slice(recorded, func(i, j int) bool { return recorded[i].project < recorded[j].project })
 
 	want := []call{
 		{project: "org1_proj-days", branch: "main", ncdType: "days", value: "14", org: "org1"},
 		{project: "org1_proj-prev", branch: "main", ncdType: "previous_version", value: "", org: "org1"},
-		{project: "org1_proj-ref", branch: "main", ncdType: "reference_branch", value: "develop", org: "org1"},
 	}
 	for i, w := range want {
 		if recorded[i] != w {
 			t.Errorf("call %d: got %+v, want %+v", i, recorded[i], w)
+		}
+	}
+	for _, c := range recorded {
+		if c.ncdType == "reference_branch" {
+			t.Errorf("REFERENCE_BRANCH must not be applied at project scope (issue #135), got %+v", c)
+		}
+		if c.branch == "feature-x" {
+			t.Errorf("per-branch NCD overrides must not be applied (issue #134), got %+v", c)
 		}
 	}
 }

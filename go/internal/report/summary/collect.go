@@ -48,25 +48,115 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 		RunID:       runID,
 		GeneratedAt: time.Now(),
 		Sections:    sections,
-		Limitations: collectLimitations(exportDir, extractMapping),
+		Limitations: collectLimitations(runDir, exportDir, extractMapping),
 	}, nil
 }
 
 // collectLimitations builds the free-text bullet list rendered in the
 // "Migration limitations" section at the end of the report (issue
-// #154). Today there's exactly one entry — SonarQube Server's
-// Applications feature has no SonarQube Cloud counterpart — and the
-// list only includes it when the SQS instance actually had
-// applications configured. More entries can be appended here as
-// other limitations are surfaced.
-func collectLimitations(exportDir string, mapping structure.ExtractMapping) []string {
+// #154). Each call appends a separate bullet:
+//
+//   - SonarQube Server's Applications feature has no SonarQube Cloud
+//     counterpart (#154).
+//   - Per-branch new-code-definition overrides — SonarQube Cloud has
+//     no per-branch NCD concept, so any branch-level override on SQS
+//     is dropped (#134).
+//   - Project new-code-definition types not supported on SonarQube
+//     Cloud — currently reference_branch and specific_analysis. The
+//     migrated project is left with the org default (#135).
+func collectLimitations(runDir, exportDir string, mapping structure.ExtractMapping) []string {
 	var out []string
 	if appCount := countExtractItems(exportDir, mapping, "getApplications"); appCount > 0 {
 		out = append(out,
 			fmt.Sprintf("Applications do not exist on SonarQube Cloud, %d SQS applications were not migrated.",
 				appCount))
 	}
+	out = append(out, collectNCDLimitations(runDir, exportDir, mapping)...)
 	return out
+}
+
+// collectNCDLimitations scans the getNewCodePeriods extract and
+// returns one bullet per category of NCD that cannot be migrated to
+// SonarQube Cloud — keyed by the migrate-side logic in
+// runSetNewCodePeriods so the report and the runtime agree on what
+// was actually skipped.
+func collectNCDLimitations(runDir, exportDir string, mapping structure.ExtractMapping) []string {
+	if mapping == nil {
+		return nil
+	}
+	items, err := structure.ReadExtractData(exportDir, mapping, "getNewCodePeriods")
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+
+	// Main branch per (serverURL, projectKey) — read from
+	// createProjects (the migrate-side authority). Falls back to
+	// "master" when the field is absent, matching runSetNewCodePeriods.
+	store := common.NewDataStore(runDir)
+	createdProjects, _ := store.ReadAll("createProjects")
+	mainBranchByKey := make(map[string]string, len(createdProjects))
+	for _, p := range createdProjects {
+		server := common.ExtractField(p, "server_url")
+		key := common.ExtractField(p, "key")
+		main := common.ExtractField(p, "main_branch")
+		if main == "" {
+			main = "master"
+		}
+		mainBranchByKey[server+key] = main
+	}
+
+	perBranch := 0
+	unsupportedTypeProjects := make(map[string]bool)
+	for _, item := range items {
+		// Inherited records are not explicit overrides — ignore.
+		var obj map[string]any
+		_ = json.Unmarshal(item.Data, &obj)
+		if inherited, _ := obj["inherited"].(bool); inherited {
+			continue
+		}
+		projectKey := common.ExtractField(item.Data, "projectKey")
+		branch := common.ExtractField(item.Data, "branchKey")
+		ncdType := common.ExtractField(item.Data, "type")
+
+		mainBranch := mainBranchByKey[item.ServerURL+projectKey]
+		if mainBranch == "" {
+			mainBranch = "master"
+		}
+
+		if branch != "" && branch != mainBranch {
+			perBranch++
+			continue
+		}
+		if _, supported := sqcNewCodeTypes[ncdType]; !supported {
+			unsupportedTypeProjects[item.ServerURL+projectKey] = true
+		}
+	}
+
+	var out []string
+	if perBranch > 0 {
+		out = append(out, fmt.Sprintf(
+			"SonarQube Cloud has no per-branch new-code-definition concept; "+
+				"%d branch-level new code definition(s) on SonarQube Server were not migrated.",
+			perBranch))
+	}
+	if len(unsupportedTypeProjects) > 0 {
+		out = append(out, fmt.Sprintf(
+			"SonarQube Cloud does not support the reference_branch or specific_analysis "+
+				"new-code-definition types; %d project(s) were migrated with the SonarQube "+
+				"Cloud organization default instead.",
+			len(unsupportedTypeProjects)))
+	}
+	return out
+}
+
+// sqcNewCodeTypes mirrors the migrate-side sqcNewCodeType map in
+// internal/migrate/tasks_associate.go. Keeping a local copy avoids a
+// cross-package import cycle (migrate already imports report/summary
+// indirectly via the binary). Update both maps together when SQC
+// adds a new supported type.
+var sqcNewCodeTypes = map[string]bool{
+	"NUMBER_OF_DAYS":   true,
+	"PREVIOUS_VERSION": true,
 }
 
 // countExtractItems returns the number of JSONL records the extract

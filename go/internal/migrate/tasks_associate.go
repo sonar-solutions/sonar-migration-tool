@@ -452,15 +452,46 @@ func applyProjectSetting(ctx context.Context, e *Executor, pm projectMapping, ra
 // projects and pre-existing ones (createProjects only sets the main-branch
 // NCD at creation time and skips that work entirely when the project
 // already exists).
+// runSetNewCodePeriods applies project new-code-definition overrides
+// extracted from SonarQube Server to SonarQube Cloud. Three classes
+// of extract records are intentionally skipped — collectLimitations
+// re-derives them from the same extract data and surfaces them as
+// bullets in the "Migration limitations" section of the PDF report:
+//
+//   1. inherited:true records reflect the inherited org/project
+//      default rather than an explicit override, so re-applying them
+//      would be redundant.
+//   2. Records whose branchKey is NOT the project's main branch
+//      describe a per-branch NCD override. SonarQube Cloud has no
+//      per-branch NCD concept (issue #134) — applying via
+//      /api/new_code_periods/set with branch=X would either error or
+//      set the WRONG scope, so we skip and let the limitation
+//      surface in the report.
+//   3. Records whose type is not in sqcNewCodeType (REFERENCE_BRANCH,
+//      SPECIFIC_ANALYSIS as of May 2026) describe a NCD type that
+//      SonarQube Cloud does not support at all (issue #135). The
+//      project is left with the org default; the limitation surfaces
+//      in the report.
 func runSetNewCodePeriods(ctx context.Context, e *Executor) error {
+	type projectInfo struct {
+		mapping    projectMapping
+		mainBranch string
+	}
 	projects, _ := e.Store.ReadAll("createProjects")
-	projectKeyMap := make(map[string]projectMapping)
+	projectKeyMap := make(map[string]projectInfo, len(projects))
 	for _, p := range projects {
 		serverURL := extractField(p, "server_url")
 		key := extractField(p, "key")
-		projectKeyMap[serverURL+key] = projectMapping{
-			CloudKey: extractField(p, "cloud_project_key"),
-			OrgKey:   extractField(p, "sonarcloud_org_key"),
+		main := extractField(p, "main_branch")
+		if main == "" {
+			main = "master"
+		}
+		projectKeyMap[serverURL+key] = projectInfo{
+			mapping: projectMapping{
+				CloudKey: extractField(p, "cloud_project_key"),
+				OrgKey:   extractField(p, "sonarcloud_org_key"),
+			},
+			mainBranch: main,
 		}
 	}
 
@@ -468,18 +499,32 @@ func runSetNewCodePeriods(ctx context.Context, e *Executor) error {
 	err := forEachExtractItem(ctx, e, "setNewCodePeriods", "getNewCodePeriods",
 		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			projectKey := extractField(item.Data, "projectKey")
-			pm, ok := projectKeyMap[item.ServerURL+projectKey]
-			if !ok || pm.CloudKey == "" {
+			info, ok := projectKeyMap[item.ServerURL+projectKey]
+			if !ok || info.mapping.CloudKey == "" {
 				return nil
 			}
-			sqsType := extractField(item.Data, "type")
-			sqcType, mapped := sqcNewCodeType[sqsType]
-			if !mapped {
-				e.Logger.Warn("setNewCodePeriods: unmapped source NCD type, skipping",
-					"project", pm.CloudKey, "source_type", sqsType)
+			pm := info.mapping
+			// (1) Skip inherited defaults — nothing explicit to apply.
+			if extractBool(item.Data, "inherited") {
 				return nil
 			}
 			branch := extractField(item.Data, "branchKey")
+			// (2) Skip per-branch NCD overrides — SQC has no per-branch
+			// NCD concept (issue #134). Reported as a limitation.
+			if branch != "" && branch != info.mainBranch {
+				e.Logger.Info("setNewCodePeriods: per-branch NCD override not migratable to SonarQube Cloud, skipping",
+					"project", pm.CloudKey, "branch", branch, "type", extractField(item.Data, "type"))
+				return nil
+			}
+			sqsType := extractField(item.Data, "type")
+			sqcType, mapped := sqcProjectNewCodeType[sqsType]
+			if !mapped {
+				// (3) Type not supported at project scope on SQC
+				// (issue #135). Project is left with the org default.
+				e.Logger.Info("setNewCodePeriods: NCD type not supported on SonarQube Cloud, skipping",
+					"project", pm.CloudKey, "source_type", sqsType)
+				return nil
+			}
 			value := extractAnyStr(item.Data, "value")
 			// previous_version must travel with an empty value; SQC rejects
 			// the call otherwise.
@@ -511,13 +556,29 @@ func runSetNewCodePeriods(ctx context.Context, e *Executor) error {
 	return err
 }
 
-// sqcNewCodeType maps the SonarQube Server NCD type enum to the equivalent
-// SonarQube Cloud "type" value accepted by /api/new_code_periods/set.
+// sqcNewCodeType maps the SonarQube Server NCD type enum to the
+// equivalent SonarQube Cloud "type" value accepted at ORG scope via
+// PATCH /organizations/organizations/{key} (issue #136). The
+// SonarCloud organization-default NCD does accept reference_branch
+// and specific_analysis. The PROJECT-scope endpoint
+// /api/new_code_periods/set does NOT — see sqcProjectNewCodeType.
 var sqcNewCodeType = map[string]string{
 	"NUMBER_OF_DAYS":    "days",
 	"PREVIOUS_VERSION":  "previous_version",
 	"REFERENCE_BRANCH":  "reference_branch",
 	"SPECIFIC_ANALYSIS": "specific_analysis",
+}
+
+// sqcProjectNewCodeType maps the NCD types accepted by SonarCloud's
+// PROJECT-scope /api/new_code_periods/set endpoint. As of May 2026
+// only NUMBER_OF_DAYS and PREVIOUS_VERSION are accepted at project
+// scope; REFERENCE_BRANCH and SPECIFIC_ANALYSIS are deliberately
+// omitted so setNewCodePeriods skips them and the limitation
+// surfaces in the PDF report (issue #135). collectNCDLimitations in
+// the summary package maintains a mirror of this set.
+var sqcProjectNewCodeType = map[string]string{
+	"NUMBER_OF_DAYS":   "days",
+	"PREVIOUS_VERSION": "previous_version",
 }
 
 // runSetGlobalNewCodePeriod propagates SonarQube Server's platform-wide
