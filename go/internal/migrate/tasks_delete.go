@@ -3,6 +3,7 @@ package migrate
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -16,11 +17,16 @@ import (
 const sonarWayGateName = "Sonar way"
 
 // isBuiltInGate reports whether a quality gate is the built-in
-// SonarCloud "Sonar way". Both the IsBuiltIn flag and the gate name
-// are consulted because the API has historically reported only one
-// or the other depending on org type.
+// SonarCloud "Sonar way". The IsBuiltIn flag is the source of truth
+// when present; the name fallback handles SonarCloud responses that
+// omit the flag and accepts the documented variants
+// ("Sonar way", "Sonar Way", "Sonar way (built-in)").
 func isBuiltInGate(g types.QualityGate) bool {
-	return g.IsBuiltIn || strings.EqualFold(g.Name, sonarWayGateName)
+	if g.IsBuiltIn {
+		return true
+	}
+	name := strings.ToLower(strings.TrimSpace(g.Name))
+	return name == "sonar way" || name == "sonar way (built-in)"
 }
 
 // deleteTasks returns tasks for deleting/resetting entities in Cloud.
@@ -167,16 +173,20 @@ func runDeleteGates(ctx context.Context, e *Executor) error {
 				logAPIWarn(e.Logger, "deleteGates: listing gates failed", err, "org", orgKey)
 				return nil
 			}
+			e.Logger.Info("deleteGates: listed gates",
+				"org", orgKey, "count", len(gates), "summary", summariseGates(gates))
 			for _, g := range gates {
 				if isBuiltInGate(g) {
+					e.Logger.Info("deleteGates: keeping built-in gate",
+						"org", orgKey, "gate", g.Name, "gate_id", g.ID)
 					continue
 				}
-				e.Logger.Debug("gate api call: POST /api/qualitygates/destroy",
-					"name", g.Name, "gate_id", strconv.Itoa(g.ID), "org", orgKey)
+				e.Logger.Info("deleteGates: destroying non-built-in gate",
+					"org", orgKey, "gate", g.Name, "gate_id", g.ID, "isDefault", g.IsDefault)
 				if err := e.Cloud.QualityGates.Destroy(ctx, g.ID, orgKey); err != nil {
 					counter.Fail()
 					logAPIWarn(e.Logger, "deleteGates failed", err,
-						"gate", g.Name, "gate_id", g.ID, "org", orgKey)
+						"gate", g.Name, "gate_id", g.ID, "org", orgKey, "isDefault", g.IsDefault)
 					continue
 				}
 				counter.Success()
@@ -330,12 +340,19 @@ func runResetDefaultGates(ctx context.Context, e *Executor) error {
 				logAPIWarn(e.Logger, "resetDefaultGates: listing gates failed", err, "org", orgKey)
 				return nil
 			}
+			e.Logger.Info("resetDefaultGates: listed gates",
+				"org", orgKey, "count", len(gates), "summary", summariseGates(gates))
+
 			var builtIn *int
+			var builtInName string
 			for i := range gates {
 				if isBuiltInGate(gates[i]) {
 					builtIn = &gates[i].ID
+					builtInName = gates[i].Name
 					if gates[i].IsDefault {
 						// Already default — nothing to do.
+						e.Logger.Info("resetDefaultGates: built-in is already default",
+							"org", orgKey, "gate", builtInName, "gate_id", *builtIn)
 						counter.Success()
 						return nil
 					}
@@ -343,16 +360,16 @@ func runResetDefaultGates(ctx context.Context, e *Executor) error {
 				}
 			}
 			if builtIn == nil {
-				e.Logger.Warn("resetDefaultGates: no built-in gate found, custom default may block deleteGates",
-					"org", orgKey)
+				e.Logger.Warn("resetDefaultGates: no built-in gate found in list response; deleteGates may fail to destroy the current default",
+					"org", orgKey, "gates_returned", summariseGates(gates))
 				counter.Fail()
 				return nil
 			}
-			e.Logger.Debug("gate api call: POST /api/qualitygates/set_as_default",
-				"org", orgKey, "gate_id", *builtIn)
+			e.Logger.Info("resetDefaultGates: promoting built-in to default",
+				"org", orgKey, "gate", builtInName, "gate_id", *builtIn)
 			if err := e.Cloud.QualityGates.SetDefault(ctx, *builtIn, orgKey); err != nil {
 				counter.Fail()
-				logAPIWarn(e.Logger, "resetDefaultGates: set_as_default failed", err, "org", orgKey)
+				logAPIWarn(e.Logger, "resetDefaultGates: set_as_default failed", err, "org", orgKey, "gate_id", *builtIn)
 				return nil
 			}
 			counter.Success()
@@ -360,6 +377,19 @@ func runResetDefaultGates(ctx context.Context, e *Executor) error {
 		})
 	counter.LogSummary(e.Logger)
 	return err
+}
+
+// summariseGates renders a compact, log-friendly summary of an org's
+// gates: "<name> (id=N, builtIn=B, default=D)" joined by ", ".
+// Used by reset's task logging so an operator can see exactly what
+// SonarCloud returned when something goes wrong.
+func summariseGates(gates []types.QualityGate) string {
+	parts := make([]string, 0, len(gates))
+	for _, g := range gates {
+		parts = append(parts, fmt.Sprintf("%q (id=%d, builtIn=%t, default=%t)",
+			g.Name, g.ID, g.IsBuiltIn, g.IsDefault))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func runResetPermissionTemplates(_ context.Context, e *Executor) error {
