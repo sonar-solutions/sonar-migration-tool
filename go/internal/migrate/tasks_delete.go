@@ -4,9 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 
+	"github.com/sonar-solutions/sq-api-go/types"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 )
+
+// sonarWayGateName is the canonical name of SonarCloud's built-in
+// quality gate. Used as a fallback alongside the IsBuiltIn flag in
+// case an API response omits the flag.
+const sonarWayGateName = "Sonar way"
+
+// isBuiltInGate reports whether a quality gate is the built-in
+// SonarCloud "Sonar way". Both the IsBuiltIn flag and the gate name
+// are consulted because the API has historically reported only one
+// or the other depending on org type.
+func isBuiltInGate(g types.QualityGate) bool {
+	return g.IsBuiltIn || strings.EqualFold(g.Name, sonarWayGateName)
+}
 
 // deleteTasks returns tasks for deleting/resetting entities in Cloud.
 func deleteTasks() []TaskDef {
@@ -25,11 +40,14 @@ func deleteTasks() []TaskDef {
 		},
 		{
 			Name: "deleteGates",
-			// resetDefaultGates restores the built-in Sonar way as the
-			// org's default gate; without that, the custom default
-			// can't be destroyed (SonarCloud rejects destroy on the
-			// current default). Issue #213.
-			Dependencies: []string{"createGates", "resetDefaultGates"},
+			// deleteGates enumerates the org's gates via the SonarCloud
+			// API rather than reading createGates' output — issue #213
+			// requires deleting EVERY non-built-in gate, not just the
+			// ones the migration created. resetDefaultGates is pinned
+			// first via the dependency so the built-in is the current
+			// default before any destroy call (SonarCloud refuses to
+			// destroy the current default).
+			Dependencies: []string{"generateOrganizationMappings", "resetDefaultGates"},
 			Run:          runDeleteGates,
 		},
 		{
@@ -128,22 +146,39 @@ func runDeleteProfiles(ctx context.Context, e *Executor) error {
 	return err
 }
 
+// runDeleteGates enumerates every quality gate in each mapped org via
+// /api/qualitygates/list and destroys the non-built-in ones. Issue
+// #213 requires reset to delete every non-built-in gate, not just
+// those the migration created — including any gates an admin added
+// manually. resetDefaultGates is a dependency, so by the time this
+// runs the built-in Sonar way is the org's default and the
+// previously-default custom gate is destroyable.
 func runDeleteGates(ctx context.Context, e *Executor) error {
 	counter := NewTaskCounter("deleteGates")
-	err := forEachMigrateItem(ctx, e, "deleteGates", "createGates",
+	err := forEachMigrateItem(ctx, e, "deleteGates", "generateOrganizationMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
-			gateIDStr := extractField(item, "cloud_gate_id")
-			gateName := extractField(item, "name")
-			gateID, _ := strconv.Atoi(gateIDStr)
-
-			e.Logger.Debug("gate api call: POST /api/qualitygates/destroy",
-				"name", gateName, "gate_id", gateIDStr, "org", orgKey)
-			err := e.Cloud.QualityGates.Destroy(ctx, gateID, orgKey)
+			if shouldSkipOrg(orgKey) {
+				return nil
+			}
+			gates, err := e.Cloud.QualityGates.List(ctx, orgKey)
 			if err != nil {
 				counter.Fail()
-				logAPIWarn(e.Logger, "deleteGates failed", err, "gate", gateIDStr)
-			} else {
+				logAPIWarn(e.Logger, "deleteGates: listing gates failed", err, "org", orgKey)
+				return nil
+			}
+			for _, g := range gates {
+				if isBuiltInGate(g) {
+					continue
+				}
+				e.Logger.Debug("gate api call: POST /api/qualitygates/destroy",
+					"name", g.Name, "gate_id", strconv.Itoa(g.ID), "org", orgKey)
+				if err := e.Cloud.QualityGates.Destroy(ctx, g.ID, orgKey); err != nil {
+					counter.Fail()
+					logAPIWarn(e.Logger, "deleteGates failed", err,
+						"gate", g.Name, "gate_id", g.ID, "org", orgKey)
+					continue
+				}
 				counter.Success()
 			}
 			return nil
@@ -297,7 +332,7 @@ func runResetDefaultGates(ctx context.Context, e *Executor) error {
 			}
 			var builtIn *int
 			for i := range gates {
-				if gates[i].IsBuiltIn {
+				if isBuiltInGate(gates[i]) {
 					builtIn = &gates[i].ID
 					if gates[i].IsDefault {
 						// Already default — nothing to do.

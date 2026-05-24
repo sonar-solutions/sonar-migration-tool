@@ -83,6 +83,118 @@ func TestRunResetGlobalSettings(t *testing.T) {
 	}
 }
 
+// TestRunDeleteGatesDestroysOnlyNonBuiltIn verifies that deleteGates
+// enumerates every gate in the org via /api/qualitygates/list and
+// posts /api/qualitygates/destroy for each gate whose IsBuiltIn flag
+// is false (or whose name isn't the canonical "Sonar way"). This is
+// the behaviour the rewritten task ships for issue #213 — previously
+// it iterated createGates output, so any gate the migration didn't
+// create (or any gate created post-migration by an admin) survived
+// reset.
+func TestRunDeleteGatesDestroysOnlyNonBuiltIn(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		destroyedID []string
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/qualitygates/list", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"default": "Sonar way",
+			"qualitygates": []map[string]any{
+				{"id": 1, "name": "Sonar way", "isBuiltIn": true, "isDefault": true},
+				{"id": 42, "name": "Custom Gate", "isBuiltIn": false, "isDefault": false},
+				{"id": 43, "name": "Admin-added Gate", "isBuiltIn": false, "isDefault": false},
+			},
+		})
+	})
+	mux.HandleFunc("POST /api/qualitygates/destroy", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		destroyedID = append(destroyedID, r.FormValue("id"))
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cloudSrv := httptest.NewServer(mux)
+	defer cloudSrv.Close()
+
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	setupExtractData(dir)
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+
+	w, _ := e.Store.Writer("generateOrganizationMappings")
+	b, _ := json.Marshal(map[string]any{"sonarcloud_org_key": testCloudOrg})
+	w.WriteOne(b)
+
+	if err := runDeleteGates(context.Background(), e); err != nil {
+		t.Fatalf("runDeleteGates: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"42", "43"}
+	if len(destroyedID) != len(want) {
+		t.Fatalf("destroyed: got %v (%d) want %v (%d) — built-in must NOT be destroyed",
+			destroyedID, len(destroyedID), want, len(want))
+	}
+	gotSet := map[string]bool{}
+	for _, id := range destroyedID {
+		gotSet[id] = true
+	}
+	for _, id := range want {
+		if !gotSet[id] {
+			t.Errorf("expected destroy id=%q, not seen in %v", id, destroyedID)
+		}
+	}
+	if gotSet["1"] {
+		t.Errorf("built-in gate (id=1) must never be destroyed")
+	}
+}
+
+// TestRunDeleteGatesBuiltInByName guards against the SonarCloud
+// response that lists a gate named "Sonar way" without setting
+// IsBuiltIn=true. The name fallback in isBuiltInGate must keep
+// deleteGates from destroying it.
+func TestRunDeleteGatesBuiltInByName(t *testing.T) {
+	destroyCalls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/qualitygates/list", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"qualitygates": []map[string]any{
+				// isBuiltIn omitted/false but name matches.
+				{"id": 1, "name": "Sonar way", "isBuiltIn": false, "isDefault": true},
+			},
+		})
+	})
+	mux.HandleFunc("POST /api/qualitygates/destroy", func(w http.ResponseWriter, r *http.Request) {
+		destroyCalls++
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cloudSrv := httptest.NewServer(mux)
+	defer cloudSrv.Close()
+
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	setupExtractData(dir)
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+
+	w, _ := e.Store.Writer("generateOrganizationMappings")
+	b, _ := json.Marshal(map[string]any{"sonarcloud_org_key": testCloudOrg})
+	w.WriteOne(b)
+
+	if err := runDeleteGates(context.Background(), e); err != nil {
+		t.Fatalf("runDeleteGates: %v", err)
+	}
+	if destroyCalls != 0 {
+		t.Errorf("destroy must NOT be called for a gate named \"Sonar way\"; got %d call(s)", destroyCalls)
+	}
+}
+
 // TestRunResetDefaultGates verifies that the task finds the built-in
 // "Sonar way" gate and posts /api/qualitygates/set_as_default with
 // its id, so a subsequent deleteGates call can destroy the previously
@@ -142,6 +254,50 @@ func TestRunResetDefaultGates(t *testing.T) {
 	}
 	if setDefaultOrg != testCloudOrg {
 		t.Errorf("set_as_default organization: got %q want %q", setDefaultOrg, testCloudOrg)
+	}
+}
+
+// TestRunResetDefaultGatesNameFallback exercises the name-based
+// fallback in isBuiltInGate. Some SonarCloud responses have shipped
+// without the isBuiltIn flag on the Sonar way gate; the task must
+// still find it by name so the custom default can be cleared.
+func TestRunResetDefaultGatesNameFallback(t *testing.T) {
+	setDefaultID := ""
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/qualitygates/list", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"default": "Custom Gate",
+			"qualitygates": []map[string]any{
+				// IsBuiltIn flag missing / false; only the name marks it.
+				{"id": 7, "name": "Sonar way", "isBuiltIn": false, "isDefault": false},
+				{"id": 99, "name": "Custom Gate", "isBuiltIn": false, "isDefault": true},
+			},
+		})
+	})
+	mux.HandleFunc("POST /api/qualitygates/set_as_default", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		setDefaultID = r.FormValue("id")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cloudSrv := httptest.NewServer(mux)
+	defer cloudSrv.Close()
+
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	setupExtractData(dir)
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+
+	w, _ := e.Store.Writer("generateOrganizationMappings")
+	b, _ := json.Marshal(map[string]any{"sonarcloud_org_key": testCloudOrg})
+	w.WriteOne(b)
+
+	if err := runResetDefaultGates(context.Background(), e); err != nil {
+		t.Fatalf("runResetDefaultGates: %v", err)
+	}
+	if setDefaultID != "7" {
+		t.Errorf("set_as_default id: got %q want 7 (Sonar way matched by name)", setDefaultID)
 	}
 }
 
