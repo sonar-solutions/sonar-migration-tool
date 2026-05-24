@@ -154,6 +154,58 @@ func TestRunDeleteGatesDestroysOnlyNonBuiltIn(t *testing.T) {
 	}
 }
 
+// TestRunDeleteGatesAcceptsNumericDefaultField pins the exact SQC
+// shape that broke production: /api/qualitygates/list returns the
+// "default" field as a NUMBER (gate id), not a string. The original
+// types.QualityGatesListResponse declared DefaultGate as string and
+// json.Unmarshal failed on the whole response, so List returned no
+// gates and deleteGates was a silent no-op. Issue #213 follow-up.
+func TestRunDeleteGatesAcceptsNumericDefaultField(t *testing.T) {
+	destroyed := []string{}
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/qualitygates/list", func(w http.ResponseWriter, r *http.Request) {
+		// Write the raw SonarCloud shape: "default" is a numeric id.
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"default": 42,
+			"qualitygates": [
+				{"id": 1, "name": "Sonar way", "isBuiltIn": true, "isDefault": false},
+				{"id": 42, "name": "3 - Corp base", "isBuiltIn": false, "isDefault": true}
+			]
+		}`))
+	})
+	mux.HandleFunc("POST /api/qualitygates/destroy", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		destroyed = append(destroyed, r.FormValue("id"))
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cloudSrv := httptest.NewServer(mux)
+	defer cloudSrv.Close()
+
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	setupExtractData(dir)
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+
+	w, _ := e.Store.Writer("generateOrganizationMappings")
+	b, _ := json.Marshal(map[string]any{"sonarcloud_org_key": testCloudOrg})
+	w.WriteOne(b)
+
+	if err := runDeleteGates(context.Background(), e); err != nil {
+		t.Fatalf("runDeleteGates: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(destroyed) != 1 || destroyed[0] != "42" {
+		t.Fatalf("destroyed: got %v, want [\"42\"] — list response with numeric default must still parse", destroyed)
+	}
+}
+
 // TestRunDeleteGatesBuiltInByName guards against the SonarCloud
 // response that lists a gate named "Sonar way" without setting
 // IsBuiltIn=true. The name fallback in isBuiltInGate must keep

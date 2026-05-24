@@ -1,5 +1,7 @@
 package types
 
+import "encoding/json"
+
 // QualityGateCondition is a single condition on a quality gate.
 type QualityGateCondition struct {
 	ID     int    `json:"id"`
@@ -19,9 +21,17 @@ type QualityGate struct {
 }
 
 // QualityGatesListResponse is the response envelope for /api/qualitygates/list.
+//
+// DefaultGate is intentionally json.RawMessage rather than a typed
+// value: SonarQube Server returns the default gate as a NAME string,
+// while SonarQube Cloud returns it as a numeric ID. Any concrete type
+// would fail to unmarshal on one of the two backends — keeping the
+// raw bytes lets callers decode either shape on demand (or ignore
+// the field, which is what the migrate tool does — IsDefault on each
+// QualityGate carries the same signal without ambiguity).
 type QualityGatesListResponse struct {
-	QualityGates []QualityGate `json:"qualitygates"`
-	DefaultGate  string        `json:"default"`
+	QualityGates []QualityGate   `json:"qualitygates"`
+	DefaultGate  json.RawMessage `json:"default,omitempty"`
 }
 
 // QualityGateGroup is returned by /api/qualitygates/search_groups.
