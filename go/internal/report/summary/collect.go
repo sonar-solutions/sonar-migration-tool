@@ -2,6 +2,7 @@ package summary
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"time"
 
@@ -47,7 +48,41 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 		RunID:       runID,
 		GeneratedAt: time.Now(),
 		Sections:    sections,
+		Limitations: collectLimitations(exportDir, extractMapping),
 	}, nil
+}
+
+// collectLimitations builds the free-text bullet list rendered in the
+// "Migration limitations" section at the end of the report (issue
+// #154). Today there's exactly one entry — SonarQube Server's
+// Applications feature has no SonarQube Cloud counterpart — and the
+// list only includes it when the SQS instance actually had
+// applications configured. More entries can be appended here as
+// other limitations are surfaced.
+func collectLimitations(exportDir string, mapping structure.ExtractMapping) []string {
+	var out []string
+	if appCount := countExtractItems(exportDir, mapping, "getApplications"); appCount > 0 {
+		out = append(out,
+			fmt.Sprintf("Applications do not exist on SonarQube Cloud, %d SQS applications were not migrated.",
+				appCount))
+	}
+	return out
+}
+
+// countExtractItems returns the number of JSONL records the extract
+// task wrote across every server URL in the mapping. Returns 0 if
+// the extract didn't run or the read failed — the limitations
+// collector treats absence as "no records," which is the correct
+// fall-back behaviour.
+func countExtractItems(exportDir string, mapping structure.ExtractMapping, taskKey string) int {
+	if mapping == nil {
+		return 0
+	}
+	items, err := structure.ReadExtractData(exportDir, mapping, taskKey)
+	if err != nil {
+		return 0
+	}
+	return len(items)
 }
 
 // collectFailures parses the requests.log and groups failures by entity type.
