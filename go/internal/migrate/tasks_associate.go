@@ -558,11 +558,11 @@ func runSetGlobalNewCodePeriod(ctx context.Context, e *Executor) error {
 			"source_type", sqsType)
 		return nil
 	}
-	if sqcType == "previous_version" {
-		e.Logger.Info("setGlobalNewCodePeriod: SQS global NCD is PREVIOUS_VERSION (== SQC default), skipping",
-			"source_type", sqsType)
-		return nil
-	}
+	// Note: we do NOT short-circuit PREVIOUS_VERSION. The target SQC
+	// org might already be at a non-default value (e.g. an operator
+	// manually set "32 days" earlier); skipping would leave that
+	// stale value in place. PATCHing previous_version with an empty
+	// defaultLeakPeriod explicitly clears any prior days/branch.
 	value := extractAnyStr(src, "value")
 
 	orgItems, _ := e.Store.ReadAll("generateOrganizationMappings")
@@ -606,12 +606,15 @@ func runSetGlobalNewCodePeriod(ctx context.Context, e *Executor) error {
 			"org", orgKey, "name", orgName,
 			"defaultLeakPeriodType", sqcType, "defaultLeakPeriod", value,
 			"source_type", sqsType)
+		// Always include defaultLeakPeriod (even when empty) so SQC
+		// explicitly clears any previous value when the type is
+		// previous_version. Pointer-to-empty-string sends
+		// `"defaultLeakPeriod":""` in the JSON; nil omits the field
+		// entirely. We want the former.
 		params := cloud.UpdateOrganizationParams{
 			Name:                  &orgName,
 			DefaultLeakPeriodType: &sqcType,
-		}
-		if value != "" {
-			params.DefaultLeakPeriod = &value
+			DefaultLeakPeriod:     &value,
 		}
 		if err := e.CloudAPI.Organizations.UpdateOrganization(ctx, orgKey, params); err != nil {
 			counter.Fail()

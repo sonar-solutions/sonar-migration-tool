@@ -153,17 +153,25 @@ func TestRunSetGlobalNewCodePeriodFansOutDaysToEveryOrg(t *testing.T) {
 	}
 }
 
-// PREVIOUS_VERSION is SQC's own default — task must not PATCH anything.
-func TestRunSetGlobalNewCodePeriodSkipsPreviousVersion(t *testing.T) {
-	hits, logs := runSetGlobalNCDTest(t,
+// PREVIOUS_VERSION must STILL PATCH each org — the SQC org may have
+// been previously set to "32 days" or another non-default value and
+// we need to actively reset it back to previous_version. The PATCH
+// body sends defaultLeakPeriod="" to clear the stale value.
+func TestRunSetGlobalNewCodePeriodAppliesPreviousVersion(t *testing.T) {
+	hits, _ := runSetGlobalNCDTest(t,
 		map[string]any{"type": "PREVIOUS_VERSION", "serverUrl": testServerURL},
 		[]map[string]any{{"sonarcloud_org_key": "orgA"}},
 	)
-	if len(hits) != 0 {
-		t.Errorf("PREVIOUS_VERSION must NOT trigger any PATCH, got %d", len(hits))
+	if len(hits) != 1 {
+		t.Fatalf("expected 1 PATCH (must reset stale value), got %d: %+v", len(hits), hits)
 	}
-	if !strings.Contains(logs, "PREVIOUS_VERSION") || !strings.Contains(logs, "skipping") {
-		t.Errorf("expected Info log noting the skip, got:\n%s", logs)
+	if hits[0].defaultLeakPeriodType != "previous_version" {
+		t.Errorf("expected type=previous_version, got %q", hits[0].defaultLeakPeriodType)
+	}
+	// Empty defaultLeakPeriod must travel in the body — that's what
+	// clears any "32 days" left over from a prior manual setting.
+	if hits[0].defaultLeakPeriod != "" {
+		t.Errorf("PREVIOUS_VERSION must travel with empty defaultLeakPeriod, got %q", hits[0].defaultLeakPeriod)
 	}
 }
 
