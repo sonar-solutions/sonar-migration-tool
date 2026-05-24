@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -313,7 +312,96 @@ func TestProgressLoggerLogsAtInterval(t *testing.T) {
 		}
 	}
 	prog.Increment() // 50th item
-	if !strings.Contains(buf.String(), fmt.Sprintf("completed=%d", 50)) {
-		t.Errorf("expected progress log at 50, got: %s", buf.String())
+	// Issue #202: message now reads "task N/M - X%" — a single
+	// readable line operators can scan when tailing the log.
+	if !strings.Contains(buf.String(), "test 50/50 - 100%") {
+		t.Errorf("expected progress message \"test 50/50 - 100%%\", got: %s", buf.String())
+	}
+}
+
+// The final-item log MUST fire even when total isn't a clean
+// multiple of the interval — e.g. createProjects with 975 items at
+// every-10 logs at 970 then jumps to 975 with a 100% line. Issue
+// #202 spec calls this out explicitly: operators need an explicit
+// "task complete" marker.
+func TestProgressLoggerFiresFinalHundredPercent(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	prog := newProgressLogger(logger, "createProjects", 975) // interval=10
+
+	for i := 0; i < 975; i++ {
+		prog.Increment()
+	}
+	out := buf.String()
+	// Last regularly-scheduled line lands at 970 (interval × 97).
+	if !strings.Contains(out, "createProjects 970/975 - 99%") {
+		t.Errorf("expected interval-aligned line at 970, got:\n%s", out)
+	}
+	// Final line at 975 — fires because (n == total) even though
+	// 975 isn't a multiple of 10.
+	if !strings.Contains(out, "createProjects 975/975 - 100%") {
+		t.Errorf("expected final 100%% line at 975, got:\n%s", out)
+	}
+}
+
+// Per-task interval overrides take precedence over the size-based
+// default. createProjects ships at every-10, setProjectGroupPermissions
+// at every-100 (issue #202).
+func TestProgressLoggerHonoursPerTaskInterval(t *testing.T) {
+	cases := []struct {
+		task          string
+		total         int
+		wantInterval  int64
+		wantFirstAt   int // iteration count when the first log should fire
+		wantFirstLine string
+	}{
+		{
+			task:          "createProjects",
+			total:         975,
+			wantInterval:  10,
+			wantFirstAt:   10,
+			wantFirstLine: "createProjects 10/975 - 1%",
+		},
+		{
+			task:          "configurePortfolios",
+			total:         87,
+			wantInterval:  10,
+			wantFirstAt:   10,
+			wantFirstLine: "configurePortfolios 10/87 - 11%",
+		},
+		{
+			task:          "setProjectSettings",
+			total:         1234,
+			wantInterval:  50,
+			wantFirstAt:   50,
+			wantFirstLine: "setProjectSettings 50/1234 - 4%",
+		},
+		{
+			task:          "setProjectGroupPermissions",
+			total:         19778,
+			wantInterval:  100,
+			wantFirstAt:   100,
+			wantFirstLine: "setProjectGroupPermissions 100/19778 - 0%",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.task, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+			prog := newProgressLogger(logger, c.task, c.total)
+			if prog.interval != c.wantInterval {
+				t.Errorf("interval: want %d, got %d", c.wantInterval, prog.interval)
+			}
+			for i := 0; i < c.wantFirstAt-1; i++ {
+				prog.Increment()
+				if buf.Len() > 0 {
+					t.Fatalf("unexpected log at iteration %d for %s", i, c.task)
+				}
+			}
+			prog.Increment() // first interval hit
+			if !strings.Contains(buf.String(), c.wantFirstLine) {
+				t.Errorf("want first log to contain %q, got: %s", c.wantFirstLine, buf.String())
+			}
+		})
 	}
 }

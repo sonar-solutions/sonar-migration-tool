@@ -248,6 +248,29 @@ type progressLogger struct {
 	interval int64
 }
 
+// progressLogInterval names how often (in items) the progress logger
+// should emit an INFO line for a given task. Per-task entries take
+// precedence over the size-based fallback in newProgressLogger.
+//
+// Tuned for operator-visible cadence (issue #202):
+//   - createProjects is one API call per project and the slowest
+//     per-item task on large platforms; surface progress every 10.
+//   - configurePortfolios issues multiple Enterprise-API calls per
+//     portfolio (create + update + project membership); every 10
+//     keeps progress visible at the user's expected cadence.
+//   - setProjectSettings does multiple HTTP calls per record on
+//     average (definition-driven dispatch, fan-out fallback);
+//     every 50 strikes a balance between visibility and noise.
+//   - setProjectGroupPermissions can run into the tens of thousands
+//     of items (projects × groups × permissions); every 100 keeps
+//     the log readable while still ticking visibly.
+var progressLogInterval = map[string]int64{
+	"createProjects":             10,
+	"configurePortfolios":        10,
+	"setProjectSettings":         50,
+	"setProjectGroupPermissions": 100,
+}
+
 func newProgressLogger(logger *slog.Logger, task string, total int) *progressLogger {
 	interval := int64(1000)
 	if total < 1000 {
@@ -255,6 +278,15 @@ func newProgressLogger(logger *slog.Logger, task string, total int) *progressLog
 	}
 	if total < 100 {
 		interval = int64(total)
+	}
+	// Per-task override beats the size-based default — operator
+	// cadence trumps "log volume." Capped at total so the very last
+	// item still emits a line when override > total.
+	if explicit, ok := progressLogInterval[task]; ok && explicit > 0 {
+		interval = explicit
+		if int64(total) < interval {
+			interval = int64(total)
+		}
 	}
 	return &progressLogger{task: task, total: total, logger: logger, interval: interval}
 }
@@ -264,8 +296,15 @@ func (p *progressLogger) Increment() {
 		return
 	}
 	n := p.done.Add(1)
-	if n%p.interval == 0 {
-		p.logger.Info("progress", "task", p.task, "completed", n, "total", p.total)
+	if n%p.interval == 0 || int(n) == p.total {
+		percent := 0
+		if p.total > 0 {
+			percent = int(n * 100 / int64(p.total))
+		}
+		// One-line human-readable message per the issue #202 spec
+		// — "task N/M - X%" — so operators tailing the log can read
+		// progress at a glance.
+		p.logger.Info(fmt.Sprintf("%s %d/%d - %d%%", p.task, n, p.total, percent))
 	}
 }
 
