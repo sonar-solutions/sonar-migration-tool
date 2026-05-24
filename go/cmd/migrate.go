@@ -1,9 +1,7 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/migrate"
@@ -55,16 +53,15 @@ func init() {
 func buildMigrateConfig(cmd *cobra.Command, args []string) (migrate.MigrateConfig, error) {
 	var cfg migrate.MigrateConfig
 
-	// Load config file if specified.
+	// Load config file if specified. Supports flat, command-sectioned, and
+	// side-sectioned shapes (issue #176).
 	configFile, _ := cmd.Flags().GetString("config")
 	if configFile != "" {
-		data, err := os.ReadFile(configFile)
+		loaded, err := migrate.LoadMigrateConfigFile(configFile)
 		if err != nil {
-			return cfg, fmt.Errorf("reading config file: %w", err)
+			return cfg, err
 		}
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return cfg, fmt.Errorf("parsing config file: %w", err)
-		}
+		cfg = loaded
 	}
 
 	// CLI args override config file.
