@@ -392,9 +392,13 @@ func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 	}
 	sort.Slice(recorded, func(i, j int) bool { return recorded[i].project < recorded[j].project })
 
+	// branch is intentionally empty — main-branch records describe
+	// the project-level NCD and must be applied WITHOUT a branch
+	// param (which would create a per-branch override invisible on
+	// the project settings page).
 	want := []call{
-		{project: "org1_proj-days", branch: "main", ncdType: "days", value: "14", org: "org1"},
-		{project: "org1_proj-prev", branch: "main", ncdType: "previous_version", value: "", org: "org1"},
+		{project: "org1_proj-days", branch: "", ncdType: "days", value: "14", org: "org1"},
+		{project: "org1_proj-prev", branch: "", ncdType: "previous_version", value: "", org: "org1"},
 	}
 	for i, w := range want {
 		if recorded[i] != w {
@@ -405,8 +409,8 @@ func TestRunSetNewCodePeriodsTranslatesAndSets(t *testing.T) {
 		if c.ncdType == "reference_branch" {
 			t.Errorf("REFERENCE_BRANCH must not be applied at project scope (issue #135), got %+v", c)
 		}
-		if c.branch == "feature-x" {
-			t.Errorf("per-branch NCD overrides must not be applied (issue #134), got %+v", c)
+		if c.branch != "" {
+			t.Errorf("branch param must be omitted (sets project-level NCD, not per-branch override), got %+v", c)
 		}
 	}
 }

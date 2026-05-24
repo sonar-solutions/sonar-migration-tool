@@ -535,12 +535,19 @@ func runSetNewCodePeriods(ctx context.Context, e *Executor) error {
 				value = ""
 			}
 
+			// The branch parameter is intentionally omitted. By the
+			// time we reach this call the record has been filtered to
+			// branchKey == mainBranch, i.e. the project-level NCD.
+			// SonarCloud's /api/new_code_periods/set with branch=main
+			// would create a per-branch override that's invisible on
+			// the project settings page; without branch the call
+			// updates the project-level default (which is what SQS
+			// represented as "main branch inherits from project").
 			e.Logger.Debug("project api call: POST /api/new_code_periods/set",
-				"project", pm.CloudKey, "branch", branch, "type", sqcType,
+				"project", pm.CloudKey, "type", sqcType,
 				"value", value, "org", pm.OrgKey, "source_type", sqsType)
 			err := e.Cloud.NewCodePeriods.Set(ctx, cloud.SetNewCodePeriodParams{
 				Project:      pm.CloudKey,
-				Branch:       branch,
 				Type:         sqcType,
 				Value:        value,
 				Organization: pm.OrgKey,
