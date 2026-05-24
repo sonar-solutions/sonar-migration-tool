@@ -296,7 +296,13 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 	// notes) also drop to a smaller 6pt font so the per-line cost stays low.
 	const (
 		singleLineH       = 6.0
-		wrappedLineH      = 3.0
+		// wrappedLineH at 3.0mm was too tight for the 8pt body font
+		// used in the Name column: descenders on g/p/y/j were clipped
+		// for long wrapping setting keys (issue #207, example
+		// sonar.java.ignoreUnnamedModuleForSplitPackage). 4.0mm gives
+		// 8pt enough leading while staying readable for the 6pt
+		// multi-line details column.
+		wrappedLineH = 4.0
 		bodyFontSize      = 8.0
 		multiLineFontSize = 6.0
 	)
@@ -319,10 +325,10 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 			detailsFontSize = multiLineFontSize
 		}
 		pdf.SetFont(pdfFontFamily, "", detailsFontSize)
-		lineCount := len(pdf.SplitLines([]byte(detailsText), widths[detailsCol]))
+		detailsLineCount := len(pdf.SplitLines([]byte(detailsText), widths[detailsCol]))
 		pdf.SetFont(pdfFontFamily, "", bodyFontSize)
-		if lineCount < 1 {
-			lineCount = 1
+		if detailsLineCount < 1 {
+			detailsLineCount = 1
 		}
 		// If the Name column word-wraps, compute its line count too
 		// and take the max so the row is tall enough for either side.
@@ -333,9 +339,10 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 			if nameLineCount < 1 {
 				nameLineCount = 1
 			}
-			if nameLineCount > lineCount {
-				lineCount = nameLineCount
-			}
+		}
+		lineCount := detailsLineCount
+		if nameLineCount > lineCount {
+			lineCount = nameLineCount
 		}
 		var lineH, rowHeight float64
 		if lineCount == 1 {
@@ -363,8 +370,15 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 			// Use MultiCell so long setting keys wrap. MultiCell
 			// advances the cursor down, so capture (x, y) first and
 			// restore them after for the remaining cells on this row.
+			//
+			// When the Name wraps to FEWER lines than the row's
+			// driving column (Details), pad with empty lines so the
+			// MultiCell fills the full row height. Without this the
+			// Name cell renders shorter than the row and the right-
+			// hand cells appear to have a different border (issue
+			// #207, example sonar.azureresourcemanager.file.identifier).
 			x, y := pdf.GetXY()
-			pdf.MultiCell(widths[col], lineH, nameText, "1", "L", true)
+			pdf.MultiCell(widths[col], lineH, padToLineCount(nameText, nameLineCount, lineCount), "1", "L", true)
 			pdf.SetXY(x+widths[col], y)
 		} else {
 			pdf.CellFormat(widths[col], rowHeight, truncate(nameText, nameLimit), "1", 0, "L", true, 0, "")
@@ -386,9 +400,25 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 		// table.
 		setColor(pdf, colorBlack)
 		pdf.SetFont(pdfFontFamily, "", detailsFontSize)
-		pdf.MultiCell(widths[col], lineH, detailsText, "1", "L", true)
+		// Pad the Details cell to match the row when the Name column
+		// drives the height (Name wraps to MORE lines than Details).
+		// Without padding the Details cell renders shorter than the
+		// row and the bottom border falls inside the gap — issue
+		// #207.
+		pdf.MultiCell(widths[col], lineH, padToLineCount(detailsText, detailsLineCount, lineCount), "1", "L", true)
 		pdf.SetFont(pdfFontFamily, "", bodyFontSize)
 	}
+}
+
+// padToLineCount appends trailing newlines to text so the resulting
+// string has targetLines segments when split on "\n". Used so MultiCell
+// fills the requested row height when one column wraps to fewer lines
+// than the row's tallest column.
+func padToLineCount(text string, currentLines, targetLines int) string {
+	if targetLines <= currentLines {
+		return text
+	}
+	return text + strings.Repeat("\n", targetLines-currentLines)
 }
 
 // buildUnifiedRows flattens the section's four buckets into ordered rows:

@@ -8,6 +8,78 @@ import (
 	"time"
 )
 
+// TestRenderPDFGlobalSettingsWrappingRow is a regression for issue
+// #207. The Global Settings section is the only section that
+// word-wraps its Name column; previously the wrapped row had two
+// visual bugs:
+//   - Name cell shorter than the row when the Details column wraps
+//     to more lines than the Name.
+//   - 8pt body font's descenders clipped because wrappedLineH was
+//     too tight (3.0mm) for the 8pt font used in the Name column.
+//
+// We can't pixel-diff a PDF in unit tests, but we can exercise the
+// exact mismatched-wrap shape that produced the bug and verify the
+// render produces a non-trivial PDF. Combined with the explicit
+// padToLineCount unit test, this guards both code paths.
+func TestRenderPDFGlobalSettingsWrappingRow(t *testing.T) {
+	longName := "sonar.azureresourcemanager.file.identifier"
+	// Details with many newlines drives detailsLineCount > nameLineCount.
+	longDetails := "value: true\norg-A: applied\norg-B: applied\norg-C: applied\norg-D: applied"
+	// Short details + long name drives nameLineCount > detailsLineCount.
+	shortDetails := "value: false"
+	summary := &MigrationSummary{
+		RunID:       "issue-207",
+		GeneratedAt: time.Now(),
+		Sections: []Section{
+			{
+				Name: "Global Settings",
+				Succeeded: []EntityItem{
+					{Name: longName, Organization: "fubar", Detail: longDetails},
+					{Name: "sonar.java.ignoreUnnamedModuleForSplitPackage", Organization: "fubar", Detail: shortDetails},
+				},
+			},
+		},
+	}
+	pdfBytes, err := RenderPDF(summary)
+	if err != nil {
+		t.Fatalf("RenderPDF: %v", err)
+	}
+	if string(pdfBytes[:5]) != "%PDF-" {
+		t.Errorf("expected PDF header, got %q", string(pdfBytes[:5]))
+	}
+	if len(pdfBytes) < 10_000 {
+		t.Errorf("expected non-trivial PDF size, got %d bytes", len(pdfBytes))
+	}
+}
+
+func TestPadToLineCount(t *testing.T) {
+	cases := []struct {
+		name           string
+		text           string
+		current        int
+		target         int
+		wantText       string
+		wantSegments   int
+	}{
+		{"no pad - equal", "a", 1, 1, "a", 1},
+		{"no pad - target less", "a", 2, 1, "a", 1},
+		{"pad 1 line", "a", 1, 2, "a\n", 2},
+		{"pad 3 lines", "a\nb", 2, 5, "a\nb\n\n\n", 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := padToLineCount(tc.text, tc.current, tc.target)
+			if got != tc.wantText {
+				t.Errorf("padToLineCount: got %q want %q", got, tc.wantText)
+			}
+			gotSegs := strings.Count(got, "\n") + 1
+			if gotSegs != tc.wantSegments {
+				t.Errorf("segments: got %d want %d", gotSegs, tc.wantSegments)
+			}
+		})
+	}
+}
+
 func TestRenderPDFLongDetailsWrap(t *testing.T) {
 	// The portfolio Partial issue text is intentionally long. Verify it does
 	// not cause a render failure and that the resulting PDF is well-formed.
