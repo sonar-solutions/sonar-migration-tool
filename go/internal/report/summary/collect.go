@@ -329,10 +329,23 @@ func jsonStr(raw json.RawMessage, key string) string {
 // "Applied to all projects (values=[...]) (failed: projX)" for the
 // runtime fan-out path).
 func collectGlobalSettings(store *common.DataStore, def sectionDef) Section {
-	items, err := store.ReadAll(def.OutputTask)
-	if err != nil {
+	// Read records from BOTH tasks that contribute to this section:
+	// the regular setGlobalSettings output AND
+	// setGlobalNewCodePeriod, which writes a single synthetic record
+	// (key="newCodePeriod") with one outcome per org so the
+	// new-code-period migration shows up alongside the other global
+	// settings (issue #136 follow-up).
+	var items [][]byte
+	for _, item := range readJSONLOrNil(store, def.OutputTask) {
+		items = append(items, item)
+	}
+	for _, item := range readJSONLOrNil(store, "setGlobalNewCodePeriod") {
+		items = append(items, item)
+	}
+	if len(items) == 0 {
 		return Section{Name: def.Name}
 	}
+
 	var succeeded, partial, skipped, failed []EntityItem
 	for _, raw := range items {
 		key := jsonStr(raw, def.NameField)
@@ -365,6 +378,17 @@ func collectGlobalSettings(store *common.DataStore, def sectionDef) Section {
 		Skipped:   skipped,
 		Failed:    failed,
 	}
+}
+
+// readJSONLOrNil reads JSONL items from a task, returning nil (rather
+// than an error) when the task hasn't run. Used by sections that merge
+// records from multiple tasks where any one of them is optional.
+func readJSONLOrNil(store *common.DataStore, taskName string) []json.RawMessage {
+	items, err := store.ReadAll(taskName)
+	if err != nil {
+		return nil
+	}
+	return items
 }
 
 // outcomeRecord mirrors the orgOutcome shape that

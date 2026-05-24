@@ -130,6 +130,9 @@ func asStr(v any) string {
 // SQS NUMBER_OF_DAYS=30 → each SQC org receives one PATCH
 // /organizations/{key} with body
 // {"defaultLeakPeriodType":"days","defaultLeakPeriod":"30"}.
+// Also verifies the task emits a setGlobalNewCodePeriod JSONL record
+// with per-org outcomes so the report's Global Settings section can
+// render one row per (NCD, org) — issue #136 reporting follow-up.
 func TestRunSetGlobalNewCodePeriodFansOutDaysToEveryOrg(t *testing.T) {
 	hits, _ := runSetGlobalNCDTest(t,
 		map[string]any{"type": "NUMBER_OF_DAYS", "value": "30", "serverUrl": testServerURL},
@@ -149,6 +152,92 @@ func TestRunSetGlobalNewCodePeriodFansOutDaysToEveryOrg(t *testing.T) {
 	for i, w := range want {
 		if hits[i] != w {
 			t.Errorf("call %d: got %+v, want %+v", i, hits[i], w)
+		}
+	}
+}
+
+// The task must write a single JSONL record to setGlobalNewCodePeriod
+// with one outcome per migrated org, in the same schema as
+// setGlobalSettings — that's how the migration report's Global
+// Settings section surfaces the NCD migration alongside the other
+// global settings.
+func TestRunSetGlobalNewCodePeriodEmitsReportRecord(t *testing.T) {
+	cloudMux := http.NewServeMux()
+	cloudMux.HandleFunc("/api/organizations/search", func(w http.ResponseWriter, r *http.Request) {
+		keys := strings.Split(r.URL.Query().Get("organizations"), ",")
+		var out []map[string]any
+		for _, k := range keys {
+			out = append(out, map[string]any{"key": k, "name": k})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"organizations": out})
+	})
+	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	cloudSrv := httptest.NewServer(cloudMux)
+	defer cloudSrv.Close()
+
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/organizations/organizations/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	})
+	apiSrv := httptest.NewServer(apiMux)
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+
+	extractDir := filepath.Join(dir, "extract-01", "getGlobalNewCodePeriod")
+	if err := os.MkdirAll(extractDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f, _ := os.Create(filepath.Join(extractDir, "results.1.jsonl"))
+	b, _ := json.Marshal(map[string]any{"type": "NUMBER_OF_DAYS", "value": "61", "serverUrl": testServerURL})
+	f.Write(b)
+	f.Write([]byte("\n"))
+	f.Close()
+	meta, _ := json.Marshal(map[string]any{"url": testServerURL})
+	os.WriteFile(filepath.Join(dir, "extract-01", "extract.json"), meta, 0o644)
+
+	pw, _ := e.Store.Writer("generateOrganizationMappings")
+	for _, k := range []string{"orgA", "orgB"} {
+		bb, _ := json.Marshal(map[string]any{"sonarcloud_org_key": k})
+		pw.WriteOne(bb)
+	}
+
+	if err := runSetGlobalNewCodePeriod(context.Background(), e); err != nil {
+		t.Fatalf("runSetGlobalNewCodePeriod: %v", err)
+	}
+
+	out, _ := e.Store.ReadAll("setGlobalNewCodePeriod")
+	if len(out) != 1 {
+		t.Fatalf("expected exactly one setGlobalNewCodePeriod record, got %d", len(out))
+	}
+	var rec struct {
+		Key      string `json:"key"`
+		Outcomes []struct {
+			Org    string `json:"org"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"outcomes"`
+	}
+	if err := json.Unmarshal(out[0], &rec); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if rec.Key != "newCodePeriod" {
+		t.Errorf("key: want \"newCodePeriod\", got %q", rec.Key)
+	}
+	if len(rec.Outcomes) != 2 {
+		t.Fatalf("want one outcome per org, got %d: %+v", len(rec.Outcomes), rec.Outcomes)
+	}
+	for _, oc := range rec.Outcomes {
+		if oc.Status != "applied" {
+			t.Errorf("org %s: want status=applied, got %q", oc.Org, oc.Status)
+		}
+		if !strings.Contains(oc.Detail, "defaultLeakPeriodType=days") ||
+			!strings.Contains(oc.Detail, "defaultLeakPeriod=61") {
+			t.Errorf("org %s: detail must include type+value, got %q", oc.Org, oc.Detail)
 		}
 	}
 }

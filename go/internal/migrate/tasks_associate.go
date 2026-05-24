@@ -568,6 +568,18 @@ func runSetGlobalNewCodePeriod(ctx context.Context, e *Executor) error {
 	orgItems, _ := e.Store.ReadAll("generateOrganizationMappings")
 	seen := make(map[string]struct{})
 	counter := NewTaskCounter("setGlobalNewCodePeriod")
+
+	// Build per-org outcomes so the report's Global Settings section
+	// can render one row per (NCD, org) just like every other global
+	// setting (issue #136 follow-up). The schema matches
+	// setGlobalSettings's globalSettingResult; collectGlobalSettings
+	// reads both tasks' outputs into the same Section.
+	var outcomes []orgOutcome
+	ncdSummary := "defaultLeakPeriodType=" + sqcType
+	if value != "" {
+		ncdSummary += ", defaultLeakPeriod=" + value
+	}
+
 	for _, o := range orgItems {
 		orgKey := extractField(o, "sonarcloud_org_key")
 		if shouldSkipOrg(orgKey) {
@@ -620,11 +632,37 @@ func runSetGlobalNewCodePeriod(ctx context.Context, e *Executor) error {
 			counter.Fail()
 			logAPIWarn(e.Logger, "setGlobalNewCodePeriod failed", err,
 				"org", orgKey, "type", sqcType)
+			outcomes = append(outcomes, orgOutcome{
+				Org: orgKey, Status: outcomeFailed, Reason: apiErrMessage(err),
+				Detail: "Failed: " + apiErrMessage(err),
+			})
 			continue
 		}
 		counter.Success()
+		outcomes = append(outcomes, orgOutcome{
+			Org: orgKey, Status: outcomeApplied,
+			Detail: "Applied (" + ncdSummary + ")",
+		})
 	}
 	counter.LogSummary(e.Logger)
+
+	// Write a single record describing the migration so the report
+	// section picks it up. Using key="newCodePeriod" — a synthetic
+	// pseudo-setting-key — makes the row distinct from real settings
+	// like sonar.exclusions in the Section's Name column.
+	if len(outcomes) > 0 {
+		w, err := e.Store.Writer("setGlobalNewCodePeriod")
+		if err != nil {
+			return err
+		}
+		rec := globalSettingResult{
+			Key:      "newCodePeriod",
+			Value:    value,
+			Outcomes: outcomes,
+		}
+		b, _ := json.Marshal(rec)
+		_ = w.WriteOne(b)
+	}
 	return nil
 }
 
