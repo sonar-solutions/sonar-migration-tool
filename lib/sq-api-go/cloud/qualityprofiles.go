@@ -17,6 +17,21 @@ type CreateProfileParams struct {
 	Organization string
 }
 
+// Search returns every quality profile in the organization via
+// /api/qualityprofiles/search. Used by reset to enumerate profiles
+// per-language so the built-in can be promoted to default before
+// any deletion attempt (SonarCloud refuses to delete the current
+// default profile for a language).
+func (q *QualityProfilesClient) Search(ctx context.Context, organization string) ([]types.QualityProfile, error) {
+	v := url.Values{}
+	v.Set("organization", organization)
+	var resp types.QualityProfilesSearchResponse
+	if err := q.getJSON(ctx, "api/qualityprofiles/search?"+v.Encode(), &resp); err != nil {
+		return nil, err
+	}
+	return resp.Profiles, nil
+}
+
 // Create creates a new quality profile via /api/qualityprofiles/create.
 func (q *QualityProfilesClient) Create(ctx context.Context, params CreateProfileParams) (*types.QualityProfile, error) {
 	form := url.Values{}

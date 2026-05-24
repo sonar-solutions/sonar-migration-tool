@@ -339,6 +339,32 @@ func TestQualityProfilesDelete(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestQualityProfilesSearch exercises GET /api/qualityprofiles/search.
+// Reset enumerates profiles per-language via the IsBuiltIn flag in
+// the response and promotes the built-in to default before any
+// deletion attempt.
+func TestQualityProfilesSearch(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/qualityprofiles/search", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "myorg", r.URL.Query().Get("organization"))
+		writeJSON(w, types.QualityProfilesSearchResponse{
+			Profiles: []types.QualityProfile{
+				{Key: "k1", Name: "Sonar way", Language: "java", IsBuiltIn: true, IsDefault: false},
+				{Key: "k2", Name: "Custom Java", Language: "java", IsBuiltIn: false, IsDefault: true},
+			},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	profiles, err := cc.QualityProfiles.Search(context.Background(), "myorg")
+	require.NoError(t, err)
+	require.Len(t, profiles, 2)
+	assert.Equal(t, "Sonar way", profiles[0].Name)
+	assert.True(t, profiles[0].IsBuiltIn)
+	assert.Equal(t, "java", profiles[0].Language)
+}
+
 func TestQualityProfilesSetDefault(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/qualityprofiles/set_default", func(w http.ResponseWriter, r *http.Request) {

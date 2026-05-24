@@ -82,6 +82,15 @@ func newMockCloudServer() *httptest.Server {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	mux.HandleFunc("GET /api/qualityprofiles/search", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"profiles": []map[string]any{
+				{"key": "p1", "name": "Sonar way", "language": "java", "isBuiltIn": true, "isDefault": false},
+				{"key": "p2", "name": "Custom Java", "language": "java", "isBuiltIn": false, "isDefault": true},
+			},
+		})
+	})
+
 	mux.HandleFunc("POST /api/qualitygates/create", func(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
 		json.NewEncoder(w).Encode(map[string]any{
