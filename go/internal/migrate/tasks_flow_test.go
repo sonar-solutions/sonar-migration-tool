@@ -659,6 +659,7 @@ func TestDeleteTasks(t *testing.T) {
 	deleteTasks := []string{
 		"deleteProjects", "deleteProfiles", "deleteGates", "deleteGroups",
 		"deleteTemplates", "resetDefaultProfiles", "resetDefaultGates", "resetPermissionTemplates",
+		"resetGlobalSettings",
 	}
 	for _, name := range deleteTasks {
 		t.Run(name, func(t *testing.T) {

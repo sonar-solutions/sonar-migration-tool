@@ -164,6 +164,20 @@ func newMockCloudServer() *httptest.Server {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	mux.HandleFunc("POST /api/settings/reset", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	mux.HandleFunc("GET /api/settings/values", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"settings": []map[string]any{
+				{"key": "sonar.exclusions", "values": []string{"**/*.gen.java"}, "inherited": false},
+				{"key": "sonar.coverage.exclusions", "value": "**/*.test.java", "inherited": false},
+				{"key": "sonar.inherited.example", "value": "default-value", "inherited": true},
+			},
+		})
+	})
+
 	mux.HandleFunc("POST /api/project_tags/set", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})

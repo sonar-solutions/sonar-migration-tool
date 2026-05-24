@@ -64,10 +64,18 @@ func RunReset(ctx context.Context, cfg ResetConfig) error {
 	registry := BuildMigrateRegistry(allDefs)
 	registry = FilterByEdition(registry, edition)
 
-	// Target only delete* tasks.
+	// Target the delete* tasks plus the curated set of reset* tasks
+	// whose dependency chains do not pull migrate-only create*/set*
+	// work back into the plan. The other reset* tasks
+	// (resetDefaultProfiles, resetDefaultGates, resetPermissionTemplates)
+	// remain no-ops triggered as side-effects of deletes and are
+	// intentionally NOT in this list.
+	resetPrefixTargets := map[string]bool{
+		"resetGlobalSettings": true,
+	}
 	var targets []string
 	for name := range registry {
-		if strings.HasPrefix(name, "delete") {
+		if strings.HasPrefix(name, "delete") || resetPrefixTargets[name] {
 			targets = append(targets, name)
 		}
 	}
