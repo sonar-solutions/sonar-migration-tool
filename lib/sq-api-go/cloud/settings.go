@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"strings"
 
 	"github.com/sonar-solutions/sq-api-go/types"
 )
@@ -97,6 +98,42 @@ func (s *SettingsClient) SetFieldValues(ctx context.Context, projectKey, setting
 	}
 	addSettingsScope(form, projectKey, organization)
 	return s.postForm(ctx, "api/settings/set", form, nil)
+}
+
+// Values returns settings explicitly set at the given scope. Settings
+// still at their default are omitted by SonarQube Cloud's response.
+// Used by reset to enumerate which org-level settings need reverting.
+func (s *SettingsClient) Values(ctx context.Context, projectKey, organization string) ([]types.Setting, error) {
+	q := url.Values{}
+	if projectKey != "" {
+		q.Set("component", projectKey)
+	} else if organization != "" {
+		q.Set("organization", organization)
+	}
+	path := "api/settings/values"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var resp types.SettingsValuesResponse
+	if err := s.getJSON(ctx, path, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Settings, nil
+}
+
+// Reset reverts the named settings to their default value at the given
+// scope (POST /api/settings/reset). Multiple keys are joined with
+// commas — the SonarQube Web API expects a single "keys" parameter,
+// not repeated keys=K1&keys=K2 form values. Passing an empty keys list
+// is a no-op (the API would reject it with HTTP 400).
+func (s *SettingsClient) Reset(ctx context.Context, projectKey string, keys []string, organization string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	form := url.Values{}
+	form.Set("keys", strings.Join(keys, ","))
+	addSettingsScope(form, projectKey, organization)
+	return s.postForm(ctx, "api/settings/reset", form, nil)
 }
 
 // addSettingsScope adds exactly one of "component" or "organization" to

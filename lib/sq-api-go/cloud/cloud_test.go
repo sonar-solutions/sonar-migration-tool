@@ -991,6 +991,70 @@ func TestSettingsListDefinitionsWithComponent(t *testing.T) {
 	assert.Equal(t, "sonar.java.file.suffixes", defs[0].Key)
 }
 
+// TestSettingsValuesOrgScope exercises GET /api/settings/values at
+// org scope. SonarQube Cloud only includes settings that have been
+// explicitly customized — defaults are omitted from the response.
+// Reset uses this to enumerate which org-level keys need reverting.
+func TestSettingsValuesOrgScope(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/settings/values", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "myorg", r.URL.Query().Get("organization"))
+		assert.Empty(t, r.URL.Query().Get("component"), "component must be absent for org-scope")
+		writeJSON(w, types.SettingsValuesResponse{
+			Settings: []types.Setting{
+				{Key: "sonar.exclusions", Values: []string{"**/*.gen.java"}, Inherited: false},
+				{Key: "sonar.coverage.exclusions", Value: "**/*.test.java", Inherited: false},
+			},
+		})
+	})
+	cc := newTestCloud(t, mux)
+
+	settings, err := cc.Settings.Values(context.Background(), "", "myorg")
+	require.NoError(t, err)
+	require.Len(t, settings, 2)
+	assert.Equal(t, "sonar.exclusions", settings[0].Key)
+	assert.Equal(t, []string{"**/*.gen.java"}, settings[0].Values)
+}
+
+// TestSettingsResetOrgScope pins the POST /api/settings/reset shape
+// used by the reset command to revert org-level settings.
+func TestSettingsResetOrgScope(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/settings/reset", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		_ = r.ParseForm()
+		// The SonarQube Web API expects a single comma-joined "keys"
+		// parameter, not repeated keys=K1&keys=K2 values.
+		assert.Equal(t, "sonar.exclusions,sonar.coverage.exclusions", r.FormValue("keys"))
+		assert.Equal(t, "myorg", r.FormValue("organization"))
+		assert.Empty(t, r.Form["component"], "component must be absent at org scope")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Settings.Reset(context.Background(), "",
+		[]string{"sonar.exclusions", "sonar.coverage.exclusions"}, "myorg")
+	require.NoError(t, err)
+}
+
+// TestSettingsResetEmptyKeys ensures the SDK no-ops on an empty list
+// rather than hitting the API with an invalid request that SonarQube
+// would reject with HTTP 400.
+func TestSettingsResetEmptyKeys(t *testing.T) {
+	mux := http.NewServeMux()
+	called := false
+	mux.HandleFunc("/api/settings/reset", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+
+	err := cc.Settings.Reset(context.Background(), "", nil, "myorg")
+	require.NoError(t, err)
+	assert.False(t, called, "empty keys must short-circuit before hitting the network")
+}
+
 // --- Enterprises ---
 
 func TestEnterprisesList(t *testing.T) {

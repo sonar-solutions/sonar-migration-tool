@@ -59,6 +59,15 @@ func deleteTasks() []TaskDef {
 			Dependencies: []string{"setDefaultTemplates"},
 			Run:          runResetPermissionTemplates,
 		},
+		{
+			// Reverts every org-level setting that has been customized on
+			// SonarQube Cloud back to its default. Setting reset is
+			// scoped per organization; this task iterates the mapped orgs
+			// and resets the union of customized keys in each.
+			Name:         "resetGlobalSettings",
+			Dependencies: []string{"generateOrganizationMappings"},
+			Run:          runResetGlobalSettings,
+		},
 	}
 }
 
@@ -193,6 +202,57 @@ func runDeletePortfolios(ctx context.Context, e *Executor) error {
 			} else {
 				counter.Success()
 			}
+			return nil
+		})
+	counter.LogSummary(e.Logger)
+	return err
+}
+
+// runResetGlobalSettings reverts every customized org-level setting on
+// SonarQube Cloud back to its default. SQC's /api/settings/values only
+// returns keys that have been explicitly customized, so the reset key
+// list is naturally bounded — no enumeration of all definitions is
+// required. Iteration is per-org from generateOrganizationMappings so
+// no upstream create*/generate* dependency is pulled into reset's
+// plan.
+func runResetGlobalSettings(ctx context.Context, e *Executor) error {
+	counter := NewTaskCounter("resetGlobalSettings")
+	err := forEachMigrateItem(ctx, e, "resetGlobalSettings", "generateOrganizationMappings",
+		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
+			orgKey := extractField(item, "sonarcloud_org_key")
+			if shouldSkipOrg(orgKey) {
+				return nil
+			}
+
+			values, err := e.Cloud.Settings.Values(ctx, "", orgKey)
+			if err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "resetGlobalSettings: listing org settings failed", err, "org", orgKey)
+				return nil
+			}
+
+			var keys []string
+			for _, s := range values {
+				// Skip settings that are still at their inherited default
+				// — only revert what's been explicitly set at org scope.
+				if s.Inherited || s.Key == "" {
+					continue
+				}
+				keys = append(keys, s.Key)
+			}
+			if len(keys) == 0 {
+				counter.Success()
+				return nil
+			}
+
+			e.Logger.Debug("settings api call: POST /api/settings/reset",
+				"org", orgKey, "keys", keys)
+			if err := e.Cloud.Settings.Reset(ctx, "", keys, orgKey); err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "resetGlobalSettings: reset failed", err, "org", orgKey, "keys", keys)
+				return nil
+			}
+			counter.Success()
 			return nil
 		})
 	counter.LogSummary(e.Logger)
