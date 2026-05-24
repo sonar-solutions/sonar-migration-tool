@@ -8,6 +8,143 @@ import (
 	"time"
 )
 
+// TestRenderPDFGlobalSettingsWrappingRow is a regression for issue
+// #207. The Global Settings section is the only section that
+// word-wraps its Name column; previously the wrapped row had two
+// visual bugs:
+//   - Name cell shorter than the row when the Details column wraps
+//     to more lines than the Name.
+//   - 8pt body font's descenders clipped because wrappedLineH was
+//     too tight (3.0mm) for the 8pt font used in the Name column.
+//
+// We can't pixel-diff a PDF in unit tests, but we can exercise the
+// exact mismatched-wrap shape that produced the bug and verify the
+// render produces a non-trivial PDF. Combined with the explicit
+// padToLineCount unit test, this guards both code paths.
+func TestRenderPDFGlobalSettingsWrappingRow(t *testing.T) {
+	longName := "sonar.azureresourcemanager.file.identifier"
+	// Details with many newlines drives detailsLineCount > nameLineCount.
+	longDetails := "value: true\norg-A: applied\norg-B: applied\norg-C: applied\norg-D: applied"
+	// Short details + long name drives nameLineCount > detailsLineCount.
+	shortDetails := "value: false"
+	summary := &MigrationSummary{
+		RunID:       "issue-207",
+		GeneratedAt: time.Now(),
+		Sections: []Section{
+			{
+				Name: "Global Settings",
+				Succeeded: []EntityItem{
+					{Name: longName, Organization: "fubar", Detail: longDetails},
+					{Name: "sonar.java.ignoreUnnamedModuleForSplitPackage", Organization: "fubar", Detail: shortDetails},
+				},
+			},
+		},
+	}
+	pdfBytes, err := RenderPDF(summary)
+	if err != nil {
+		t.Fatalf("RenderPDF: %v", err)
+	}
+	if string(pdfBytes[:5]) != "%PDF-" {
+		t.Errorf("expected PDF header, got %q", string(pdfBytes[:5]))
+	}
+	if len(pdfBytes) < 10_000 {
+		t.Errorf("expected non-trivial PDF size, got %d bytes", len(pdfBytes))
+	}
+}
+
+// TestDrawWrappedCell uses a recorder that conforms to the fpdfCell
+// interface to verify that drawWrappedCell emits exactly lineCount
+// CellFormat calls — one per line — with the right border code on
+// each (top on first, bottom on last, sides on all). This is the
+// guarantee that makes the cell's outer rectangle always reach
+// height = lineCount*lineH, even when len(lines) < lineCount.
+func TestDrawWrappedCell(t *testing.T) {
+	cases := []struct {
+		name        string
+		lineCount   int
+		lines       []string
+		wantBorders []string
+		wantTexts   []string
+	}{
+		{
+			name:        "single line",
+			lineCount:   1,
+			lines:       []string{"hello"},
+			wantBorders: []string{"1"},
+			wantTexts:   []string{"hello"},
+		},
+		{
+			name:        "wrap matches lineCount",
+			lineCount:   2,
+			lines:       []string{"line1", "line2"},
+			wantBorders: []string{"LRT", "LRB"},
+			wantTexts:   []string{"line1", "line2"},
+		},
+		{
+			name:        "wrap fewer than lineCount - pad with empties",
+			lineCount:   4,
+			lines:       []string{"only"},
+			wantBorders: []string{"LRT", "LR", "LR", "LRB"},
+			wantTexts:   []string{"only", "", "", ""},
+		},
+		{
+			name:        "three lines",
+			lineCount:   3,
+			lines:       []string{"a", "b", "c"},
+			wantBorders: []string{"LRT", "LR", "LRB"},
+			wantTexts:   []string{"a", "b", "c"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &fpdfCellRecorder{}
+			rawLines := make([][]byte, len(tc.lines))
+			for i, s := range tc.lines {
+				rawLines[i] = []byte(s)
+			}
+			drawWrappedCell(rec, 50, 4, tc.lineCount, rawLines)
+
+			if len(rec.calls) != tc.lineCount {
+				t.Fatalf("expected %d CellFormat calls, got %d", tc.lineCount, len(rec.calls))
+			}
+			for i, call := range rec.calls {
+				if call.border != tc.wantBorders[i] {
+					t.Errorf("line %d border: got %q want %q", i, call.border, tc.wantBorders[i])
+				}
+				if call.text != tc.wantTexts[i] {
+					t.Errorf("line %d text: got %q want %q", i, call.text, tc.wantTexts[i])
+				}
+				wantY := float64(i) * 4
+				if call.y != wantY {
+					t.Errorf("line %d y: got %f want %f", i, call.y, wantY)
+				}
+			}
+		})
+	}
+}
+
+type fpdfCellCall struct {
+	x, y, w, h           float64
+	text, border, align  string
+	ln                   int
+	fill                 bool
+}
+
+type fpdfCellRecorder struct {
+	x, y  float64
+	calls []fpdfCellCall
+}
+
+func (r *fpdfCellRecorder) GetXY() (float64, float64) { return r.x, r.y }
+func (r *fpdfCellRecorder) SetXY(x, y float64)        { r.x, r.y = x, y }
+func (r *fpdfCellRecorder) CellFormat(w, h float64, text, border string, ln int, align string, fill bool, link int, linkStr string) {
+	r.calls = append(r.calls, fpdfCellCall{
+		x: r.x, y: r.y, w: w, h: h,
+		text: text, border: border, align: align,
+		ln: ln, fill: fill,
+	})
+}
+
 func TestRenderPDFLongDetailsWrap(t *testing.T) {
 	// The portfolio Partial issue text is intentionally long. Verify it does
 	// not cause a render failure and that the resulting PDF is well-formed.

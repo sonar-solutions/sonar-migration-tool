@@ -296,7 +296,13 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 	// notes) also drop to a smaller 6pt font so the per-line cost stays low.
 	const (
 		singleLineH       = 6.0
-		wrappedLineH      = 3.0
+		// wrappedLineH at 3.0mm was too tight for the 8pt body font
+		// used in the Name column: descenders on g/p/y/j were clipped
+		// for long wrapping setting keys (issue #207, example
+		// sonar.java.ignoreUnnamedModuleForSplitPackage). 4.0mm gives
+		// 8pt enough leading while staying readable for the 6pt
+		// multi-line details column.
+		wrappedLineH = 4.0
 		bodyFontSize      = 8.0
 		multiLineFontSize = 6.0
 	)
@@ -319,10 +325,10 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 			detailsFontSize = multiLineFontSize
 		}
 		pdf.SetFont(pdfFontFamily, "", detailsFontSize)
-		lineCount := len(pdf.SplitLines([]byte(detailsText), widths[detailsCol]))
+		detailsLineCount := len(pdf.SplitLines([]byte(detailsText), widths[detailsCol]))
 		pdf.SetFont(pdfFontFamily, "", bodyFontSize)
-		if lineCount < 1 {
-			lineCount = 1
+		if detailsLineCount < 1 {
+			detailsLineCount = 1
 		}
 		// If the Name column word-wraps, compute its line count too
 		// and take the max so the row is tall enough for either side.
@@ -333,9 +339,10 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 			if nameLineCount < 1 {
 				nameLineCount = 1
 			}
-			if nameLineCount > lineCount {
-				lineCount = nameLineCount
-			}
+		}
+		lineCount := detailsLineCount
+		if nameLineCount > lineCount {
+			lineCount = nameLineCount
 		}
 		var lineH, rowHeight float64
 		if lineCount == 1 {
@@ -347,6 +354,14 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 		}
 
 		checkPageBreak(pdf, rowHeight)
+		// Capture the row's start position so we can explicitly
+		// advance to the next row after drawing all columns. The
+		// original code relied on the trailing MultiCell auto-
+		// advancing the cursor; drawWrappedCell deliberately does
+		// not (it stays flush right of its own cell so the caller
+		// can place the next column), so we restore the X+Y here.
+		rowStartX := pdf.GetX()
+		rowStartY := pdf.GetY()
 		if i%2 == 0 {
 			setFillColor(pdf, colorLightGray)
 		} else {
@@ -360,12 +375,17 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 			nameLimit = 60
 		}
 		if wrapName {
-			// Use MultiCell so long setting keys wrap. MultiCell
-			// advances the cursor down, so capture (x, y) first and
-			// restore them after for the remaining cells on this row.
-			x, y := pdf.GetXY()
-			pdf.MultiCell(widths[col], lineH, nameText, "1", "L", true)
-			pdf.SetXY(x+widths[col], y)
+			// Render the Name column as one CellFormat per row-line
+			// so the cell ALWAYS fills the full row height — issue
+			// #207. MultiCell with trailing-newline padding does not
+			// produce extra empty rows on this fpdf fork, which left
+			// the Name cell short when detailsLineCount exceeded
+			// nameLineCount (cells looked uneven) and additionally
+			// clipped descenders when nameLineCount matched (the per-
+			// line height of 3mm was too tight for 8pt body). Drawing
+			// one cell per line at the row's lineH gives consistent
+			// height AND room for descenders.
+			drawWrappedCell(pdf, widths[col], lineH, lineCount, pdf.SplitLines([]byte(nameText), widths[col]))
 		} else {
 			pdf.CellFormat(widths[col], rowHeight, truncate(nameText, nameLimit), "1", 0, "L", true, 0, "")
 		}
@@ -386,9 +406,62 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 		// table.
 		setColor(pdf, colorBlack)
 		pdf.SetFont(pdfFontFamily, "", detailsFontSize)
-		pdf.MultiCell(widths[col], lineH, detailsText, "1", "L", true)
+		// Render Details with the same explicit per-line approach as
+		// Name so the cell always reaches rowHeight. Issue #207.
+		drawWrappedCell(pdf, widths[col], lineH, lineCount, pdf.SplitLines([]byte(detailsText), widths[col]))
 		pdf.SetFont(pdfFontFamily, "", bodyFontSize)
+		// Advance to the next row. drawWrappedCell leaves the cursor
+		// flush right of the cell at the row's start Y; explicitly
+		// move to (rowStartX, rowStartY + rowHeight) so the next
+		// iteration's GetXY() reports the correct position.
+		pdf.SetXY(rowStartX, rowStartY+rowHeight)
 	}
+}
+
+// drawWrappedCell renders a wrapping table cell as `lineCount` stacked
+// CellFormat rows so the cell's outer border ALWAYS reaches a height
+// of lineCount*lineH, regardless of how many of those lines actually
+// carry text. Trailing empty cells (when len(lines) < lineCount) are
+// drawn with the same background fill as the text rows so the column
+// reads as a single tall cell. Side borders are drawn on every row
+// (L+R); the top is drawn on the first row, the bottom on the last,
+// so the result is visually indistinguishable from a single bordered
+// rectangle around all rows.
+//
+// After drawing, the cursor is left at (x+w, startY) — i.e. flush to
+// the right of the cell at the row's top — so the caller can continue
+// with CellFormat for the next column without an explicit SetXY.
+func drawWrappedCell(pdf fpdfCell, w, lineH float64, lineCount int, lines [][]byte) {
+	x, y := pdf.GetXY()
+	for j := 0; j < lineCount; j++ {
+		var text string
+		if j < len(lines) {
+			text = string(lines[j])
+		}
+		border := ""
+		switch {
+		case lineCount == 1:
+			border = "1"
+		case j == 0:
+			border = "LRT"
+		case j == lineCount-1:
+			border = "LRB"
+		default:
+			border = "LR"
+		}
+		pdf.SetXY(x, y+float64(j)*lineH)
+		pdf.CellFormat(w, lineH, text, border, 0, "L", true, 0, "")
+	}
+	pdf.SetXY(x+w, y)
+}
+
+// fpdfCell is the subset of fpdf.Fpdf used by drawWrappedCell. Defined
+// as an interface so the helper can be unit-tested without spinning
+// up a full PDF document.
+type fpdfCell interface {
+	GetXY() (float64, float64)
+	SetXY(x, y float64)
+	CellFormat(w, h float64, txtStr, borderStr string, ln int, alignStr string, fill bool, link int, linkStr string)
 }
 
 // buildUnifiedRows flattens the section's four buckets into ordered rows:
