@@ -319,6 +319,31 @@ func TestProgressLoggerLogsAtInterval(t *testing.T) {
 	}
 }
 
+// The final-item log MUST fire even when total isn't a clean
+// multiple of the interval — e.g. createProjects with 975 items at
+// every-10 logs at 970 then jumps to 975 with a 100% line. Issue
+// #202 spec calls this out explicitly: operators need an explicit
+// "task complete" marker.
+func TestProgressLoggerFiresFinalHundredPercent(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	prog := newProgressLogger(logger, "createProjects", 975) // interval=10
+
+	for i := 0; i < 975; i++ {
+		prog.Increment()
+	}
+	out := buf.String()
+	// Last regularly-scheduled line lands at 970 (interval × 97).
+	if !strings.Contains(out, "createProjects 970/975 - 99%") {
+		t.Errorf("expected interval-aligned line at 970, got:\n%s", out)
+	}
+	// Final line at 975 — fires because (n == total) even though
+	// 975 isn't a multiple of 10.
+	if !strings.Contains(out, "createProjects 975/975 - 100%") {
+		t.Errorf("expected final 100%% line at 975, got:\n%s", out)
+	}
+}
+
 // Per-task interval overrides take precedence over the size-based
 // default. createProjects ships at every-10, setProjectGroupPermissions
 // at every-100 (issue #202).
