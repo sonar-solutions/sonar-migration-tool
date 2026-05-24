@@ -75,11 +75,38 @@ func RenderPDF(summary *MigrationSummary) ([]byte, error) {
 		renderSection(pdf, section)
 	}
 
+	renderLimitations(pdf, summary.Limitations)
+
 	var buf bytes.Buffer
 	if err := pdf.Output(&buf); err != nil {
 		return nil, fmt.Errorf("generating PDF: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// renderLimitations writes the "Migration limitations" section at the
+// very end of the report (issue #154). Each entry is rendered as a
+// single bulleted line. No-op when the list is empty so reports for
+// instances without any limitation stay clean.
+func renderLimitations(pdf *fpdf.Fpdf, limitations []string) {
+	if len(limitations) == 0 {
+		return
+	}
+	pdf.Ln(8)
+	checkPageBreak(pdf, 30)
+
+	setColor(pdf, colorMedBlue)
+	pdf.SetFont(pdfFontFamily, "B", 14)
+	pdf.CellFormat(0, 10, "Migration limitations", "", 1, "L", false, 0, "")
+
+	setColor(pdf, colorBlack)
+	pdf.SetFont(pdfFontFamily, "", 9)
+	for _, line := range limitations {
+		// MultiCell so long messages wrap instead of running off
+		// the edge. Bullet prefix mirrors the visual treatment used
+		// by other free-text sections.
+		pdf.MultiCell(0, 5, "• "+sanitizeForPDF(line), "", "L", false)
+	}
 }
 
 // registerUnicodeFont registers the embedded Noto Sans regular + bold variants

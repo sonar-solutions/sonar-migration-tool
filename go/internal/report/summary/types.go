@@ -4,10 +4,17 @@ package summary
 import "time"
 
 // MigrationSummary holds the collected data for the PDF report.
+//
+// Limitations is a list of free-text messages rendered as a
+// "Migration limitations" section at the very end of the report
+// (issue #154). It documents SonarQube Server features that have no
+// SonarQube Cloud counterpart, so the operator knows which parts of
+// the source platform did NOT make it across — e.g. applications.
 type MigrationSummary struct {
 	RunID       string
 	GeneratedAt time.Time
 	Sections    []Section
+	Limitations []string
 }
 
 // Section represents a category of migrated entities (e.g., Projects, Quality Gates).

@@ -885,6 +885,71 @@ func TestCollectGlobalSettingsRoutesSQSOnlyNotesToSkipped(t *testing.T) {
 	}
 }
 
+// When the SQS instance had applications configured, the summary
+// must include a Migration-limitations entry mentioning that
+// Applications don't exist on SQC (issue #154). The count must match
+// the number of records in the getApplications extract.
+func TestCollectSummaryMentionsUnmigratedApplications(t *testing.T) {
+	dir := t.TempDir()
+	runID := "run-apps"
+	runDir := filepath.Join(dir, runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	extractDir := filepath.Join(dir, "extract-01")
+	writeExtractMeta(t, extractDir, "https://sq.example.com")
+	writeTaskJSONL(t, extractDir, "getApplications", []map[string]any{
+		{"key": "app1", "name": "Application 1"},
+		{"key": "app2", "name": "Application 2"},
+		{"key": "app3", "name": "Application 3"},
+	})
+
+	summary, err := CollectSummary(runDir, dir)
+	if err != nil {
+		t.Fatalf("CollectSummary: %v", err)
+	}
+	if len(summary.Limitations) == 0 {
+		t.Fatalf("Limitations: want a non-empty list when SQS had apps, got empty")
+	}
+	found := false
+	for _, msg := range summary.Limitations {
+		if strings.Contains(msg, "Applications do not exist on SonarQube Cloud") &&
+			strings.Contains(msg, "3 SQS applications") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Limitations must mention applications count, got %v", summary.Limitations)
+	}
+}
+
+// When the SQS instance had no applications, the limitations list
+// must NOT include the applications entry — otherwise every report
+// would carry an irrelevant note.
+func TestCollectSummaryNoApplicationsLimitation(t *testing.T) {
+	dir := t.TempDir()
+	runID := "run-no-apps"
+	runDir := filepath.Join(dir, runID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	extractDir := filepath.Join(dir, "extract-01")
+	writeExtractMeta(t, extractDir, "https://sq.example.com")
+	// getApplications dir exists but is empty.
+	writeTaskJSONL(t, extractDir, "getApplications", nil)
+
+	summary, err := CollectSummary(runDir, dir)
+	if err != nil {
+		t.Fatalf("CollectSummary: %v", err)
+	}
+	for _, msg := range summary.Limitations {
+		if strings.Contains(msg, "Applications") {
+			t.Errorf("Limitations must NOT mention applications when none extracted, got %q", msg)
+		}
+	}
+}
+
 // --- helpers ---
 
 func findSection(s *MigrationSummary, name string) *Section {
