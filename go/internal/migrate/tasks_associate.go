@@ -517,17 +517,20 @@ var sqcNewCodeType = map[string]string{
 // new-code-period default to every SonarQube Cloud organization
 // (issue #136).
 //
-// The migration POSTs once per org to /api/new_code_periods/set with
-// organization=<key>&type=<sqcType>&value=<value> (no project). SQC
-// accepts the call at org scope and records the result as the org-wide
-// default that new projects inherit from.
+// SonarCloud exposes the org-level NCD default through the
+// Enterprise API: PATCH /organizations/{organizationId} on
+// api.sonarcloud.io, with body { "defaultLeakPeriodType": "days",
+// "defaultLeakPeriod": "30" }. The other endpoints we tried —
+// /api/settings/set with sonar.leak.period.type and
+// /api/new_code_periods/set?organization=<key> — both 400 with
+// "can't be set at organization level" on current SonarCloud.
 //
-// Note: the obvious-looking alternative — POSTing sonar.leak.period.type
-// and sonar.leak.period through /api/settings/set, as
-// sonar-tools/Python does — does NOT work on current SonarCloud: the
-// API rejects those keys at organization scope with HTTP 400
-// "Provided property can't be set at organization level". The
-// new_code_periods endpoint is the right one for SQC org-level writes.
+// The task therefore:
+//
+//  1. Looks up the org UUID for each migration-scope SQC org key
+//     (regular sonarcloud.io base — /api/organizations/search).
+//  2. PATCHes /organizations/{uuid} on the api.sonarcloud.io base
+//     with defaultLeakPeriodType + defaultLeakPeriod set.
 //
 // PREVIOUS_VERSION is SQC's own default, so the task no-ops in that
 // case to avoid useless API calls (issue #196 principle).
@@ -540,14 +543,12 @@ func runSetGlobalNewCodePeriod(ctx context.Context, e *Executor) error {
 		e.Logger.Info("setGlobalNewCodePeriod: no global NCD extracted, nothing to migrate")
 		return nil
 	}
-	// We expect ONE record (single-server) but iterate defensively.
 	src := ncdItems[0].Data
 	sqsType := extractField(src, "type")
 	if sqsType == "" {
 		e.Logger.Info("setGlobalNewCodePeriod: SQS global NCD has no type, skipping")
 		return nil
 	}
-	// Older SQS exports sometimes use the legacy DAYS alias.
 	if sqsType == "DAYS" {
 		sqsType = "NUMBER_OF_DAYS"
 	}
@@ -563,11 +564,6 @@ func runSetGlobalNewCodePeriod(ctx context.Context, e *Executor) error {
 		return nil
 	}
 	value := extractAnyStr(src, "value")
-	// previous_version is the only SQC type that must travel WITHOUT
-	// a value. We already returned for it above; for the rest we
-	// forward whatever SQS sent (empty allowed for reference_branch
-	// when SQS didn't carry a branch name — SQC will reject, and the
-	// per-org Warn surfaces the misconfiguration).
 
 	orgItems, _ := e.Store.ReadAll("generateOrganizationMappings")
 	seen := make(map[string]struct{})
@@ -582,16 +578,34 @@ func runSetGlobalNewCodePeriod(ctx context.Context, e *Executor) error {
 		}
 		seen[orgKey] = struct{}{}
 
-		e.Logger.Debug("setGlobalNewCodePeriod: POST /api/new_code_periods/set (org default)",
-			"org", orgKey, "type", sqcType, "value", value, "source_type", sqsType)
-		if err := e.Cloud.NewCodePeriods.Set(ctx, cloud.SetNewCodePeriodParams{
-			Organization: orgKey,
-			Type:         sqcType,
-			Value:        value,
-		}); err != nil {
+		// Step 1 — resolve the org UUID via the regular sonarcloud.io
+		// base. The Enterprise API endpoint we hit next needs the
+		// UUID, not the human-readable key.
+		orgID, err := e.Cloud.Organizations.LookupID(ctx, orgKey)
+		if err != nil {
+			counter.Fail()
+			logAPIWarn(e.Logger, "setGlobalNewCodePeriod: org lookup failed", err,
+				"org", orgKey)
+			continue
+		}
+
+		// Step 2 — PATCH /organizations/{uuid} on api.sonarcloud.io.
+		// Only the leak-period fields are set; SonarCloud keeps the
+		// rest unchanged.
+		e.Logger.Debug("setGlobalNewCodePeriod: PATCH /organizations/{id}",
+			"org", orgKey, "org_id", orgID,
+			"defaultLeakPeriodType", sqcType, "defaultLeakPeriod", value,
+			"source_type", sqsType)
+		params := cloud.UpdateOrganizationParams{
+			DefaultLeakPeriodType: &sqcType,
+		}
+		if value != "" {
+			params.DefaultLeakPeriod = &value
+		}
+		if err := e.CloudAPI.Organizations.UpdateOrganization(ctx, orgID, params); err != nil {
 			counter.Fail()
 			logAPIWarn(e.Logger, "setGlobalNewCodePeriod failed", err,
-				"org", orgKey, "type", sqcType)
+				"org", orgKey, "org_id", orgID, "type", sqcType)
 			continue
 		}
 		counter.Success()

@@ -53,6 +53,80 @@ func (o *OrganizationsClient) LookupID(ctx context.Context, orgKey string) (stri
 	return "", fmt.Errorf("organization %q not found or has no id", orgKey)
 }
 
+// UpdateOrganizationParams describes the fields PATCH
+// /organizations/{id} accepts. All fields are optional; only those
+// explicitly set are forwarded in the JSON body.
+//
+// Reference: https://api.sonarcloud.io/openapi.html — PATCH
+// /organizations/{organizationId}. The endpoint lives on the
+// SonarQube Cloud Enterprise API base (api.sonarcloud.io), so the
+// owning client must be constructed with that base URL.
+type UpdateOrganizationParams struct {
+	Name                  *string
+	Description           *string
+	NewProjectPrivate     *bool
+	OnlyPrivateProjects   *bool
+	URL                   *string
+	Avatar                *string
+	DefaultLeakPeriod     *string // e.g. "30" for 30 days
+	DefaultLeakPeriodType *string // "days" | "previous_version" | "reference_branch" | "specific_analysis"
+}
+
+// UpdateOrganization patches an organization by ID. Used by the
+// migration tool (issue #136) to set defaultLeakPeriodType and
+// defaultLeakPeriod from the SonarQube Server platform-wide
+// new-code-period default.
+//
+// orgID is the UUID returned by LookupID, NOT the human-readable key.
+// Must be called on a client constructed against api.sonarcloud.io;
+// the regular sonarcloud.io base does not expose /organizations/{id}.
+func (o *OrganizationsClient) UpdateOrganization(ctx context.Context, orgID string, params UpdateOrganizationParams) error {
+	if orgID == "" {
+		return fmt.Errorf("organization id is required")
+	}
+	body := buildUpdateOrgBody(params)
+	if len(body) == 0 {
+		// Sending an empty PATCH would either no-op or 400 depending
+		// on the server; refuse it client-side so callers notice the
+		// missing fields.
+		return fmt.Errorf("UpdateOrganization called with no fields to update")
+	}
+	return o.patchJSON(ctx, "organizations/"+orgID, body, nil)
+}
+
+// buildUpdateOrgBody assembles the JSON body following SonarCloud's
+// "only-include-fields-the-caller-set" convention so a PATCH with
+// just defaultLeakPeriodType doesn't unintentionally overwrite name,
+// description, etc.
+func buildUpdateOrgBody(p UpdateOrganizationParams) map[string]any {
+	body := map[string]any{}
+	if p.Name != nil {
+		body["name"] = *p.Name
+	}
+	if p.Description != nil {
+		body["description"] = *p.Description
+	}
+	if p.NewProjectPrivate != nil {
+		body["newProjectPrivate"] = *p.NewProjectPrivate
+	}
+	if p.OnlyPrivateProjects != nil {
+		body["onlyPrivateProjects"] = *p.OnlyPrivateProjects
+	}
+	if p.URL != nil {
+		body["url"] = *p.URL
+	}
+	if p.Avatar != nil {
+		body["avatar"] = *p.Avatar
+	}
+	if p.DefaultLeakPeriod != nil {
+		body["defaultLeakPeriod"] = *p.DefaultLeakPeriod
+	}
+	if p.DefaultLeakPeriodType != nil {
+		body["defaultLeakPeriodType"] = *p.DefaultLeakPeriodType
+	}
+	return body
+}
+
 func joinNonEmpty(parts []string, sep string) string {
 	out := ""
 	for _, p := range parts {

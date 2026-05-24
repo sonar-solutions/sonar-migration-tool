@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -15,38 +16,38 @@ import (
 	"testing"
 )
 
-// ncdGlobalCall captures the parameters of one
-// /api/new_code_periods/set POST so the runSetGlobalNewCodePeriod
-// tests can assert org, type, value, and the absence of project (this
-// task is org-scope only).
+// ncdGlobalCall captures one PATCH /organizations/{id} from
+// runSetGlobalNewCodePeriod, including the JSON body so the tests can
+// verify the leak-period fields end up on the wire.
 type ncdGlobalCall struct {
-	project string
-	org     string
-	ncdType string
-	value   string
+	orgID                 string
+	defaultLeakPeriodType string
+	defaultLeakPeriod     string
 }
 
-// runSetGlobalNCDTest wires the extract + migrate fixtures and runs
-// runSetGlobalNewCodePeriod. ncd is the SQS-side global NCD record;
-// orgs is the generateOrganizationMappings content.
-func runSetGlobalNCDTest(t *testing.T, ncd map[string]any, orgs []map[string]any) (hits []ncdGlobalCall, logs string) {
+// runSetGlobalNCDTest wires both Cloud bases — sonarcloud.io (for the
+// org-ID lookup via /api/organizations/search) and api.sonarcloud.io
+// (for the PATCH /organizations/{id} that actually sets the org NCD).
+// orgKeyToID is the canonical org-key → UUID mapping that backs the
+// search handler so the test reflects the real two-step flow.
+func runSetGlobalNCDTest(t *testing.T, ncd map[string]any, orgs []map[string]any, orgKeyToID map[string]string) (hits []ncdGlobalCall, logs string) {
 	t.Helper()
 	var (
 		mu       sync.Mutex
 		recorded []ncdGlobalCall
 	)
+
+	// Cloud mux (sonarcloud.io): only /api/organizations/search.
 	cloudMux := http.NewServeMux()
-	cloudMux.HandleFunc("POST /api/new_code_periods/set", func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseForm()
-		mu.Lock()
-		recorded = append(recorded, ncdGlobalCall{
-			project: r.FormValue("project"),
-			org:     r.FormValue("organization"),
-			ncdType: r.FormValue("type"),
-			value:   r.FormValue("value"),
-		})
-		mu.Unlock()
-		w.WriteHeader(http.StatusNoContent)
+	cloudMux.HandleFunc("/api/organizations/search", func(w http.ResponseWriter, r *http.Request) {
+		keys := strings.Split(r.URL.Query().Get("organizations"), ",")
+		var orgs []map[string]any
+		for _, k := range keys {
+			if id, ok := orgKeyToID[k]; ok {
+				orgs = append(orgs, map[string]any{"id": id, "key": k, "name": k})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"organizations": orgs})
 	})
 	cloudMux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{})
@@ -54,7 +55,28 @@ func runSetGlobalNCDTest(t *testing.T, ncd map[string]any, orgs []map[string]any
 	cloudSrv := httptest.NewServer(cloudMux)
 	t.Cleanup(cloudSrv.Close)
 
-	apiSrv := newMockAPIServer()
+	// API mux (api.sonarcloud.io): PATCH /organizations/{id}.
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/organizations/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			http.Error(w, `{"errors":[{"msg":"method not allowed"}]}`, http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/organizations/")
+		body, _ := io.ReadAll(r.Body)
+		var decoded map[string]any
+		_ = json.Unmarshal(body, &decoded)
+		mu.Lock()
+		recorded = append(recorded, ncdGlobalCall{
+			orgID:                 id,
+			defaultLeakPeriodType: asStr(decoded["defaultLeakPeriodType"]),
+			defaultLeakPeriod:     asStr(decoded["defaultLeakPeriod"]),
+		})
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	})
+	apiSrv := httptest.NewServer(apiMux)
 	t.Cleanup(apiSrv.Close)
 
 	dir := t.TempDir()
@@ -62,9 +84,6 @@ func runSetGlobalNCDTest(t *testing.T, ncd map[string]any, orgs []map[string]any
 	var buf bytes.Buffer
 	e.Logger = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	// SQS global NCD extract — written into the extract directory
-	// (not the migrate store) because readExtractItems goes through
-	// e.Mapping.
 	extractDir := filepath.Join(dir, "extract-01", "getGlobalNewCodePeriod")
 	if err := os.MkdirAll(extractDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -94,9 +113,19 @@ func runSetGlobalNCDTest(t *testing.T, ncd map[string]any, orgs []map[string]any
 	return hits, buf.String()
 }
 
-// SQS NUMBER_OF_DAYS=30 → each SQC org receives one
-// /api/new_code_periods/set POST with organization=<org> and the SQC
-// type "days". The body must NOT carry a project (this is org-scope).
+func asStr(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// SQS NUMBER_OF_DAYS=30 → each SQC org receives one PATCH
+// /organizations/{id} on api.sonarcloud.io with body
+// {"defaultLeakPeriodType":"days","defaultLeakPeriod":"30"}.
 func TestRunSetGlobalNewCodePeriodFansOutDaysToEveryOrg(t *testing.T) {
 	hits, _ := runSetGlobalNCDTest(t,
 		map[string]any{"type": "NUMBER_OF_DAYS", "value": "30", "serverUrl": testServerURL},
@@ -104,68 +133,66 @@ func TestRunSetGlobalNewCodePeriodFansOutDaysToEveryOrg(t *testing.T) {
 			{"sonarcloud_org_key": "orgA"},
 			{"sonarcloud_org_key": "orgB"},
 		},
+		map[string]string{"orgA": "uuid-a", "orgB": "uuid-b"},
 	)
 	if len(hits) != 2 {
-		t.Fatalf("expected 2 calls (one per org), got %d: %+v", len(hits), hits)
+		t.Fatalf("expected 2 PATCHes (one per org), got %d: %+v", len(hits), hits)
 	}
-	sort.Slice(hits, func(i, j int) bool { return hits[i].org < hits[j].org })
+	sort.Slice(hits, func(i, j int) bool { return hits[i].orgID < hits[j].orgID })
 	want := []ncdGlobalCall{
-		{org: "orgA", ncdType: "days", value: "30"},
-		{org: "orgB", ncdType: "days", value: "30"},
+		{orgID: "uuid-a", defaultLeakPeriodType: "days", defaultLeakPeriod: "30"},
+		{orgID: "uuid-b", defaultLeakPeriodType: "days", defaultLeakPeriod: "30"},
 	}
 	for i, w := range want {
 		if hits[i] != w {
 			t.Errorf("call %d: got %+v, want %+v", i, hits[i], w)
 		}
-		if hits[i].project != "" {
-			t.Errorf("call %d: project must be empty (org-scope), got %q", i, hits[i].project)
-		}
 	}
 }
 
-// PREVIOUS_VERSION is SQC's own default — task must not POST anything
-// (issue #196 principle: don't migrate settings equal to default).
+// PREVIOUS_VERSION is SQC's own default — task must not PATCH anything.
 func TestRunSetGlobalNewCodePeriodSkipsPreviousVersion(t *testing.T) {
 	hits, logs := runSetGlobalNCDTest(t,
 		map[string]any{"type": "PREVIOUS_VERSION", "serverUrl": testServerURL},
 		[]map[string]any{{"sonarcloud_org_key": "orgA"}},
+		map[string]string{"orgA": "uuid-a"},
 	)
 	if len(hits) != 0 {
-		t.Errorf("PREVIOUS_VERSION must NOT trigger any POST, got %d", len(hits))
+		t.Errorf("PREVIOUS_VERSION must NOT trigger any PATCH, got %d", len(hits))
 	}
 	if !strings.Contains(logs, "PREVIOUS_VERSION") || !strings.Contains(logs, "skipping") {
 		t.Errorf("expected Info log noting the skip, got:\n%s", logs)
 	}
 }
 
-// REFERENCE_BRANCH with a branch value → maps to SQC's
-// "reference_branch" type and forwards the value.
+// REFERENCE_BRANCH maps to SQC's "reference_branch" type with the
+// branch name as the value.
 func TestRunSetGlobalNewCodePeriodReferenceBranch(t *testing.T) {
 	hits, _ := runSetGlobalNCDTest(t,
 		map[string]any{"type": "REFERENCE_BRANCH", "value": "main", "serverUrl": testServerURL},
 		[]map[string]any{{"sonarcloud_org_key": "orgA"}},
+		map[string]string{"orgA": "uuid-a"},
 	)
 	if len(hits) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(hits))
+		t.Fatalf("expected 1 PATCH, got %d", len(hits))
 	}
-	if hits[0].ncdType != "reference_branch" || hits[0].value != "main" {
+	if hits[0].defaultLeakPeriodType != "reference_branch" || hits[0].defaultLeakPeriod != "main" {
 		t.Errorf("expected type=reference_branch value=main, got %+v", hits[0])
 	}
 }
 
-// SQS sometimes exports the legacy alias DAYS instead of
-// NUMBER_OF_DAYS. The task normalizes it before mapping to SQC's
-// "days", matching sonar-tools.
+// Legacy DAYS → NUMBER_OF_DAYS → SQC "days".
 func TestRunSetGlobalNewCodePeriodNormalizesLegacyDaysAlias(t *testing.T) {
 	hits, _ := runSetGlobalNCDTest(t,
 		map[string]any{"type": "DAYS", "value": "7", "serverUrl": testServerURL},
 		[]map[string]any{{"sonarcloud_org_key": "orgA"}},
+		map[string]string{"orgA": "uuid-a"},
 	)
 	if len(hits) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(hits))
+		t.Fatalf("expected 1 PATCH, got %d", len(hits))
 	}
-	if hits[0].ncdType != "days" || hits[0].value != "7" {
-		t.Errorf("DAYS must be normalized to days, got %+v", hits[0])
+	if hits[0].defaultLeakPeriodType != "days" || hits[0].defaultLeakPeriod != "7" {
+		t.Errorf("DAYS must normalize to days, got %+v", hits[0])
 	}
 }
 
