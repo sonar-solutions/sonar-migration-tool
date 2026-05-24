@@ -363,6 +363,20 @@ func TestProgressLoggerHonoursPerTaskInterval(t *testing.T) {
 			wantFirstLine: "createProjects 10/975 - 1%",
 		},
 		{
+			task:          "configurePortfolios",
+			total:         87,
+			wantInterval:  10,
+			wantFirstAt:   10,
+			wantFirstLine: "configurePortfolios 10/87 - 11%",
+		},
+		{
+			task:          "setProjectSettings",
+			total:         1234,
+			wantInterval:  50,
+			wantFirstAt:   50,
+			wantFirstLine: "setProjectSettings 50/1234 - 4%",
+		},
+		{
 			task:          "setProjectGroupPermissions",
 			total:         19778,
 			wantInterval:  100,

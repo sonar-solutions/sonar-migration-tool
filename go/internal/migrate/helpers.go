@@ -255,11 +255,19 @@ type progressLogger struct {
 // Tuned for operator-visible cadence (issue #202):
 //   - createProjects is one API call per project and the slowest
 //     per-item task on large platforms; surface progress every 10.
+//   - configurePortfolios issues multiple Enterprise-API calls per
+//     portfolio (create + update + project membership); every 10
+//     keeps progress visible at the user's expected cadence.
+//   - setProjectSettings does multiple HTTP calls per record on
+//     average (definition-driven dispatch, fan-out fallback);
+//     every 50 strikes a balance between visibility and noise.
 //   - setProjectGroupPermissions can run into the tens of thousands
 //     of items (projects × groups × permissions); every 100 keeps
 //     the log readable while still ticking visibly.
 var progressLogInterval = map[string]int64{
 	"createProjects":             10,
+	"configurePortfolios":        10,
+	"setProjectSettings":         50,
 	"setProjectGroupPermissions": 100,
 }
 
