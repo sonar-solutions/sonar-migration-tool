@@ -32,6 +32,7 @@ type configFileShape struct {
 	ExtractID          string `json:"extract_id"`
 	TargetTask         string `json:"target_task"`
 	IncludeScanHistory bool   `json:"include_scan_history"`
+	ProjectKey         string `json:"project_key"`
 
 	// Shape 2 (command-sectioned).
 	Extract *configFileShape `json:"extract"`
@@ -95,6 +96,7 @@ func (s configFileShape) toExtractConfig() ExtractConfig {
 		cfg.ExtractID = s.ExtractID
 		cfg.TargetTask = s.TargetTask
 		cfg.IncludeScanHistory = s.IncludeScanHistory
+		cfg.ProjectKey = s.ProjectKey
 	}
 	return cfg
 }

@@ -800,3 +800,79 @@ func TestFetchAndWriteSingleWithResultKey(t *testing.T) {
 		t.Errorf("expected 'Rule Detail', got %q", name)
 	}
 }
+
+// TestParseProjectKeyFilter pins the issue #98 parsing helper.
+// Comma-separated keys are split, whitespace trimmed, empties
+// dropped, and an empty / whitespace-only input returns nil so
+// callers can detect "no filter" by a single nil check.
+func TestParseProjectKeyFilter(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want map[string]bool
+	}{
+		{"empty -> nil", "", nil},
+		{"whitespace only -> nil", "   ", nil},
+		{"single key", "projA", map[string]bool{"projA": true}},
+		{"three keys", "projA,projB,projC",
+			map[string]bool{"projA": true, "projB": true, "projC": true}},
+		{"whitespace tolerated", " projA ,\tprojB ,projC ",
+			map[string]bool{"projA": true, "projB": true, "projC": true}},
+		{"empty tokens dropped", "projA,,projB,",
+			map[string]bool{"projA": true, "projB": true}},
+		{"duplicates collapse", "projA,projA,projB",
+			map[string]bool{"projA": true, "projB": true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseProjectKeyFilter(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("size mismatch: got %v, want %v", got, tc.want)
+			}
+			for k := range tc.want {
+				if !got[k] {
+					t.Errorf("missing key %q in %v", k, got)
+				}
+			}
+		})
+	}
+}
+
+// TestIsSkippedHonoursProjectKeyFilter pins issue #98's downstream
+// behaviour: when a project_key allow-list is installed via
+// SetProjectKeyFilter, IsSkipped returns true for keys NOT in the
+// set, on top of the existing per-project failure tracking. Every
+// per-project extract task already consults IsSkipped, so this is
+// the single integration point that scopes the whole pipeline.
+func TestIsSkippedHonoursProjectKeyFilter(t *testing.T) {
+	e := &Executor{}
+
+	// Without filter — every key is allowed.
+	if e.IsSkipped("anything") {
+		t.Fatal("no filter, no skip — IsSkipped(\"anything\") must be false")
+	}
+
+	// Install allow-list.
+	e.SetProjectKeyFilter(map[string]bool{"projA": true, "projB": true})
+	if e.IsSkipped("projA") {
+		t.Error("projA is in the allow-list; must not be skipped")
+	}
+	if e.IsSkipped("projB") {
+		t.Error("projB is in the allow-list; must not be skipped")
+	}
+	if !e.IsSkipped("projC") {
+		t.Error("projC is NOT in the allow-list; must be skipped")
+	}
+
+	// Existing per-project skip tracking still works on top of the filter.
+	e.RecordSkipped("projA")
+	if !e.IsSkipped("projA") {
+		t.Error("projA was explicitly RecordSkipped; must be skipped")
+	}
+
+	// Clearing the filter restores pass-through behaviour.
+	e.SetProjectKeyFilter(nil)
+	if e.IsSkipped("projC") {
+		t.Error("filter cleared; projC must no longer be skipped")
+	}
+}

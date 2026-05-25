@@ -47,6 +47,7 @@ func init() {
 	f.String("target_task", "", "Name of a specific migration task to complete")
 	f.Bool("skip_profiles", false, "Skip quality profile migration/provisioning in SonarQube Cloud")
 	f.Bool("include_scan_history", false, "Import scan history (issues, metrics) into SonarQube Cloud projects")
+	f.String("project_key", "", "Comma-separated list of SonarQube project keys to scope the migration to (issue #98). Empty migrates every project in projects.csv.")
 	f.Bool("debug", false, "Enable debug-level logging (verbose request payloads, more detail per task)")
 }
 
@@ -78,6 +79,7 @@ func buildMigrateConfig(cmd *cobra.Command, args []string) (migrate.MigrateConfi
 	overrideString(cmd, "run_id", &cfg.RunID)
 	overrideString(cmd, "export_directory", &cfg.ExportDirectory)
 	overrideString(cmd, "target_task", &cfg.TargetTask)
+	overrideString(cmd, "project_key", &cfg.ProjectKey)
 	overrideInt(cmd, "concurrency", &cfg.Concurrency)
 	if cmd.Flags().Changed("skip_profiles") {
 		cfg.SkipProfiles, _ = cmd.Flags().GetBool("skip_profiles")

@@ -405,3 +405,102 @@ func TestProgressLoggerHonoursPerTaskInterval(t *testing.T) {
 		})
 	}
 }
+
+// TestParseProjectKeyFilter mirrors the extract-side helper test
+// (issue #98).
+func TestParseProjectKeyFilter(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want map[string]bool
+	}{
+		{"empty -> nil", "", nil},
+		{"single", "projA", map[string]bool{"projA": true}},
+		{"three", "projA,projB,projC",
+			map[string]bool{"projA": true, "projB": true, "projC": true}},
+		{"whitespace tolerated", " projA ,\tprojB ", map[string]bool{"projA": true, "projB": true}},
+		{"duplicates collapse", "projA,projA", map[string]bool{"projA": true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseProjectKeyFilter(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("size mismatch: got %v, want %v", got, tc.want)
+			}
+			for k := range tc.want {
+				if !got[k] {
+					t.Errorf("missing key %q in %v", k, got)
+				}
+			}
+		})
+	}
+}
+
+// TestLoadCSVToJSONLProjectKeyFilter is the issue #98 regression
+// for the migrate-side filter: when Executor.ProjectKeyFilter is
+// installed AND the CSV being loaded is projects.csv, rows whose
+// `key` column isn't in the filter are dropped. Other CSVs (gates,
+// profiles, ...) must be unaffected — their `key` columns name
+// different entities.
+func TestLoadCSVToJSONLProjectKeyFilter(t *testing.T) {
+	dir := t.TempDir()
+
+	// projects.csv with three rows; filter to one.
+	projectsCSV := "key,name\nprojA,Project A\nprojB,Project B\nprojC,Project C\n"
+	if err := os.WriteFile(filepath.Join(dir, "projects.csv"), []byte(projectsCSV), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A sibling CSV that names different entities by key. The
+	// filter must NOT touch this one.
+	gatesCSV := "key,name\nprojA,Gate A\nprojB,Gate B\nprojC,Gate C\n"
+	if err := os.WriteFile(filepath.Join(dir, "gates.csv"), []byte(gatesCSV), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := filepath.Join(dir, "run-01")
+	os.MkdirAll(runDir, 0o755)
+	store := common.NewDataStore(runDir)
+
+	e := &Executor{
+		Store:            store,
+		ExportDir:        dir,
+		ProjectKeyFilter: map[string]bool{"projB": true},
+	}
+
+	// projects.csv → filtered.
+	if err := loadCSVToJSONL(e, "generateProjectMappings", "projects.csv"); err != nil {
+		t.Fatalf("loadCSVToJSONL: %v", err)
+	}
+	projects, _ := store.ReadAll("generateProjectMappings")
+	if len(projects) != 1 {
+		t.Fatalf("expected 1 project after filter, got %d", len(projects))
+	}
+	var row map[string]any
+	json.Unmarshal(projects[0], &row)
+	if row["key"] != "projB" {
+		t.Errorf("expected projB, got %v", row["key"])
+	}
+
+	// gates.csv → NOT filtered (rows whose `key` happens to match a
+	// project key would otherwise be silently dropped).
+	if err := loadCSVToJSONL(e, "generateGateMappings", "gates.csv"); err != nil {
+		t.Fatalf("loadCSVToJSONL gates: %v", err)
+	}
+	gates, _ := store.ReadAll("generateGateMappings")
+	if len(gates) != 3 {
+		t.Errorf("gates.csv must be unaffected by project_key filter; expected 3 rows, got %d", len(gates))
+	}
+
+	// No filter installed → behaves as before.
+	e2 := &Executor{
+		Store:     store,
+		ExportDir: dir,
+	}
+	if err := loadCSVToJSONL(e2, "generateProjectMappings2", "projects.csv"); err != nil {
+		t.Fatalf("loadCSVToJSONL (no filter): %v", err)
+	}
+	unfiltered, _ := store.ReadAll("generateProjectMappings2")
+	if len(unfiltered) != 3 {
+		t.Errorf("no filter → expected 3 rows, got %d", len(unfiltered))
+	}
+}

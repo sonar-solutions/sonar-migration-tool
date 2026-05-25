@@ -142,6 +142,17 @@ func loadCSVToJSONL(e *Executor, taskName, csvFilename string) error {
 
 	items := make([]json.RawMessage, 0, len(rows))
 	for _, row := range rows {
+		// Project-key allow-list (issue #98) is only applied when
+		// the loader is producing project mappings — filtering
+		// gates / profiles / groups / templates by a project key
+		// would silently drop org-level rows whose `key` column
+		// names a different entity.
+		if csvFilename == "projects.csv" && e.ProjectKeyFilter != nil {
+			key, _ := row["key"].(string)
+			if !e.ProjectKeyFilter[key] {
+				continue
+			}
+		}
 		// Enrich with sonarcloud_org_key from org lookup.
 		if sqKey, ok := row["sonarqube_org_key"].(string); ok && sqKey != "" {
 			if scKey, found := orgLookup[sqKey]; found {

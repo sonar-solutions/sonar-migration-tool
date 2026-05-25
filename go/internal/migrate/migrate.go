@@ -30,6 +30,13 @@ type MigrateConfig struct {
 	SkipProfiles       bool
 	IncludeScanHistory bool
 	Debug              bool // Enable slog.LevelDebug + verbose request payload logs
+	// ProjectKey is a comma-separated list of SQS project keys to
+	// scope the migration to (issue #98). Empty = migrate every
+	// project in projects.csv. Use cases: testing the tool against
+	// a single representative project, or re-migrating a few
+	// projects that failed in a prior run. Whitespace around each
+	// key is trimmed.
+	ProjectKey string
 }
 
 // Executor is the runtime context passed to every migrate task function.
@@ -48,6 +55,13 @@ type Executor struct {
 	Mapping   structure.ExtractMapping
 	Sem       chan struct{}
 	Logger    *slog.Logger
+	// ProjectKeyFilter, when non-nil, scopes per-project migrate
+	// tasks to the named projects (issue #98). Consulted by
+	// loadCSVToJSONL when reading projects.csv, so every downstream
+	// task that iterates project mappings (createProjects,
+	// setProjectProfiles, setProjectGates, …) sees only the
+	// filtered subset.
+	ProjectKeyFilter map[string]bool
 }
 
 // RunMigrate is the main entry point for the migrate command.
@@ -132,20 +146,21 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) (string, error) {
 	plan = filterCompleted(plan, store)
 
 	executor := &Executor{
-		Cloud:     cc,
-		CloudAPI:  apiCC,
-		Raw:       raw,
-		RawAPI:    rawAPI,
-		Extract:   nil, // Will be set per-task based on extract mapping
-		Store:     store,
-		CloudURL:  cloudClient.BaseURL(),
-		APIURL:    apiClient.BaseURL(),
-		EntKey:    cfg.EnterpriseKey,
-		Edition:   edition,
-		ExportDir: cfg.ExportDirectory,
-		Mapping:   mapping,
-		Sem:       make(chan struct{}, cfg.Concurrency),
-		Logger:    logger,
+		Cloud:            cc,
+		CloudAPI:         apiCC,
+		Raw:              raw,
+		RawAPI:           rawAPI,
+		Extract:          nil, // Will be set per-task based on extract mapping
+		Store:            store,
+		CloudURL:         cloudClient.BaseURL(),
+		APIURL:           apiClient.BaseURL(),
+		EntKey:           cfg.EnterpriseKey,
+		Edition:          edition,
+		ExportDir:        cfg.ExportDirectory,
+		Mapping:          mapping,
+		Sem:              make(chan struct{}, cfg.Concurrency),
+		Logger:           logger,
+		ProjectKeyFilter: parseProjectKeyFilter(cfg.ProjectKey),
 	}
 
 	// Execute phases.
@@ -206,6 +221,28 @@ func (cfg *MigrateConfig) applyDefaults() {
 // from previous releases are ignored by the prefix scan (their
 // names don't start with today's ISO date) — they don't collide,
 // just no longer participate in the count.
+// parseProjectKeyFilter splits the comma-separated --project_key
+// MigrateConfig value into a lookup set. Empty input returns nil
+// (no filter). Whitespace around each key is trimmed; duplicates
+// collapse naturally.
+func parseProjectKeyFilter(csv string) map[string]bool {
+	csv = strings.TrimSpace(csv)
+	if csv == "" {
+		return nil
+	}
+	out := make(map[string]bool)
+	for _, k := range strings.Split(csv, ",") {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			out[k] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func generateRunID(directory string) string {
 	today := time.Now().UTC().Format("2006-01-02")
 	entries, _ := os.ReadDir(directory)

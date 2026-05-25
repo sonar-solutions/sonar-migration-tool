@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,13 @@ type ExtractConfig struct {
 	ExtractID       string
 	TargetTask         string
 	IncludeScanHistory bool
+	// ProjectKey is a comma-separated list of project keys to scope
+	// the extract to (issue #98). Empty = extract every project the
+	// token can see. Use cases: extracting a single representative
+	// project before a full migration, or re-extracting only the
+	// projects that failed in a prior run. Whitespace around each
+	// key is trimmed.
+	ProjectKey string
 }
 
 // Executor is the runtime context passed to every task function.
@@ -44,6 +52,26 @@ type Executor struct {
 
 	mu              sync.Mutex
 	skippedProjects map[string]bool
+
+	// projectKeyFilter, when non-nil, scopes per-project tasks to
+	// the named projects (issue #98). nil = no filter (today's
+	// pre-filter behaviour). Read via IsSkipped — every per-project
+	// task already consults that predicate, so the filter takes
+	// effect everywhere downstream for free.
+	projectKeyFilter map[string]bool
+}
+
+// SetProjectKeyFilter installs a project-key allow-list. Keys not in
+// the set are treated as skipped by IsSkipped, which the per-project
+// extract tasks already check. A nil or empty map disables filtering.
+func (e *Executor) SetProjectKeyFilter(keys map[string]bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(keys) == 0 {
+		e.projectKeyFilter = nil
+		return
+	}
+	e.projectKeyFilter = keys
 }
 
 // RecordSkipped marks a project as skipped due to insufficient privileges.
@@ -56,11 +84,28 @@ func (e *Executor) RecordSkipped(projectKey string) {
 	e.skippedProjects[projectKey] = true
 }
 
-// IsSkipped returns true if the project has been marked as skipped.
+// IsSkipped returns true if the project has been marked as skipped
+// for either of two reasons:
+//
+//   - the project failed an earlier per-project task with a
+//     non-fatal HTTP error (insufficient privileges, missing
+//     branch, etc.) — recorded via RecordSkipped.
+//   - the executor has a project_key allow-list installed
+//     (issue #98) and the project isn't in it.
+//
+// Per-project extract tasks consult this predicate before doing any
+// network work, so installing the allow-list is sufficient to skip
+// every downstream side-effect.
 func (e *Executor) IsSkipped(projectKey string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.skippedProjects[projectKey]
+	if e.skippedProjects[projectKey] {
+		return true
+	}
+	if e.projectKeyFilter != nil && !e.projectKeyFilter[projectKey] {
+		return true
+	}
+	return false
 }
 
 // SkippedProjectKeys returns a sorted list of project keys that were skipped.
@@ -107,6 +152,9 @@ func RunExtract(ctx context.Context, cfg ExtractConfig) ([]string, error) {
 	plan = filterCompleted(plan, store)
 
 	executor := newExecutor(raw, store, client.BaseURL(), edition, version, cfg.Concurrency)
+	if filter := parseProjectKeyFilter(cfg.ProjectKey); filter != nil {
+		executor.SetProjectKeyFilter(filter)
+	}
 	if err := executePhases(ctx, executor, plan, registry, store); err != nil {
 		return nil, err
 	}
@@ -216,6 +264,27 @@ func runPhase(ctx context.Context, e *Executor, taskNames []string, registry map
 		})
 	}
 	return g.Wait()
+}
+
+// parseProjectKeyFilter splits the comma-separated --project_key CLI
+// value into a lookup set. Empty input → nil (no filter). Whitespace
+// around each key is trimmed; duplicates collapse naturally.
+func parseProjectKeyFilter(csv string) map[string]bool {
+	csv = strings.TrimSpace(csv)
+	if csv == "" {
+		return nil
+	}
+	out := make(map[string]bool)
+	for _, k := range strings.Split(csv, ",") {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			out[k] = true
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (cfg *ExtractConfig) applyDefaults() {

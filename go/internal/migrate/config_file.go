@@ -26,6 +26,7 @@ type configFileShape struct {
 	TargetTask         string `json:"target_task"`
 	SkipProfiles       bool   `json:"skip_profiles"`
 	IncludeScanHistory bool   `json:"include_scan_history"`
+	ProjectKey         string `json:"project_key"`
 	Debug              bool   `json:"debug"`
 
 	// Shape 2 (command-sectioned).
@@ -89,6 +90,7 @@ func (s configFileShape) toMigrateConfig() MigrateConfig {
 		cfg.TargetTask = s.TargetTask
 		cfg.SkipProfiles = s.SkipProfiles
 		cfg.IncludeScanHistory = s.IncludeScanHistory
+		cfg.ProjectKey = s.ProjectKey
 		cfg.Debug = s.Debug
 	}
 	return cfg

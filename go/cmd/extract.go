@@ -48,6 +48,7 @@ func init() {
 	f.String("extract_id", "", "ID of an extract to resume in case of failures")
 	f.String("target_task", "", "Target task to complete; all dependent tasks will be included")
 	f.Bool("include_scan_history", false, "Extract full issue data, source code, and SCM blame for scan history migration")
+	f.String("project_key", "", "Comma-separated list of SonarQube project keys to scope the extract to (issue #98). Empty extracts every project the token can see.")
 }
 
 func buildExtractConfig(cmd *cobra.Command, args []string) (extract.ExtractConfig, error) {
@@ -82,6 +83,7 @@ func buildExtractConfig(cmd *cobra.Command, args []string) (extract.ExtractConfi
 	overrideString(cmd, "target_task", &cfg.TargetTask)
 	overrideInt(cmd, "concurrency", &cfg.Concurrency)
 	overrideInt(cmd, "timeout", &cfg.Timeout)
+	overrideString(cmd, "project_key", &cfg.ProjectKey)
 	if cmd.Flags().Changed("include_scan_history") {
 		cfg.IncludeScanHistory, _ = cmd.Flags().GetBool("include_scan_history")
 	}
