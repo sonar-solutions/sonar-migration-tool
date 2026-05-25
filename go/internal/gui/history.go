@@ -20,8 +20,13 @@ const (
 	extractMetaFile   = "extract.json"
 )
 
-// runIDPattern matches date-based run IDs like "04-27-2026-01".
-var runIDPattern = regexp.MustCompile(`^\d{2}-\d{2}-\d{4}-\d{2}$`)
+// runIDPattern matches date-based run IDs in either the historical
+// MM-DD-YYYY-NN format (e.g. "04-27-2026-01") OR the new ISO
+// YYYY-MM-DD-NN format introduced for issue #108 (e.g.
+// "2026-04-27-01"). Accepting both keeps run directories from
+// previous releases visible in the GUI history list and resumable
+// via --run_id.
+var runIDPattern = regexp.MustCompile(`^(\d{2}-\d{2}-\d{4}|\d{4}-\d{2}-\d{2})-\d{2}$`)
 
 // RunInfo summarises a single run directory for the history list.
 type RunInfo struct {
