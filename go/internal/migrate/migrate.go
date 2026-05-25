@@ -198,8 +198,16 @@ func (cfg *MigrateConfig) applyDefaults() {
 	}
 }
 
+// generateRunID returns an ISO-date-prefixed run ID (issue #108).
+// Format: "YYYY-MM-DD-NN" where NN is the next sequence number for
+// the current day in the given directory. The ISO date keeps the
+// IDs internationally readable and sorts chronologically when run
+// directories are listed alphabetically. Older MM-DD-YYYY-NN dirs
+// from previous releases are ignored by the prefix scan (their
+// names don't start with today's ISO date) — they don't collide,
+// just no longer participate in the count.
 func generateRunID(directory string) string {
-	today := time.Now().UTC().Format("01-02-2006")
+	today := time.Now().UTC().Format("2006-01-02")
 	entries, _ := os.ReadDir(directory)
 	count := 0
 	for _, e := range entries {

@@ -88,9 +88,13 @@ func phaseByIndex(idx int) WizardPhase {
 	return PhaseExtract
 }
 
-// generateRunID creates a date-based run ID like "04-20-2026-01".
+// generateRunID creates an ISO-date-prefixed run ID like
+// "2026-04-20-01" (issue #108). YYYY-MM-DD sorts chronologically
+// when run directories are listed alphabetically and is
+// internationally readable. Mirrors migrate.generateRunID — keep
+// them in sync.
 func generateRunID(directory string) string {
-	today := time.Now().UTC().Format("01-02-2006")
+	today := time.Now().UTC().Format("2006-01-02")
 	entries, _ := os.ReadDir(directory)
 	count := 0
 	for _, e := range entries {

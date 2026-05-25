@@ -257,8 +257,11 @@ func detectEdition(ctx context.Context, raw *RawClient) (Edition, error) {
 	return ParseEdition(body), nil
 }
 
+// generateRunID returns an ISO-date-prefixed extract ID (issue
+// #108). Format: "YYYY-MM-DD-NN". See migrate.generateRunID for the
+// rationale — the two helpers are deliberately kept in sync.
 func generateRunID(directory string) string {
-	today := time.Now().UTC().Format("01-02-2006")
+	today := time.Now().UTC().Format("2006-01-02")
 	entries, _ := os.ReadDir(directory)
 	count := 0
 	for _, e := range entries {
