@@ -64,7 +64,7 @@ type hotspotPair struct {
 // the project key) is stripped so that source and Cloud components can be
 // compared by relative file path alone.
 func buildHotspotMatchKey(h matchableHotspot, projectKey string) string {
-	if h.RuleKey == "" || h.Component == "" {
+	if h.RuleKey == "" || h.Component == "" || h.Line <= 0 {
 		return ""
 	}
 	filePath := h.Component
@@ -229,7 +229,7 @@ func syncProjectHotspots(ctx context.Context, e *Executor, input syncHotspotInpu
 			return nil
 		})
 	}
-	_ = g.Wait()
+	g.Wait() //nolint:errcheck // goroutines always return nil; errors are per-pair
 
 	return syncHotspotResult{
 		Synced:  counter.succeeded.Load(),
@@ -250,11 +250,7 @@ func buildHotspotPairs(ctx context.Context, e *Executor, input syncHotspotInput)
 	}
 
 	_ = waitForCloudIndexing(ctx, func() (int, error) {
-		hs, fetchErr := e.Cloud.Hotspots.SearchAll(ctx, input.CloudKey, input.OrgKey)
-		if fetchErr != nil {
-			return 0, fetchErr
-		}
-		return len(hs), nil
+		return e.Cloud.Hotspots.Count(ctx, input.CloudKey, input.OrgKey)
 	})
 
 	cloudAPIHotspots, err := e.Cloud.Hotspots.SearchAll(ctx, input.CloudKey, input.OrgKey)
@@ -298,10 +294,14 @@ func syncOneHotspot(ctx context.Context, e *Executor, pair hotspotPair) error {
 		}
 	}
 
-	// 2. Sync comments: add migrated comments, skip already-migrated ones.
+	// 2. Sync comments: fetch Cloud detail first for idempotency check.
+	if len(pair.source.Comments) == 0 {
+		return nil
+	}
+
+	cloudComments := fetchCloudHotspotComments(ctx, e, pair.cloud.Key)
 	for _, comment := range pair.source.Comments {
-		// Skip if this comment was already migrated (idempotency).
-		if isAlreadyMigratedComment(comment, pair.cloud.Comments) {
+		if isAlreadyMigratedComment(comment, cloudComments) {
 			continue
 		}
 
@@ -315,11 +315,9 @@ func syncOneHotspot(ctx context.Context, e *Executor, pair hotspotPair) error {
 				"cloud_key", pair.cloud.Key,
 				"comment_author", comment.Login,
 			)
-			// Non-fatal: continue with remaining comments.
 			continue
 		}
 
-		// Small delay between comments to avoid rate-limiting.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -328,6 +326,27 @@ func syncOneHotspot(ctx context.Context, e *Executor, pair hotspotPair) error {
 	}
 
 	return nil
+}
+
+// fetchCloudHotspotComments retrieves comments for a Cloud hotspot via the
+// /api/hotspots/show endpoint. Returns nil on failure (non-fatal — worst case
+// is duplicate comments, not data loss).
+func fetchCloudHotspotComments(ctx context.Context, e *Executor, cloudKey string) []hotspotComment {
+	detail, err := e.Cloud.Hotspots.Show(ctx, cloudKey)
+	if err != nil {
+		e.Logger.Debug("syncHotspotMetadata: could not fetch cloud hotspot detail",
+			"cloud_key", cloudKey, "err", err)
+		return nil
+	}
+	comments := make([]hotspotComment, 0, len(detail.Comment))
+	for _, c := range detail.Comment {
+		comments = append(comments, hotspotComment{
+			Login:    c.Login,
+			HTMLText: c.HTMLText,
+			Markdown: c.Markdown,
+		})
+	}
+	return comments
 }
 
 // migratedCommentPrefix is prepended to every migrated comment.

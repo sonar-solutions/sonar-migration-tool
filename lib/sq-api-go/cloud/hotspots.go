@@ -35,6 +35,33 @@ func (c *HotspotsClient) SearchAll(ctx context.Context, projectKey, org string) 
 	return all, nil
 }
 
+// Count returns the total number of hotspots matching the given project
+// without fetching all of them. Makes a single API call with ps=1.
+func (c *HotspotsClient) Count(ctx context.Context, projectKey, org string) (int, error) {
+	params := url.Values{
+		"projectKey": {projectKey},
+		"ps":         {"1"},
+		"p":          {"1"},
+	}
+	if org != "" {
+		params.Set("organization", org)
+	}
+	var resp types.HotspotsSearchResponse
+	if err := c.getJSON(ctx, "api/hotspots/search?"+params.Encode(), &resp); err != nil {
+		return 0, err
+	}
+	return resp.Paging.Total, nil
+}
+
+// Show fetches full detail for a single hotspot including comments.
+func (c *HotspotsClient) Show(ctx context.Context, hotspotKey string) (*types.HotspotDetail, error) {
+	var resp types.HotspotDetail
+	if err := c.getJSON(ctx, "api/hotspots/show?hotspot="+url.QueryEscape(hotspotKey), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // ChangeStatus changes the status and resolution of a hotspot.
 func (c *HotspotsClient) ChangeStatus(ctx context.Context, hotspotKey, status, resolution string) error {
 	form := url.Values{}

@@ -249,16 +249,16 @@ func waitForCloudIndexing(ctx context.Context, fetchFn func() (int, error)) erro
 // ---------------------------------------------------------------------------
 
 // isExpectedTransitionError returns true for API errors that are harmless
-// and expected during transition replay. The most common case is a 400 on
-// the "reopen" transition when the Cloud issue is already OPEN.
-func isExpectedTransitionError(err error, transition string) bool {
+// and expected during transition replay. Cloud returns 400 when a transition
+// is invalid for the current issue state — this is normal because the Cloud
+// issue may already be in the target state from a previous run or because the
+// available transitions differ between SQ and SC.
+func isExpectedTransitionError(err error) bool {
 	var apiErr *sqapi.APIError
 	if !errors.As(err, &apiErr) {
 		return false
 	}
-	// Cloud returns 400 when a transition is invalid for the current
-	// issue state (e.g. reopen on an already-OPEN issue).
-	return apiErr.StatusCode == 400 && transition == "reopen"
+	return apiErr.StatusCode == 400
 }
 
 // ---------------------------------------------------------------------------
@@ -311,16 +311,7 @@ func syncProjectIssues(ctx context.Context, e *Executor, cloudKey, orgKey, serve
 		params := url.Values{}
 		params.Set("componentKeys", cloudKey)
 		params.Set("organization", orgKey)
-		params.Set("ps", "1")
-		params.Set("p", "1")
-		// Use a lightweight single-page probe to check whether any
-		// issues have been indexed yet. SearchAll respects ps=1 so we
-		// get at most one issue back.
-		issues, fetchErr := e.Cloud.Issues.SearchAll(ctx, params)
-		if fetchErr != nil {
-			return 0, fetchErr
-		}
-		return len(issues), nil
+		return e.Cloud.Issues.Count(ctx, params)
 	})
 	if err != nil {
 		logAPIWarn(e.Logger, "syncIssueMetadata: indexing wait failed", err, "project", cloudKey)
@@ -399,31 +390,45 @@ func syncProjectIssues(ctx context.Context, e *Executor, cloudKey, orgKey, serve
 // Idempotency: if the cloud issue already carries the metadataSyncTag
 // the pair is skipped entirely.
 func syncOnePair(ctx context.Context, e *Executor, pair issuePair, counter *TaskCounter) {
-	// Idempotency check: skip if already tagged.
 	if slices.Contains(pair.cloud.Tags, metadataSyncTag) {
 		return
 	}
 
 	cloudKey := pair.cloud.Key
+	transFailed := syncIssueTransition(ctx, e, cloudKey, pair.source)
+	commentFailed := syncIssueComments(ctx, e, cloudKey, pair.source.Comments)
+	tagsFailed := syncIssueTags(ctx, e, cloudKey, pair.source.Tags)
 
-	// --- Transition ---
-	transition := getFallbackTransition(pair.source.Resolution, pair.source.Status)
-	if transition != "" {
-		e.Logger.Debug("syncIssueMetadata: transition",
-			"issue", cloudKey, "transition", transition)
-		if err := e.Cloud.Issues.DoTransition(ctx, cloudKey, transition); err != nil {
-			if !isExpectedTransitionError(err, transition) {
-				logAPIWarn(e.Logger, "syncIssueMetadata: transition failed", err,
-					"issue", cloudKey, "transition", transition)
-				counter.Fail()
-				return
-			}
-			// Expected error (e.g. reopen on OPEN) — continue.
+	if transFailed || commentFailed || tagsFailed {
+		counter.Fail()
+	} else {
+		counter.Success()
+	}
+}
+
+// syncIssueTransition applies the fallback status transition on the Cloud issue.
+// Returns true if the transition failed with an unexpected error.
+func syncIssueTransition(ctx context.Context, e *Executor, cloudKey string, src matchableIssue) bool {
+	transition := getFallbackTransition(src.Resolution, src.Status)
+	if transition == "" {
+		return false
+	}
+	e.Logger.Debug("syncIssueMetadata: transition", "issue", cloudKey, "transition", transition)
+	if err := e.Cloud.Issues.DoTransition(ctx, cloudKey, transition); err != nil {
+		if !isExpectedTransitionError(err) {
+			logAPIWarn(e.Logger, "syncIssueMetadata: transition failed", err,
+				"issue", cloudKey, "transition", transition)
+			return true
 		}
 	}
+	return false
+}
 
-	// --- Comments ---
-	for _, c := range pair.source.Comments {
+// syncIssueComments migrates all source comments to the Cloud issue.
+// Returns true if any comment failed to be added.
+func syncIssueComments(ctx context.Context, e *Executor, cloudKey string, comments []issueComment) bool {
+	var failed bool
+	for _, c := range comments {
 		text := c.Markdown
 		if text == "" {
 			text = c.HTMLText
@@ -431,41 +436,34 @@ func syncOnePair(ctx context.Context, e *Executor, pair issuePair, counter *Task
 		if text == "" {
 			continue
 		}
-		// Prefix with original author and timestamp for audit trail.
 		prefix := fmt.Sprintf("[Migrated from %s", c.Login)
 		if c.CreatedAt != "" {
 			prefix += " on " + c.CreatedAt
 		}
 		prefix += "]\n\n"
 
-		e.Logger.Debug("syncIssueMetadata: add comment",
-			"issue", cloudKey, "login", c.Login)
 		if err := e.Cloud.Issues.AddComment(ctx, cloudKey, prefix+text); err != nil {
 			logAPIWarn(e.Logger, "syncIssueMetadata: add comment failed", err,
 				"issue", cloudKey, "login", c.Login)
-			counter.Fail()
-			return
+			failed = true
 		}
 	}
+	return failed
+}
 
-	// --- Tags ---
-	// Merge source tags with the idempotency marker.
-	tags := make([]string, 0, len(pair.source.Tags)+1)
-	tags = append(tags, pair.source.Tags...)
+// syncIssueTags sets the source tags plus the idempotency marker on the Cloud issue.
+// Returns true if the API call failed.
+func syncIssueTags(ctx context.Context, e *Executor, cloudKey string, sourceTags []string) bool {
+	tags := make([]string, 0, len(sourceTags)+1)
+	tags = append(tags, sourceTags...)
 	if !slices.Contains(tags, metadataSyncTag) {
 		tags = append(tags, metadataSyncTag)
 	}
-
-	e.Logger.Debug("syncIssueMetadata: set tags",
-		"issue", cloudKey, "tags", tags)
 	if err := e.Cloud.Issues.SetTags(ctx, cloudKey, tags); err != nil {
-		logAPIWarn(e.Logger, "syncIssueMetadata: set tags failed", err,
-			"issue", cloudKey)
-		counter.Fail()
-		return
+		logAPIWarn(e.Logger, "syncIssueMetadata: set tags failed", err, "issue", cloudKey)
+		return true
 	}
-
-	counter.Success()
+	return false
 }
 
 // ---------------------------------------------------------------------------
