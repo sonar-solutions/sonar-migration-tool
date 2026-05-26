@@ -111,9 +111,39 @@ Find ALL code paths that share code with your change:
 ---
 
 ## Phase 2 — Environment Setup (Clean Slate)
-<!-- updated: 2026-05-26_00:00:00 -->
+<!-- updated: 2026-05-26_13:00:00 -->
 
 > Every test run starts from ZERO. No stale state. No leftover data.
+
+### 2.0 — Connection Details Are in `config.json`
+
+**You have full access to both SonarQube Server and SonarQube Cloud.** All connection details — URLs, tokens, organization keys — are stored in **`config.json`** at the project root. Read it first:
+
+```bash
+cat config.json | jq '.'
+```
+
+Map the config fields to the environment variables used in this document:
+
+| Env Var (this doc) | `config.json` path |
+|---|---|
+| `SQ_URL` | `.sonarqube.url` |
+| `SONAR_TOKEN` | `.sonarqube.token` |
+| `SC_URL` | `.sonarcloud.organizations[0].url` |
+| `SC_TOKEN` | `.sonarcloud.organizations[0].token` |
+| `SC_ORG` | `.sonarcloud.organizations[0].key` |
+
+You can export them for use in the curl commands below:
+
+```bash
+export SQ_URL=$(jq -r '.sonarqube.url' config.json)
+export SONAR_TOKEN=$(jq -r '.sonarqube.token' config.json)
+export SC_URL=$(jq -r '.sonarcloud.organizations[0].url' config.json)
+export SC_TOKEN=$(jq -r '.sonarcloud.organizations[0].token' config.json)
+export SC_ORG=$(jq -r '.sonarcloud.organizations[0].key' config.json)
+```
+
+> **Do NOT skip this step.** If an agent claims it has no access to SQS or SC, it is wrong — `config.json` has everything needed.
 
 ### 2.1 — Verify Source (SQS) Is Accessible
 
