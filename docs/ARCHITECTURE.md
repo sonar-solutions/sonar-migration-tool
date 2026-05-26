@@ -86,6 +86,7 @@ Both `extract` and `migrate` use a typed task engine with topological sort plann
 4. **Data flow** — Tasks read input from a `DataStore` (which loads JSONL files from previous tasks) and write output via a `ChunkWriter` (which produces JSONL files for downstream tasks).
 
 ### Extract Tasks (67 tasks)
+<!-- updated: 2026-05-26_18:00:00 -->
 
 Organized by category in `go/internal/extract/tasks_*.go`:
 - **System** — Server version, edition, plugins
@@ -96,9 +97,11 @@ Organized by category in `go/internal/extract/tasks_*.go`:
 - **Templates** — Permission templates, associated groups/users
 - **Views** — Portfolios, applications (Enterprise+ only)
 - **Issues** — Accepted issues, safe hotspots
+- **Scan History** — Full issues (with comments/tags/flows), full hotspots (with review details), component trees, source code, SCM data (requires `--include-scan-history`)
 - **Webhooks** — Global and project-level webhooks
 
 ### Migrate Tasks (44+ tasks)
+<!-- updated: 2026-05-26_18:00:00 -->
 
 Organized by category in `go/internal/migrate/tasks_*.go`:
 - **Create** — Projects, groups, quality gates, quality profiles, permission templates, portfolios
@@ -107,6 +110,9 @@ Organized by category in `go/internal/migrate/tasks_*.go`:
 - **Permissions** — Template permissions, project permissions
 - **Rules** — Custom rule activation
 - **ALM** — DevOps platform binding detection
+- **Scan History** — Import scan reports via reconstructed protobuf format (native issues, external issues via ExternalIssue protobuf, hotspots mapped to issues)
+- **Issue Metadata Sync** — Two-phase: waits for Cloud indexing, matches source→cloud issues by composite key (rule|filePath|line), then syncs status transitions, comments, and tags per matched pair. Idempotent via `metadata-synchronized` tag. Requires `--include-scan-history`.
+- **Hotspot Metadata Sync** — Same two-phase pattern: matches source→cloud hotspots by composite key, syncs REVIEWED status/resolution and comments. Requires `--include-scan-history`.
 - **Delete/Reset** — Cleanup tasks for the `reset` command
 
 ## Data Flow

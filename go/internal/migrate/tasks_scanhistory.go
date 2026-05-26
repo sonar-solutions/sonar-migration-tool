@@ -94,10 +94,15 @@ type importResult struct {
 
 func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*importResult, error) {
 	issues := loadExtractedIssues(e, input.ServerURL, input.ServerKey, input.Branch)
+	hotspotIssues := loadExtractedHotspots(e, input.ServerURL, input.ServerKey, input.Branch)
+	extIssues, adHocRules := loadExtractedExternalIssues(e, input.ServerURL, input.ServerKey, input.Branch)
 	allComponents := loadExtractedComponents(e, input.ServerURL, input.ServerKey, input.Branch)
 	sources := loadExtractedSources(e, input.ServerURL, input.ServerKey, input.Branch)
 	activeRules := loadExtractedActiveRules(e, input.ServerURL, input.ServerKey)
 	qprofiles := loadExtractedQProfiles(e, input.ServerURL, input.ServerKey)
+
+	// Combine native issues with hotspot issues for the regular Issue protobuf.
+	issues = append(issues, hotspotIssues...)
 
 	// Only include components that have matching source code (matches cloudvoyager behavior).
 	sourceKeys := buildSourceKeySet(sources)
@@ -114,6 +119,8 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 
 	root, fileComps, cr := scanreport.BuildComponents(input.CloudKey, components)
 	pbIssues := scanreport.BuildIssues(issues, cr)
+	pbExtIssues := scanreport.BuildExternalIssues(extIssues, cr)
+	pbAdHocRules := scanreport.BuildAdHocRules(adHocRules)
 	pbActiveRules := scanreport.BuildActiveRules(activeRules)
 
 	now := time.Now()
@@ -164,9 +171,11 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 		RootComponent:  root,
 		FileComponents: fileComps,
 		Issues:         pbIssues,
+		ExternalIssues: pbExtIssues,
 		Measures:       make(map[int32][]*pb.Measure),
 		Changesets:     changesets,
 		ActiveRules:    pbActiveRules,
+		AdHocRules:     pbAdHocRules,
 		Sources:        pbSources,
 	}
 
@@ -268,8 +277,23 @@ func loadExtractedIssues(e *Executor, serverURL, serverKey, branch string) []sca
 		if extractField(item.Data, "branch") != branch {
 			continue
 		}
+		// Exclude CLOSED issues and issues resolved by code fix (FIXED).
+		// These have no Cloud counterpart — the scanner report only creates
+		// them as OPEN, so recreating CLOSED/FIXED would create phantom issues.
+		status := strings.ToUpper(extractField(item.Data, "status"))
+		resolution := strings.ToUpper(extractField(item.Data, "resolution"))
+		if status == "CLOSED" {
+			continue
+		}
+		if resolution == "FIXED" {
+			continue
+		}
 		rule := extractField(item.Data, "rule")
 		repo, key := splitRule(rule)
+		// Skip external issues — they use a different protobuf message type.
+		if !sonarCloudRuleRepos[repo] || strings.HasPrefix(repo, "external_") {
+			continue
+		}
 		issues = append(issues, scanreport.IssueInput{
 			RuleRepo:  repo,
 			RuleKey:   key,
@@ -283,6 +307,162 @@ func loadExtractedIssues(e *Executor, serverURL, serverKey, branch string) []sca
 		})
 	}
 	return issues
+}
+
+// loadExtractedExternalIssues loads external issues (from third-party linters)
+// that require the ExternalIssue protobuf message. Classification follows
+// CloudVoyager's is-external-issue.js: issues from repos NOT in
+// sonarCloudRuleRepos or prefixed with "external_" are external.
+func loadExtractedExternalIssues(e *Executor, serverURL, serverKey, branch string) ([]scanreport.ExternalIssueInput, []scanreport.AdHocRuleInput) {
+	items, err := readExtractItems(e, "getProjectIssuesFull")
+	if err != nil {
+		return nil, nil
+	}
+	seenRules := make(map[string]bool)
+	var extIssues []scanreport.ExternalIssueInput
+	var adHocRules []scanreport.AdHocRuleInput
+
+	for _, item := range items {
+		if item.ServerURL != serverURL {
+			continue
+		}
+		if extractField(item.Data, "projectKey") != serverKey {
+			continue
+		}
+		if extractField(item.Data, "branch") != branch {
+			continue
+		}
+		issue, rule, ok := classifyExternalIssue(item.Data)
+		if !ok {
+			continue
+		}
+		extIssues = append(extIssues, issue)
+		if !seenRules[rule.EngineID+":"+rule.RuleID] {
+			seenRules[rule.EngineID+":"+rule.RuleID] = true
+			adHocRules = append(adHocRules, rule)
+		}
+	}
+	return extIssues, adHocRules
+}
+
+// classifyExternalIssue checks whether a single extracted issue record is an
+// external issue (third-party linter). If so, it returns the ExternalIssueInput
+// and a corresponding AdHocRuleInput. Returns ok=false for native or excluded issues.
+func classifyExternalIssue(data json.RawMessage) (scanreport.ExternalIssueInput, scanreport.AdHocRuleInput, bool) {
+	status := strings.ToUpper(extractField(data, "status"))
+	resolution := strings.ToUpper(extractField(data, "resolution"))
+	if status == "CLOSED" || resolution == "FIXED" {
+		return scanreport.ExternalIssueInput{}, scanreport.AdHocRuleInput{}, false
+	}
+	rule := extractField(data, "rule")
+	repo, key := splitRule(rule)
+	if repo == "" {
+		return scanreport.ExternalIssueInput{}, scanreport.AdHocRuleInput{}, false
+	}
+	if !strings.HasPrefix(repo, "external_") && sonarCloudRuleRepos[repo] {
+		return scanreport.ExternalIssueInput{}, scanreport.AdHocRuleInput{}, false
+	}
+	engineID := strings.TrimPrefix(repo, "external_")
+	return scanreport.ExternalIssueInput{
+		EngineID:  engineID,
+		RuleID:    key,
+		Message:   extractField(data, "message"),
+		Severity:  extractField(data, "severity"),
+		Type:      extractField(data, "type"),
+		StartLine: extractInt32(data, "textRange", "startLine"),
+		EndLine:   extractInt32(data, "textRange", "endLine"),
+		StartOff:  extractInt32(data, "textRange", "startOffset"),
+		EndOff:    extractInt32(data, "textRange", "endOffset"),
+		Component: extractField(data, "component"),
+	}, scanreport.AdHocRuleInput{
+		EngineID:    engineID,
+		RuleID:      key,
+		Name:        key,
+		Description: fmt.Sprintf("Rule from %s plugin", engineID),
+		Severity:    extractField(data, "severity"),
+		Type:        extractField(data, "type"),
+	}, true
+}
+
+// loadExtractedHotspots loads hotspots from the extract and converts them
+// to IssueInput for inclusion in the scanner report protobuf. Hotspots
+// are mapped to regular issues with severity derived from vulnerability
+// probability (matching CloudVoyager behavior).
+func loadExtractedHotspots(e *Executor, serverURL, serverKey, branch string) []scanreport.IssueInput {
+	items, err := readExtractItems(e, "getProjectHotspotsFull")
+	if err != nil {
+		return nil
+	}
+	var hotspots []scanreport.IssueInput
+	for _, item := range items {
+		if item.ServerURL != serverURL {
+			continue
+		}
+		projKey := extractField(item.Data, "project")
+		if projKey == "" {
+			projKey = extractField(item.Data, "projectKey")
+		}
+		if projKey != serverKey {
+			continue
+		}
+		br := extractField(item.Data, "branch")
+		if br != "" && br != branch {
+			continue
+		}
+		ruleKey := extractField(item.Data, "ruleKey")
+		if ruleKey == "" {
+			// Try nested rule.key
+			ruleKey = extractNestedRuleKey(item.Data)
+		}
+		repo, key := splitRule(ruleKey)
+		line := extractInt32Field(item.Data, "line")
+		severity := mapVulnProbToSeverity(extractField(item.Data, "vulnerabilityProbability"))
+		hotspots = append(hotspots, scanreport.IssueInput{
+			RuleRepo:  repo,
+			RuleKey:   key,
+			Message:   extractField(item.Data, "message"),
+			Severity:  severity,
+			StartLine: line,
+			EndLine:   line,
+			Component: extractField(item.Data, "component"),
+		})
+	}
+	return hotspots
+}
+
+func extractNestedRuleKey(data json.RawMessage) string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return ""
+	}
+	ruleRaw, ok := obj["rule"]
+	if !ok {
+		return ""
+	}
+	var rule map[string]json.RawMessage
+	if err := json.Unmarshal(ruleRaw, &rule); err != nil {
+		return ""
+	}
+	keyRaw, ok := rule["key"]
+	if !ok {
+		return ""
+	}
+	var key string
+	json.Unmarshal(keyRaw, &key)
+	return key
+}
+
+func mapVulnProbToSeverity(prob string) string {
+	switch strings.ToUpper(prob) {
+	case "HIGH":
+		return "CRITICAL"
+	case "MEDIUM":
+		return "MAJOR"
+	case "LOW":
+		return "MINOR"
+	default:
+		return "MAJOR"
+	}
 }
 
 func loadExtractedComponents(e *Executor, serverURL, serverKey, branch string) []scanreport.ComponentInput {
