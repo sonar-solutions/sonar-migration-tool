@@ -155,3 +155,20 @@ Commands accept flags, positional arguments, or a JSON config file (`--config pa
 - **Framework:** stdlib `testing` + `net/http/httptest` for HTTP mocking
 - **Run tests:** `cd go && go test ./... -count=1`
 - **Coverage:** `cd go && go test ./... -coverprofile=coverage.out`
+
+## Roadmap: Data Migration Specs
+<!-- updated: 2026-05-26_01:00:00 -->
+
+The `roadmap/specs/` directory contains 25 PRD specifications for harvesting data migration features from CloudVoyager (the Node.js predecessor). These specs provide a complete blueprint for building full SonarQube Server → Cloud migration — including issues, hotspots, source code, measures, and all metadata — via a reconstructed SonarScanner protobuf report format.
+
+See [roadmap/README.md](../roadmap/README.md) for the full spec index, dependency graph, priority matrix, and implementation strategy.
+
+| Epic | Specs | Priority | Summary |
+|------|-------|----------|---------|
+| Core Data Migration | SPEC-001 through SPEC-005 | P0 | Scanner protocol engine, issues, hotspots, source code, measures |
+| Scale & Reliability | SPEC-006 through SPEC-010 | P0/P1 | >10K handling, batch distribution, metadata sync, user mapping |
+| Version Compatibility | SPEC-011 through SPEC-013 | P1 | Multi-version pipelines, Clean Code attributes, external issues |
+| Performance | SPEC-014 through SPEC-016 | P1 | Parallel sync, auto-tuning, rate limiting |
+| Migration Workflow | SPEC-017 through SPEC-020 | P1/P2 | Checkpoint/resume, multi-org mapping, CSV filtering, branches |
+| Verification & Reporting | SPEC-021, SPEC-022 | P1/P2 | Migration verification, comprehensive reporting |
+| User Experience | SPEC-023 through SPEC-025 | P2/P3 | Desktop app, sync-metadata command, config validation |
