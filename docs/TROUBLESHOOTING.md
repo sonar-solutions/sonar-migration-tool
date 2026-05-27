@@ -130,7 +130,7 @@ sonar-migration-tool reset <TOKEN> <ENTERPRISE_KEY> --export_directory ./files/
 ---
 
 ## CE Task "Issue whilst processing the report" (importScanHistory)
-<!-- updated: 2026-05-27_18:00:00 -->
+<!-- updated: 2026-05-27_20:40:00 -->
 
 When `importScanHistory` CE tasks fail on SonarCloud with "There was an issue whilst processing the report", the following causes have been identified:
 
