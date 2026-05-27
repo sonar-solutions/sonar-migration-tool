@@ -63,12 +63,16 @@ func RegisterAll() []TaskDef {
 	all = append(all, ruleTasks()...)
 	all = append(all, deleteTasks()...)
 	all = append(all, scanHistoryTasks()...)
+	all = append(all, hotspotMetadataSyncTasks()...)
+	all = append(all, issueMetadataSyncTasks()...)
 	return all
 }
 
 // migrateScanHistoryTasks lists task names that require the --include-scan-history flag.
 var migrateScanHistoryTasks = map[string]bool{
-	"importScanHistory": true,
+	"importScanHistory":    true,
+	"syncHotspotMetadata":  true,
+	"syncIssueMetadata":    true,
 }
 
 // MigrateTargetTasks determines which tasks to run.

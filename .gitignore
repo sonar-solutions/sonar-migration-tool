@@ -14,6 +14,9 @@
 coverage.out
 coverage.sonar.out
 go/sonar-migration-tool
+sonar-migration-tool-race
+sonar-migration-tool-fresh
+sonar-migration-tool
 go/cmd/cetest/
 
 # Claude Code

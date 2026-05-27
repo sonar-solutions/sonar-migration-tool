@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 	sqapi "github.com/sonar-solutions/sq-api-go"
 	"github.com/sonar-solutions/sq-api-go/server"
 	"golang.org/x/sync/errgroup"
@@ -252,6 +253,15 @@ func detectVersion(ctx context.Context, cfg ExtractConfig) (float64, error) {
 func detectEdition(ctx context.Context, raw *RawClient) (Edition, error) {
 	body, err := raw.Get(ctx, "api/system/info", nil)
 	if err != nil {
+		// /api/system/info requires admin; fall back to /api/navigation/global
+		// which returns the same "edition" field without elevated privileges.
+		if common.IsHTTPError(err, 403) {
+			body, err = raw.Get(ctx, "api/navigation/global", nil)
+			if err != nil {
+				return EditionCommunity, err
+			}
+			return ParseEdition(body), nil
+		}
 		return EditionCommunity, err
 	}
 	return ParseEdition(body), nil

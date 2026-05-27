@@ -20,6 +20,12 @@ func scanHistoryTasks() []TaskDef {
 			Run:          projectIssuesFullTask(),
 		},
 		{
+			Name:         "getProjectHotspotsFull",
+			Editions:     AllEditions,
+			Dependencies: []string{"getProjects", "getBranches"},
+			Run:          projectHotspotsFullTask(),
+		},
+		{
 			Name:         "getProjectComponentTree",
 			Editions:     AllEditions,
 			Dependencies: []string{"getProjects", "getBranches"},
@@ -47,11 +53,15 @@ func projectIssuesFullTask() func(ctx context.Context, e *Executor) error {
 		return forEachProjectBranch(ctx, e, "getProjectIssuesFull",
 			func(ctx context.Context, projectKey, branch string, w *ChunkWriter) error {
 				params := url.Values{
-					"components":   {projectKey},
-					"branch":       {branch},
-					"ps":           {"500"},
-					"statuses":     {"OPEN,CONFIRMED,REOPENED"},
+					"components":       {projectKey},
+					"branch":           {branch},
+					"ps":               {"500"},
 					"additionalFields": {"_all"},
+				}
+				if e.Version < 10.4 {
+					params.Set("statuses", "OPEN,CONFIRMED,REOPENED,RESOLVED")
+				} else {
+					params.Set("issueStatuses", "OPEN,CONFIRMED,FALSE_POSITIVE,ACCEPTED")
 				}
 				items, err := e.Raw.GetPaginated(ctx, PaginatedOpts{
 					Path:      issuesSearchAPI,
@@ -74,6 +84,96 @@ func projectIssuesFullTask() func(ctx context.Context, e *Executor) error {
 				return w.WriteChunk(enrichAll(items, meta))
 			})
 	}
+}
+
+// projectHotspotsFullTask extracts all hotspots per project per branch.
+// For REVIEWED hotspots, it fetches detail via /api/hotspots/show to get
+// comments and ruleKey.
+func projectHotspotsFullTask() func(ctx context.Context, e *Executor) error {
+	return func(ctx context.Context, e *Executor) error {
+		return forEachProjectBranch(ctx, e, "getProjectHotspotsFull",
+			func(ctx context.Context, projectKey, branch string, w *ChunkWriter) error {
+				params := url.Values{
+					"projectKey": {projectKey},
+					"ps":         {"500"},
+				}
+				if branch != "" {
+					params.Set("branch", branch)
+				}
+				items, err := e.Raw.GetPaginated(ctx, PaginatedOpts{
+					Path:      "api/hotspots/search",
+					Params:    params,
+					ResultKey: "hotspots",
+					PageLimit: 20,
+				})
+				if err != nil {
+					if isNonFatalHTTPErr(err) {
+						e.Logger.Warn("getProjectHotspotsFull skipped", "project", projectKey, "branch", branch, "err", err)
+						return nil
+					}
+					return err
+				}
+
+				meta := map[string]any{
+					"projectKey": projectKey,
+					"branch":     branch,
+					"serverUrl":  e.ServerURL,
+				}
+
+				enriched := enrichAll(items, meta)
+				enrichHotspotDetails(ctx, e, enriched)
+				return w.WriteChunk(enriched)
+			})
+	}
+}
+
+// enrichHotspotDetails fetches /api/hotspots/show for each REVIEWED hotspot
+// and merges the detail (comments, rule) into the enriched items in-place.
+func enrichHotspotDetails(ctx context.Context, e *Executor, enriched []json.RawMessage) {
+	for i, item := range enriched {
+		status := extractField(item, "status")
+		if status != "REVIEWED" {
+			continue
+		}
+		hotspotKey := extractField(item, "key")
+		if hotspotKey == "" {
+			continue
+		}
+		detail, err := e.Raw.Get(ctx, "api/hotspots/show", url.Values{"hotspot": {hotspotKey}})
+		if err != nil {
+			e.Logger.Debug("hotspot detail fetch failed", "hotspot", hotspotKey, "err", err)
+			continue
+		}
+		enriched[i] = mergeHotspotDetail(item, detail)
+	}
+}
+
+func mergeHotspotDetail(base, detail json.RawMessage) json.RawMessage {
+	var baseMap map[string]json.RawMessage
+	if err := json.Unmarshal(base, &baseMap); err != nil {
+		return base
+	}
+	var detailMap map[string]json.RawMessage
+	if err := json.Unmarshal(detail, &detailMap); err != nil {
+		return base
+	}
+	if comments, ok := detailMap["comment"]; ok {
+		baseMap["comment"] = comments
+	}
+	if rule, ok := detailMap["rule"]; ok {
+		baseMap["rule"] = rule
+		var ruleObj map[string]json.RawMessage
+		if err := json.Unmarshal(rule, &ruleObj); err == nil {
+			if ruleKey, ok := ruleObj["key"]; ok {
+				baseMap["ruleKey"] = ruleKey
+			}
+		}
+	}
+	merged, err := json.Marshal(baseMap)
+	if err != nil {
+		return base
+	}
+	return merged
 }
 
 // projectComponentTreeTask extracts the file component tree per project per branch.

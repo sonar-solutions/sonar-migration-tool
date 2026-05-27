@@ -226,9 +226,9 @@ func setupScanHistoryExtract(t *testing.T, dir string) {
 		map[string]any{"url": testServerURL, "edition": "enterprise"})
 
 	writeJSONL(filepath.Join(extractDir, "getBranches"), []map[string]any{
-		{"projectKey": "proj1", "name": "main", "type": "LONG", "serverUrl": testServerURL},
-		{"projectKey": "proj1", "name": "develop", "type": "LONG", "serverUrl": testServerURL},
-		{"projectKey": "proj1", "name": "pr-1", "type": "SHORT", "serverUrl": testServerURL},
+		{"projectKey": "proj1", "name": "main", "type": "LONG", "isMain": true, "serverUrl": testServerURL},
+		{"projectKey": "proj1", "name": "develop", "type": "LONG", "isMain": false, "serverUrl": testServerURL},
+		{"projectKey": "proj1", "name": "pr-1", "type": "SHORT", "isMain": false, "serverUrl": testServerURL},
 	})
 
 	writeJSONL(filepath.Join(extractDir, "getProjectIssuesFull"), []map[string]any{
@@ -300,37 +300,40 @@ func newScanHistoryExecutor(t *testing.T, dir string) *Executor {
 	}
 }
 
-func TestCollectBranches(t *testing.T) {
+func TestCollectBranchInfo(t *testing.T) {
 	dir := t.TempDir()
 	setupScanHistoryExtract(t, dir)
 	e := newScanHistoryExecutor(t, dir)
 
-	branches := collectBranches(e, testServerURL, "proj1")
+	branches := collectBranchInfo(e, testServerURL, "proj1")
 	if len(branches) != 2 {
 		t.Fatalf("expected 2 branches (SHORT filtered), got %d: %v", len(branches), branches)
 	}
-	if branches[0] != "main" || branches[1] != "develop" {
-		t.Errorf("unexpected branches: %v", branches)
+	if branches[0].Name != "main" || !branches[0].IsMain {
+		t.Errorf("expected main branch with IsMain=true, got %+v", branches[0])
+	}
+	if branches[1].Name != "develop" || branches[1].IsMain {
+		t.Errorf("expected develop branch with IsMain=false, got %+v", branches[1])
 	}
 }
 
-func TestCollectBranchesNoMatch(t *testing.T) {
+func TestCollectBranchInfoNoMatch(t *testing.T) {
 	dir := t.TempDir()
 	setupScanHistoryExtract(t, dir)
 	e := newScanHistoryExecutor(t, dir)
 
-	branches := collectBranches(e, testServerURL, "nonexistent")
+	branches := collectBranchInfo(e, testServerURL, "nonexistent")
 	if len(branches) != 0 {
 		t.Errorf("expected 0 branches for unknown project, got %v", branches)
 	}
 }
 
-func TestCollectBranchesWrongServer(t *testing.T) {
+func TestCollectBranchInfoWrongServer(t *testing.T) {
 	dir := t.TempDir()
 	setupScanHistoryExtract(t, dir)
 	e := newScanHistoryExecutor(t, dir)
 
-	branches := collectBranches(e, "https://other.server/", "proj1")
+	branches := collectBranchInfo(e, "https://other.server/", "proj1")
 	if len(branches) != 0 {
 		t.Errorf("expected 0 branches for wrong server, got %v", branches)
 	}
