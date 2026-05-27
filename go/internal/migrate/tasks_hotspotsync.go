@@ -261,10 +261,13 @@ func buildHotspotPairs(ctx context.Context, e *Executor, input syncHotspotInput)
 
 	allPairs := matchHotspots(sourceHotspots, cloudHotspots, input.ServerKey, input.CloudKey)
 
-	var reviewed []hotspotPair
+	// Include pairs that need status sync (REVIEWED) OR comment sync (any status with comments).
+	var actionable []hotspotPair
 	for _, p := range allPairs {
-		if strings.ToUpper(p.source.Status) == "REVIEWED" {
-			reviewed = append(reviewed, p)
+		needsStatusSync := strings.ToUpper(p.source.Status) == "REVIEWED"
+		needsCommentSync := len(p.source.Comments) > 0
+		if needsStatusSync || needsCommentSync {
+			actionable = append(actionable, p)
 		}
 	}
 
@@ -273,10 +276,10 @@ func buildHotspotPairs(ctx context.Context, e *Executor, input syncHotspotInput)
 		"source_total", len(sourceHotspots),
 		"cloud_total", len(cloudHotspots),
 		"matched", len(allPairs),
-		"actionable", len(reviewed),
+		"actionable", len(actionable),
 	)
 
-	return reviewed, len(allPairs), nil
+	return actionable, len(allPairs), nil
 }
 
 // ---------------------------------------------------------------------------

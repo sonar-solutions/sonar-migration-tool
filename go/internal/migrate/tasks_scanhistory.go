@@ -199,6 +199,17 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 	now := time.Now()
 	changesets := buildChangesetMap(cr, components, now)
 
+	// Backdate changesets so each issue gets its original SonarQube creation date.
+	// Build a component-key-keyed alias map (same pointers) for BackdateChangesets.
+	changesetsByKey := make(map[string]*pb.Changesets, len(changesets))
+	for compKey, ref := range cr.Refs() {
+		if cs, ok := changesets[ref]; ok {
+			changesetsByKey[compKey] = cs
+		}
+	}
+	extracted := toExtractedIssues(issues)
+	scanreport.BackdateChangesets(extracted, changesetsByKey, now)
+
 	metadata := scanreport.BuildMetadata(scanreport.MetadataInput{
 		AnalysisDate:   now,
 		OrgKey:         input.OrgKey,
@@ -356,15 +367,17 @@ func loadExtractedIssues(e *Executor, serverURL, serverKey, branch string) []sca
 			continue
 		}
 		issues = append(issues, scanreport.IssueInput{
-			RuleRepo:  repo,
-			RuleKey:   key,
-			Message:   extractField(item.Data, "message"),
-			Severity:  extractField(item.Data, "severity"),
-			StartLine: extractInt32(item.Data, "textRange", "startLine"),
-			EndLine:   extractInt32(item.Data, "textRange", "endLine"),
-			StartOff:  extractInt32(item.Data, "textRange", "startOffset"),
-			EndOff:    extractInt32(item.Data, "textRange", "endOffset"),
-			Component: extractField(item.Data, "component"),
+			Key:          extractField(item.Data, "key"),
+			CreationDate: parseISODate(extractField(item.Data, "creationDate")),
+			RuleRepo:     repo,
+			RuleKey:      key,
+			Message:      extractField(item.Data, "message"),
+			Severity:     extractField(item.Data, "severity"),
+			StartLine:    extractInt32(item.Data, "textRange", "startLine"),
+			EndLine:      extractInt32(item.Data, "textRange", "endLine"),
+			StartOff:     extractInt32(item.Data, "textRange", "startOffset"),
+			EndOff:       extractInt32(item.Data, "textRange", "endOffset"),
+			Component:    extractField(item.Data, "component"),
 		})
 	}
 	return issues
@@ -479,13 +492,15 @@ func loadExtractedHotspots(e *Executor, serverURL, serverKey, branch string) []s
 		line := extractInt32Field(item.Data, "line")
 		severity := mapVulnProbToSeverity(extractField(item.Data, "vulnerabilityProbability"))
 		hotspots = append(hotspots, scanreport.IssueInput{
-			RuleRepo:  repo,
-			RuleKey:   key,
-			Message:   extractField(item.Data, "message"),
-			Severity:  severity,
-			StartLine: line,
-			EndLine:   line,
-			Component: extractField(item.Data, "component"),
+			Key:          extractField(item.Data, "key"),
+			CreationDate: parseISODate(extractField(item.Data, "creationDate")),
+			RuleRepo:     repo,
+			RuleKey:      key,
+			Message:      extractField(item.Data, "message"),
+			Severity:     severity,
+			StartLine:    line,
+			EndLine:      line,
+			Component:    extractField(item.Data, "component"),
 		})
 	}
 	return hotspots
@@ -641,30 +656,13 @@ func buildChangesetMap(cr *scanreport.ComponentRef, components []scanreport.Comp
 	return changesets
 }
 
-func toExtractedIssues(issues []scanreport.IssueInput, e *Executor) []scanreport.ExtractedIssue {
-	fullItems, _ := readExtractItems(e, "getProjectIssuesFull")
-	dateMap := make(map[string]time.Time)
-	for _, item := range fullItems {
-		key := extractField(item.Data, "key")
-		dateStr := extractField(item.Data, "creationDate")
-		if key != "" && dateStr != "" {
-			t, err := time.Parse(time.RFC3339, dateStr)
-			if err != nil {
-				// SonarQube often returns -0500 instead of -05:00
-				t, err = time.Parse("2006-01-02T15:04:05-0700", dateStr)
-			}
-			if err == nil {
-				dateMap[key] = t
-			}
-		}
-	}
-
+func toExtractedIssues(issues []scanreport.IssueInput) []scanreport.ExtractedIssue {
 	result := make([]scanreport.ExtractedIssue, 0, len(issues))
 	for _, iss := range issues {
 		result = append(result, scanreport.ExtractedIssue{
-			Key:          iss.RuleRepo + ":" + iss.RuleKey,
+			Key:          iss.Key,
 			Component:    iss.Component,
-			CreationDate: dateMap[iss.RuleRepo+":"+iss.RuleKey],
+			CreationDate: iss.CreationDate,
 			StartLine:    iss.StartLine,
 			EndLine:      iss.EndLine,
 		})
@@ -700,6 +698,22 @@ func countFilesByExt(components []scanreport.ComponentInput) map[string]int32 {
 		}
 	}
 	return counts
+}
+
+// parseISODate parses a SonarQube date string in RFC3339 or legacy UTC-offset format.
+// Returns zero time on parse failure.
+func parseISODate(dateStr string) time.Time {
+	if dateStr == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, dateStr)
+	if err != nil {
+		t, err = time.Parse("2006-01-02T15:04:05-0700", dateStr)
+	}
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 func splitRule(rule string) (string, string) {

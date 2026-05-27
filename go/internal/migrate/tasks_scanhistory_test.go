@@ -448,29 +448,32 @@ func TestLoadExtractedQProfiles(t *testing.T) {
 }
 
 func TestToExtractedIssues(t *testing.T) {
-	dir := t.TempDir()
-	setupScanHistoryExtract(t, dir)
-	e := newScanHistoryExecutor(t, dir)
-
+	createdAt, _ := time.Parse(time.RFC3339, "2023-06-15T10:00:00Z")
 	issues := []scanreport.IssueInput{
-		{RuleRepo: "java", RuleKey: "S100", Component: "proj1:src/Main.java", StartLine: 5, EndLine: 5},
+		{
+			Key:          "issue-abc123",
+			CreationDate: createdAt,
+			RuleRepo:     "java",
+			RuleKey:      "S100",
+			Component:    "proj1:src/Main.java",
+			StartLine:    5,
+			EndLine:       5,
+		},
 	}
 
-	extracted := toExtractedIssues(issues, e)
+	extracted := toExtractedIssues(issues)
 	if len(extracted) != 1 {
 		t.Fatalf("expected 1 extracted issue, got %d", len(extracted))
 	}
-	if extracted[0].Key != "java:S100" {
+	if extracted[0].Key != "issue-abc123" {
 		t.Errorf("unexpected key: %s", extracted[0].Key)
 	}
 	if extracted[0].Component != "proj1:src/Main.java" {
 		t.Errorf("unexpected component: %s", extracted[0].Component)
 	}
-	// Note: dateMap in toExtractedIssues is keyed by the issue's "key" field
-	// from extract data (e.g., "issue-1"), but looked up by RuleRepo:RuleKey
-	// (e.g., "java:S100"). These will only match if the extract data "key"
-	// field happens to equal the rule key. In typical SonarQube data they differ,
-	// so CreationDate will be zero here.
+	if !extracted[0].CreationDate.Equal(createdAt) {
+		t.Errorf("unexpected creation date: %v", extracted[0].CreationDate)
+	}
 	if extracted[0].StartLine != 5 || extracted[0].EndLine != 5 {
 		t.Errorf("unexpected line range: %d-%d", extracted[0].StartLine, extracted[0].EndLine)
 	}
