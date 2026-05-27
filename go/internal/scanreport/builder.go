@@ -49,14 +49,15 @@ type QProfileInfo struct {
 
 // MetadataInput holds the inputs for building the Metadata protobuf message.
 type MetadataInput struct {
-	AnalysisDate   time.Time
-	OrgKey         string
-	ProjectKey     string
-	BranchName     string
-	BranchType     pb.Metadata_BranchType
-	ProjectVersion string
-	QProfiles      []QProfileInfo
-	FileCountByExt map[string]int32
+	AnalysisDate        time.Time
+	OrgKey              string
+	ProjectKey          string
+	BranchName          string
+	ReferenceBranchName string
+	BranchType          pb.Metadata_BranchType
+	ProjectVersion      string
+	QProfiles           []QProfileInfo
+	FileCountByExt      map[string]int32
 }
 
 // BuildMetadata constructs the Metadata protobuf message.
@@ -64,6 +65,11 @@ func BuildMetadata(input MetadataInput, rootRef int32) *pb.Metadata {
 	scmRevision := randomHex(20)
 	if input.ProjectVersion == "" {
 		input.ProjectVersion = "1.0.0"
+	}
+
+	refBranch := input.ReferenceBranchName
+	if refBranch == "" {
+		refBranch = input.BranchName
 	}
 
 	qprofiles := make(map[string]*pb.Metadata_QProfile, len(input.QProfiles))
@@ -92,6 +98,7 @@ func BuildMetadata(input MetadataInput, rootRef int32) *pb.Metadata {
 		RootComponentRef:                rootRef,
 		BranchName:                      input.BranchName,
 		BranchType:                      input.BranchType,
+		ReferenceBranchName:             refBranch,
 		ScmRevisionId:                   scmRevision,
 		ProjectVersion:                  input.ProjectVersion,
 		QprofilesPerLanguage:            qprofiles,

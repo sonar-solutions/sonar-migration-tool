@@ -198,16 +198,25 @@ func writeDelimited(buf *bytes.Buffer, msg proto.Message) error {
 	return nil
 }
 
-// addBytes creates a file entry in the ZIP with the given content.
+// addBytes creates a Deflate-compressed ZIP entry using CreateHeader. Go's
+// zip.Writer with CreateHeader + Deflate writes a data descriptor (bit 3),
+// but Java's ZipInputStream handles data descriptors for Deflate entries.
+// The earlier Store + CreateRaw approach avoided data descriptors, but
+// SonarCloud CE may require Deflate-compressed entries.
 func addBytes(zw *zip.Writer, name string, data []byte) error {
-	w, err := zw.Create(name)
+	if data == nil {
+		data = []byte{}
+	}
+	fh := &zip.FileHeader{
+		Name:   name,
+		Method: zip.Deflate,
+	}
+	w, err := zw.CreateHeader(fh)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", name, err)
 	}
-	if data != nil {
-		if _, err := w.Write(data); err != nil {
-			return fmt.Errorf("write %s: %w", name, err)
-		}
+	if _, err := w.Write(data); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
 	}
 	return nil
 }

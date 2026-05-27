@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
+"strconv"
 	"strings"
 	"time"
 
@@ -47,18 +47,39 @@ func runImportScanHistory(ctx context.Context, e *Executor) error {
 
 		e.Logger.Info("importing scan history", "project", cloudKey, "progress", fmt.Sprintf("%d/%d", i+1, len(projects)))
 
-		branches := collectBranches(e, serverURL, serverKey)
-		if len(branches) == 0 {
-			branches = []string{"main"}
+		sqBranches := collectBranchInfo(e, serverURL, serverKey)
+		if len(sqBranches) == 0 {
+			sqBranches = []branchInfo{{Name: "main", IsMain: true}}
 		}
 
-		for _, branch := range branches {
+		// Query SC for the actual main branch name (CloudVoyager pattern).
+		scMainBranch := ""
+		if e.Cloud != nil && e.Cloud.Branches != nil {
+			scBranches, err := e.Cloud.Branches.List(ctx, cloudKey)
+			if err != nil {
+				e.Logger.Warn("failed to fetch SC branches, using SQ branch names", "project", cloudKey, "err", err)
+			} else {
+				for _, b := range scBranches {
+					if b.IsMain {
+						scMainBranch = b.Name
+						break
+					}
+				}
+			}
+		}
+
+		for _, branch := range sqBranches {
+			targetBranch := branch.Name
+			if branch.IsMain && scMainBranch != "" {
+				targetBranch = scMainBranch
+			}
 			result, err := importBranch(ctx, e, importBranchInput{
-				CloudKey:  cloudKey,
-				OrgKey:    orgKey,
-				ServerURL: serverURL,
-				ServerKey: serverKey,
-				Branch:    branch,
+				CloudKey:     cloudKey,
+				OrgKey:       orgKey,
+				ServerURL:    serverURL,
+				ServerKey:    serverKey,
+				Branch:       branch.Name,
+				TargetBranch: targetBranch,
 			})
 			if err != nil {
 				logAPIWarn(e.Logger, "scan history import failed", err, "project", cloudKey, "branch", branch)
@@ -79,11 +100,12 @@ func runImportScanHistory(ctx context.Context, e *Executor) error {
 }
 
 type importBranchInput struct {
-	CloudKey  string
-	OrgKey    string
-	ServerURL string
-	ServerKey string
-	Branch    string
+	CloudKey     string
+	OrgKey       string
+	ServerURL    string
+	ServerKey    string
+	Branch       string // SQ branch name — used to filter extracted data
+	TargetBranch string // SC branch name — used in protobuf metadata and CE submit
 }
 
 type importResult struct {
@@ -93,13 +115,17 @@ type importResult struct {
 }
 
 func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*importResult, error) {
+	targetBranch := input.TargetBranch
+	if targetBranch == "" {
+		targetBranch = input.Branch
+	}
+
 	issues := loadExtractedIssues(e, input.ServerURL, input.ServerKey, input.Branch)
 	hotspotIssues := loadExtractedHotspots(e, input.ServerURL, input.ServerKey, input.Branch)
 	extIssues, adHocRules := loadExtractedExternalIssues(e, input.ServerURL, input.ServerKey, input.Branch)
 	allComponents := loadExtractedComponents(e, input.ServerURL, input.ServerKey, input.Branch)
 	sources := loadExtractedSources(e, input.ServerURL, input.ServerKey, input.Branch)
 	activeRules := loadExtractedActiveRules(e, input.ServerURL, input.ServerKey)
-	qprofiles := loadExtractedQProfiles(e, input.ServerURL, input.ServerKey)
 
 	// Combine native issues with hotspot issues for the regular Issue protobuf.
 	issues = append(issues, hotspotIssues...)
@@ -112,10 +138,50 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 		return &importResult{Status: "skipped"}, nil
 	}
 
+	// Fetch SC quality profiles (CloudVoyager uses SC profile keys, not SQ keys).
+	// The CE validates that qprofile keys in the metadata exist in the SC instance.
+	scProfileByLang := make(map[string]scanreport.QProfileInfo)
+	if e.Cloud != nil && e.Cloud.QualityProfiles != nil {
+		scProfiles, err := e.Cloud.QualityProfiles.Search(ctx, input.OrgKey)
+		if err != nil {
+			e.Logger.Warn("failed to fetch SC profiles, falling back to extract profiles", "err", err)
+		}
+		for _, p := range scProfiles {
+			lang := strings.ToLower(p.Language)
+			if _, exists := scProfileByLang[lang]; !exists {
+				var rulesUpdated time.Time
+				if p.RulesUpdatedAt != "" {
+					rulesUpdated, _ = time.Parse(time.RFC3339, p.RulesUpdatedAt)
+				}
+				scProfileByLang[lang] = scanreport.QProfileInfo{
+					Key:            p.Key,
+					Name:           p.Name,
+					Language:       lang,
+					RulesUpdatedAt: rulesUpdated,
+				}
+			}
+		}
+	}
+
 	// Filter profiles and rules to languages present in the project (matches cloudvoyager).
 	projectLangs := collectProjectLanguages(components)
-	qprofiles = filterProfilesByLanguage(qprofiles, projectLangs)
 	activeRules = filterRulesByLanguage(activeRules, projectLangs)
+
+	// Build qprofiles from SC profiles matched by language (matches cloudvoyager).
+	var qprofiles []scanreport.QProfileInfo
+	for lang := range projectLangs {
+		if scP, ok := scProfileByLang[lang]; ok {
+			qprofiles = append(qprofiles, scP)
+		}
+	}
+
+	// Remap active rule qProfileKey from SQ keys to SC keys by language.
+	for i := range activeRules {
+		lang := strings.ToLower(activeRules[i].Language)
+		if scP, ok := scProfileByLang[lang]; ok {
+			activeRules[i].QProfileKey = scP.Key
+		}
+	}
 
 	root, fileComps, cr := scanreport.BuildComponents(input.CloudKey, components)
 	pbIssues := scanreport.BuildIssues(issues, cr)
@@ -123,48 +189,25 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 	pbAdHocRules := scanreport.BuildAdHocRules(adHocRules)
 	pbActiveRules := scanreport.BuildActiveRules(activeRules)
 
-	now := time.Now()
-	changesetsRef := buildChangesetMap(cr, components, now)
-
-	// BackdateChangesets uses component keys (strings), so build a parallel map.
-	changesetsKey := make(map[string]*pb.Changesets)
-	refToKey := make(map[int32]string)
-	for _, comp := range components {
-		if ref, ok := cr.Refs()[comp.Key]; ok {
-			if cs, ok := changesetsRef[ref]; ok {
-				changesetsKey[comp.Key] = cs
-				refToKey[ref] = comp.Key
-			}
-		}
-	}
-
-	extractedIssues := toExtractedIssues(issues, e)
-	scanreport.BackdateChangesets(extractedIssues, changesetsKey, now)
-
-	// Copy back to ref-keyed map after backdating.
-	changesets := make(map[int32]*pb.Changesets)
-	for ref, key := range refToKey {
-		changesets[ref] = changesetsKey[key]
-	}
-
-	fileCounts := countFilesByExt(components)
-
-	metadata := scanreport.BuildMetadata(scanreport.MetadataInput{
-		AnalysisDate:   now,
-		OrgKey:         input.OrgKey,
-		ProjectKey:     input.CloudKey,
-		BranchName:     input.Branch,
-		BranchType:     pb.Metadata_BRANCH,
-		QProfiles:      qprofiles,
-		FileCountByExt: fileCounts,
-	}, root.Ref)
-
 	pbSources := make(map[int32]string)
 	for _, s := range sources {
 		if ref, ok := cr.Refs()[s.Component]; ok {
 			pbSources[ref] = s.Source
 		}
 	}
+
+	now := time.Now()
+	changesets := buildChangesetMap(cr, components, now)
+
+	metadata := scanreport.BuildMetadata(scanreport.MetadataInput{
+		AnalysisDate:   now,
+		OrgKey:         input.OrgKey,
+		ProjectKey:     input.CloudKey,
+		BranchName:     targetBranch,
+		BranchType:     pb.Metadata_BRANCH,
+		QProfiles:      qprofiles,
+		FileCountByExt: countFilesByExt(components),
+	}, root.Ref)
 
 	reportData := &scanreport.ReportData{
 		Metadata:       metadata,
@@ -184,11 +227,22 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 		return nil, fmt.Errorf("packaging report: %w", err)
 	}
 
+	e.Logger.Info("report packaged",
+		"project", input.CloudKey, "sourceBranch", input.Branch, "targetBranch", targetBranch,
+		"zipSizeBytes", len(zipBytes),
+		"zipSizeMB", fmt.Sprintf("%.1f", float64(len(zipBytes))/(1024*1024)),
+		"components", len(fileComps),
+		"issues", len(issues),
+		"externalIssues", len(extIssues),
+		"sources", len(pbSources),
+		"activeRules", len(activeRules),
+	)
+
 	cfg := scanreport.SubmitConfig{
 		CloudURL:   e.CloudURL,
 		ProjectKey: input.CloudKey,
 		OrgKey:     input.OrgKey,
-		BranchName: input.Branch,
+		BranchName: targetBranch,
 	}
 
 	result, err := scanreport.SubmitReport(ctx, e.Raw.HTTPClient(), cfg, zipBytes)
@@ -196,7 +250,7 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 		return nil, fmt.Errorf("submitting report: %w", err)
 	}
 
-	e.Logger.Info("CE task submitted", "project", input.CloudKey, "branch", input.Branch, "taskId", result.TaskID)
+	e.Logger.Info("CE task submitted", "project", input.CloudKey, "targetBranch", targetBranch, "taskId", result.TaskID)
 
 	if err := scanreport.PollCETask(ctx, e.Raw.HTTPClient(), e.CloudURL, result.TaskID, e.Logger); err != nil {
 		return nil, fmt.Errorf("CE task failed: %w", err)
@@ -205,13 +259,19 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 	return &importResult{Status: "success", TaskID: result.TaskID}, nil
 }
 
-// collectBranches reads extracted branch data for a project.
-func collectBranches(e *Executor, serverURL, serverKey string) []string {
+type branchInfo struct {
+	Name   string
+	IsMain bool
+}
+
+// collectBranchInfo reads extracted branch data for a project, returning
+// each LONG branch's name and whether it is the main branch.
+func collectBranchInfo(e *Executor, serverURL, serverKey string) []branchInfo {
 	items, err := readExtractItems(e, "getBranches")
 	if err != nil {
 		return nil
 	}
-	var branches []string
+	var branches []branchInfo
 	for _, item := range items {
 		if item.ServerURL != serverURL {
 			continue
@@ -226,7 +286,8 @@ func collectBranches(e *Executor, serverURL, serverKey string) []string {
 		}
 		name := extractField(item.Data, "name")
 		if name != "" {
-			branches = append(branches, name)
+			isMain := common.ExtractBool(item.Data, "isMain")
+			branches = append(branches, branchInfo{Name: name, IsMain: isMain})
 		}
 	}
 	return branches

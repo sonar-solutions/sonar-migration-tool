@@ -438,6 +438,18 @@ For entity types NOT touched by your change, verify they still work by comparing
 
 ### 5.1 — Classify the Failure
 
+> **ADVERSARIAL NOTE — Never Blame Infrastructure First:**
+>
+> When a CE task fails or an API returns an unexpected error, the natural instinct is "the server is broken" or "it's a staging environment issue." **Resist this instinct.** Always ask: **does CloudVoyager succeed on the same instance with the same data?** If yes, the problem is in your code — not the server. Common code-level causes that masquerade as infrastructure issues:
+>
+> - **Missing protobuf fields** that the server requires but you don't set (e.g., `ReferenceBranchName` in metadata)
+> - **Wrong protobuf encoding** (length-delimited vs non-delimited for a specific message type)
+> - **Wrong ZIP entry names** (e.g., `externalissues-1.pb` vs `external-issues-1.pb`)
+> - **Wrong multipart form field names** or missing form fields in CE submission
+> - **Stale component refs** pointing to components that were filtered out
+>
+> Only blame infrastructure after you've verified: (1) CloudVoyager also fails, or (2) you've diff'd your protobuf output byte-for-byte against CloudVoyager's and they match.
+
 | Failure type | Symptoms | Investigation approach |
 |---|---|---|
 | **Crash** | Non-zero exit, panic stack trace | Read the stack trace. Find the exact line. |
@@ -446,6 +458,7 @@ For entity types NOT touched by your change, verify they still work by comparing
 | **Missing data** | SC entity count < SQS entity count | Check: was it extracted? Was it filtered? Did the API call fail? |
 | **Duplicate data** | SC entity count > SQS entity count | Check: is the entity processed twice? Is idempotency missing? |
 | **Silent failure** | No error but data is wrong/missing | Check every error return in the code path. Look for `_ = err`. |
+| **CE task failed** | `status: FAILED` in CE task response | Compare protobuf output against CloudVoyager's. Check every field in metadata.pb. Verify ZIP structure matches. Do NOT assume infrastructure failure. |
 
 ### 5.2 — Isolate with API Queries
 
@@ -490,9 +503,23 @@ After fixing:
 ---
 
 ## Phase 6 — Declare Full Clean Pass (STOP Condition)
-<!-- updated: 2026-05-26_00:00:00 -->
+<!-- updated: 2026-05-27_08:00:00 -->
 
 A full clean pass requires **ALL** of the following. Not a subset. Not "close enough."
+
+> **ADVERSARIAL NOTE — What "Clean Pass" Actually Means:**
+>
+> A "clean pass" is NOT "the tool ran without crashing." A tool can exit 0 and produce zero data — that is not a clean pass, that is a silent failure. Ask yourself these adversarial questions before declaring victory:
+>
+> 1. **Did the feature under test actually execute its core code path?** If you added issue metadata sync but importScanHistory failed (so SC has 0 issues to sync against), then syncIssueMetadata ran but matched 0 pairs — it exercised the "nothing to do" path, not the "sync metadata" path. That is NOT a clean pass for issue sync.
+>
+> 2. **Did the data actually arrive on the target?** If CE rejects the protobuf report, issues never appear in SonarCloud. Sync tasks running against 0 Cloud issues will report "0 matched, 0 synced" and exit cleanly — but the feature is broken. A clean pass means SQS issue count ≈ SC issue count, not "no errors in the log."
+>
+> 3. **Did CloudVoyager succeed on the same instance?** If CloudVoyager can import scan history to the same SC staging instance but this tool cannot, the problem is in this tool's code — not the infrastructure. Never blame infrastructure without verifying CloudVoyager also fails.
+>
+> 4. **Did you test with data that exercises the feature?** If SQS has 0 resolved issues, 0 reviewed hotspots, and 0 comments, then metadata sync has nothing to sync. That validates the "no-op" path, which is necessary but not sufficient. A clean pass for metadata sync requires SQS data with manual changes (status transitions, comments, tags).
+>
+> 5. **Is "0 matched pairs" actually correct, or is it masking a bug?** Zero matches could mean: (a) the matching algorithm is broken, (b) component key stripping is wrong, (c) issues weren't created in Cloud, or (d) there genuinely are no matchable issues. Only (d) is a clean pass. Verify (a)-(c) before accepting (d).
 
 ### Crash-Free Execution
 - [ ] Every command exited with code 0
@@ -508,12 +535,14 @@ A full clean pass requires **ALL** of the following. Not a subset. Not "close en
 ### Feature Verification (from Phase 0.1.6)
 - [ ] Every acceptance criterion for the change passes
 - [ ] Every edge case (empty, single, large, missing fields, idempotency) handled correctly
+- [ ] **The feature's core code path was exercised with real data** — not just the no-op/empty path
 
 ### Data Correctness
 - [ ] Entity counts on SC match SQS (within tolerance for entity types that have known filters)
 - [ ] Spot-check of 5+ entities shows field-level correctness
 - [ ] No empty NDJSON files for entity types that have data
 - [ ] No silent data loss (SC count is not suspiciously lower than SQS count)
+- [ ] **CE tasks succeeded** — if scan history import is part of the feature, the CE task must complete with status SUCCESS, not FAILED
 
 ### Regression Verification
 - [ ] All entity types NOT touched by the change still extract/migrate correctly
@@ -526,6 +555,8 @@ A full clean pass requires **ALL** of the following. Not a subset. Not "close en
 - [ ] Final summary stats captured and saved
 
 > **Only when every checkbox above is checked can you stop the loop.**
+>
+> **If you are tempted to declare "clean pass" but a core task (like importScanHistory) failed, STOP. That is not a clean pass. Go back to Phase 5.**
 
 ---
 

@@ -184,7 +184,7 @@ See [roadmap/README.md](../roadmap/README.md) for the full spec index, dependenc
 | User Experience | SPEC-023 through SPEC-025 | P2/P3 | Desktop app, sync-metadata command, config validation |
 
 ### Issue #104: Migrate All Issues (Implementation Status)
-<!-- updated: 2026-05-26_17:30:00 -->
+<!-- updated: 2026-05-27_08:00:00 -->
 
 Full end-to-end issue and hotspot migration pipeline. Current status by phase:
 
@@ -199,3 +199,5 @@ Full end-to-end issue and hotspot migration pipeline. Current status by phase:
 | Cloud API | `HotspotsClient` | Complete | `lib/sq-api-go/cloud/` — search, status changes, comments |
 | Infrastructure | Edition detection fallback | Complete | `/api/navigation/global` fallback when `/api/system/info` returns 403 (non-admin tokens) |
 | Testing | Unit tests + race detector | Passing | All unit tests pass, race detector clean |
+
+**ReferenceBranchName fix:** `MetadataInput` now includes a `ReferenceBranchName` field. `BuildMetadata` sets `ReferenceBranchName` on the protobuf `Metadata` message, defaulting to `BranchName` if not explicitly provided. This matches CloudVoyager's behavior where `referenceBranchName` is always set (defaults to `branchName`). Without this field, SonarCloud's Compute Engine rejected the protobuf report with a generic processing error.
