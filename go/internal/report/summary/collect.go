@@ -226,6 +226,7 @@ func collectSection(store *common.DataStore, def sectionDef,
 	skipped := collectSkipped(store, def)
 	failed := collectFailed(failuresByType, def)
 	partial := collectPartial(def, configFailures, succeeded)
+	var nearPerfect []EntityItem
 
 	// Augment skipped with built-in / unused items derived from extract data.
 	if def.ExtractTask != "" && extractMapping != nil {
@@ -250,21 +251,23 @@ func collectSection(store *common.DataStore, def sectionDef,
 		}
 	}
 
-	// Quality gates whose conditions were remapped (#143) or dropped
-	// because no SQC equivalent exists are reported as Partial. The
-	// per-condition decisions are written by addGateConditions to a
-	// sidecar JSONL.
+	// Quality gates whose conditions had to be remapped to close
+	// SonarQube Cloud equivalents (#143) are NearPerfect (yellow, #227).
+	// Gates with any dropped condition — no SQC equivalent — are Partial
+	// (orange, #227). The per-condition decisions are written by
+	// addGateConditions to a sidecar JSONL.
 	if def.Name == "Quality Gates" {
 		notes := collectGateMappingNotes(store.BaseDir())
-		succeeded, partial = applyGateMappingNotes(succeeded, partial, notes)
+		succeeded, nearPerfect, partial = applyGateMappingNotes(succeeded, nearPerfect, partial, notes)
 	}
 
 	return Section{
-		Name:      def.Name,
-		Succeeded: succeeded,
-		Partial:   partial,
-		Failed:    failed,
-		Skipped:   skipped,
+		Name:        def.Name,
+		Succeeded:   succeeded,
+		NearPerfect: nearPerfect,
+		Partial:     partial,
+		Failed:      failed,
+		Skipped:     skipped,
 	}
 }
 

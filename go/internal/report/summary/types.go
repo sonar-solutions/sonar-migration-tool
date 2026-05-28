@@ -18,12 +18,23 @@ type MigrationSummary struct {
 }
 
 // Section represents a category of migrated entities (e.g., Projects, Quality Gates).
+//
+// The four success/non-success buckets correspond to the five-status taxonomy
+// from issues #224 and #227:
+//   - Succeeded   → green  (perfect-fidelity migration)
+//   - NearPerfect → yellow (migrated with a known close-equivalent substitution,
+//                   e.g. a metric mapping from #143)
+//   - Partial     → orange (created on SQC but a follow-up configuration step
+//                   was incomplete, or a feature was dropped)
+//   - Failed      → red    (create call itself failed)
+//   - Skipped     → grey   (deliberately skipped by configuration)
 type Section struct {
-	Name      string
-	Succeeded []EntityItem
-	Partial   []EntityItem // created on SQC but follow-up configuration was incomplete
-	Failed    []EntityItem
-	Skipped   []EntityItem
+	Name        string
+	Succeeded   []EntityItem
+	NearPerfect []EntityItem
+	Partial     []EntityItem
+	Failed      []EntityItem
+	Skipped     []EntityItem
 }
 
 // EntityItem represents a single entity in the report.
