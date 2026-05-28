@@ -95,6 +95,27 @@ func setupPredictiveFixture(t *testing.T) string {
 				"metric": "software_quality_blocker_issues", "op": "GT", "error": "0"},
 		})
 
+	// getServerSettings + getServerSettingsDefinitions feed the Global
+	// Settings section. Three settings:
+	//   sonar.issues.sandbox.enabled=true → SQS-only (#240) → Skipped
+	//                                       with the standard "does
+	//                                       not exist" detail.
+	//   sonar.issues.sandbox.enabled=false (hypothetical) → silent;
+	//                                       to keep the fixture small
+	//                                       we omit the default case.
+	//   sonar.exclusions=**/vendor/**     → not on the SQS-only list →
+	//                                       predicted Applied.
+	writeJSONL(t, filepath.Join(extractDir, "getServerSettings", "settings.jsonl"),
+		[]map[string]any{
+			{"key": "sonar.issues.sandbox.enabled", "value": "true"},
+			{"key": "sonar.exclusions", "value": "**/vendor/**"},
+		})
+	writeJSONL(t, filepath.Join(extractDir, "getServerSettingsDefinitions", "defs.jsonl"),
+		[]map[string]any{
+			{"key": "sonar.issues.sandbox.enabled", "defaultValue": ""},
+			{"key": "sonar.exclusions", "defaultValue": ""},
+		})
+
 	return exportDir
 }
 
@@ -199,13 +220,31 @@ func TestGeneratePredictiveReport_HappyPath(t *testing.T) {
 		t.Errorf("expected App in Projects.Succeeded, got %+v", projects.Succeeded)
 	}
 
-	// The orchestrator sets OmitSections; CollectSummary itself doesn't
-	// know about that, so Global Settings will appear here. The PDF
-	// renderer omits it. Sanity-check that GeneratePredictiveReport
-	// would in fact set the flag (re-running through the public API).
-	_, err = GeneratePredictiveReport(exportDir)
-	if err != nil {
-		t.Fatalf("second GeneratePredictiveReport: %v", err)
+	// Global Settings (#237 + #240): the SQS-only key (sandbox enabled
+	// = true) should land in Skipped with the standard "does not exist
+	// on SonarQube Cloud" detail; the regular customised setting should
+	// land in Succeeded (predicted applied).
+	settings := findSection(mig, "Global Settings")
+	if settings == nil {
+		t.Fatal("Global Settings section missing")
+	}
+	var sawSQSOnlySkipped, sawAppliedPredict bool
+	for _, it := range settings.Skipped {
+		if it.Name == "sonar.issues.sandbox.enabled" &&
+			strings.Contains(it.Detail, "does not exist") {
+			sawSQSOnlySkipped = true
+		}
+	}
+	for _, it := range settings.Succeeded {
+		if it.Name == "sonar.exclusions" {
+			sawAppliedPredict = true
+		}
+	}
+	if !sawSQSOnlySkipped {
+		t.Errorf("expected sonar.issues.sandbox.enabled in Global Settings Skipped with explanatory detail; got %+v", settings.Skipped)
+	}
+	if !sawAppliedPredict {
+		t.Errorf("expected sonar.exclusions in Global Settings Succeeded; got %+v", settings.Succeeded)
 	}
 }
 

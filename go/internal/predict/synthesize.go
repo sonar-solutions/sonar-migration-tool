@@ -113,11 +113,14 @@ func BuildPredictiveRun(exportDir string) (string, error) {
 		}
 	}
 
-	// Quality gate condition mapping notes — needs the extract data.
+	// Extract-data-driven synthesizers — both need the extract mapping.
 	extractMapping, err := structure.GetUniqueExtracts(exportDir)
 	if err == nil && len(extractMapping) > 0 {
 		if err := synthesizeAddGateConditionsNotes(exportDir, runDir, extractMapping, orgLookup); err != nil {
 			return "", fmt.Errorf("synthesizing addGateConditions.notes: %w", err)
+		}
+		if err := synthesizeSetGlobalSettings(exportDir, runDir, extractMapping, orgLookup); err != nil {
+			return "", fmt.Errorf("synthesizing setGlobalSettings: %w", err)
 		}
 	}
 

@@ -49,29 +49,50 @@ type sqsOnlyDecision struct {
 	Note         string
 }
 
-// sqsOnlySettings names the SQS settings that have no SQC counterpart
-// (issue #200) and the per-key rule for what to do with them. The
-// migration loop short-circuits them before any API call so they
-// never produce "not-on-sqc" Warns or settings.set failures.
+// sqsOnlySettings names the SQS global settings that have no SQC
+// counterpart at any scope. The migration loop short-circuits them
+// before any API call so they never produce "not-on-sqc" Warns or
+// settings.set failures, and the report flags non-default values as
+// Skipped with a clear "setting does not exist on SonarQube Cloud"
+// explanation (#240).
 //
 // Decision functions receive the raw getServerSettings record so they
-// can inspect value / values / parentValue to decide between
-// silent-skip and emit-a-note.
+// can inspect value / values / parentValue and decide between
+// silent-skip (default value, nothing to say) and emit-a-note (the
+// user has chosen this SQS-only feature; surface it in the report).
+//
+// The list is curated, not exhaustive. Settings outside this list that
+// still happen to have no SQC counterpart go through the dynamic
+// discovery path in applyOneGlobalSetting and surface as "not-on-sqc"
+// at runtime.
 var sqsOnlySettings = map[string]func(raw json.RawMessage) sqsOnlyDecision{
-	"sonar.core.serverBaseURL": func(_ json.RawMessage) sqsOnlyDecision {
-		return sqsOnlyDecision{SkipSilently: true}
-	},
-	"sonar.builtInQualityProfiles.disableNotificationOnUpdate": func(_ json.RawMessage) sqsOnlyDecision {
-		return sqsOnlyDecision{SkipSilently: true}
-	},
+	// Silent-skip entries: keys that have no SQC counterpart AND have
+	// no operator-meaningful value to report on (read-only server
+	// metadata, bundled analyzer plugin manifest, announcement banners,
+	// licensing thresholds, etc.). Real-migrate's partition strips
+	// these before any API call; predict consults
+	// IsSilentlySkippedGlobalSetting to mirror that and keep the two
+	// reports identical.
+	"sonar.core.serverBaseURL":                                silentSkip,
+	"sonar.core.startTime":                                    silentSkip, // read-only server timestamp
+	"sonar.builtInQualityProfiles.disableNotificationOnUpdate": silentSkip,
+	"sonar.announcement.htmlMessage":                          silentSkip,
+	"sonar.login.displayMessage":                              silentSkip,
+	"sonar.license.notifications.remainingLocThreshold":       silentSkip,
+	"sonar.mcp.healthCheckInterval":                           silentSkip,
+	// Bundled analyzer plugin manifest fields — server-emitted, not
+	// user-set, never portable.
+	"sonar.cs.analyzer.security.pluginVersion":                silentSkip,
+	"sonar.cs.analyzer.security.staticResourceName":           silentSkip,
+	"sonaranalyzer-vbnet.ruleNamespace":                       silentSkip,
+	"sonaranalyzer-vbnet.staticResourceName":                  silentSkip,
+	"sonaranalyzer.security.cs.ruleNamespace":                 silentSkip,
 	"sonar.qualityProfiles.allowDisableInheritedRules": func(raw json.RawMessage) sqsOnlyDecision {
 		// Only worth mentioning when the SQS-side operator
 		// explicitly enabled the feature; the default ("false") is
 		// the same as "doesn't exist", so no note then.
 		if extractField(raw, "value") == "true" {
-			return sqsOnlyDecision{
-				Note: "Setting does not exist on SonarQube Cloud; the SQS feature flag is not portable.",
-			}
+			return sqsOnlyDecision{Note: sqsOnlyNoteText}
 		}
 		return sqsOnlyDecision{SkipSilently: true}
 	},
@@ -83,11 +104,99 @@ var sqsOnlySettings = map[string]func(raw json.RawMessage) sqsOnlyDecision{
 		if v == "" || v == ratingGridDefault {
 			return sqsOnlyDecision{SkipSilently: true}
 		}
-		return sqsOnlyDecision{
-			Note: "Not customizable on SonarQube Cloud — SQS value " + v +
-				" will revert to the platform default " + ratingGridDefault + ".",
-		}
+		return sqsOnlyDecision{Note: sqsOnlyNoteText}
 	},
+	"sonar.allowPermissionManagementForProjectAdmins": func(raw json.RawMessage) sqsOnlyDecision {
+		// SQC has no equivalent feature flag; the SQS default is
+		// "false" (don't delegate permission management to project
+		// admins). Only surface non-default values.
+		if extractField(raw, "value") == "true" {
+			return sqsOnlyDecision{Note: sqsOnlyNoteText}
+		}
+		return sqsOnlyDecision{SkipSilently: true}
+	},
+	"sonar.issues.sandbox.enabled":          sandboxBooleanDecision,
+	"sonar.issues.sandbox.override.enabled": sandboxBooleanDecision,
+	"sonar.issues.sandbox.default": func(raw json.RawMessage) sqsOnlyDecision {
+		v := extractField(raw, "value")
+		if v == "" || v == "false" {
+			return sqsOnlyDecision{SkipSilently: true}
+		}
+		return sqsOnlyDecision{Note: sqsOnlyNoteText}
+	},
+	"sonar.issues.sandbox.software-qualities": func(raw json.RawMessage) sqsOnlyDecision {
+		if extractField(raw, "value") == "" {
+			return sqsOnlyDecision{SkipSilently: true}
+		}
+		return sqsOnlyDecision{Note: sqsOnlyNoteText}
+	},
+}
+
+// sqsOnlyNoteText is the single user-facing wording all SQS-only
+// settings share in the report's Skipped bucket (#240). Each handler
+// either emits this note (non-default value, surfaces in report) or
+// SkipSilently (default value, nothing to say).
+const sqsOnlyNoteText = "This setting cannot be migrated because it does not exist on SonarQube Cloud."
+
+// sandboxBooleanDecision is shared between sonar.issues.sandbox.enabled
+// and sonar.issues.sandbox.override.enabled, which both default to
+// "false" on SQS. Anything other than "false" / "" surfaces in the
+// report as SQS-only.
+func sandboxBooleanDecision(raw json.RawMessage) sqsOnlyDecision {
+	v := extractField(raw, "value")
+	if v == "" || v == "false" {
+		return sqsOnlyDecision{SkipSilently: true}
+	}
+	return sqsOnlyDecision{Note: sqsOnlyNoteText}
+}
+
+// silentSkip is the trivial decision-function for keys that are always
+// silently dropped — read-only server metadata, bundled plugin
+// manifest fields, announcement / login banner text, licensing
+// thresholds, etc. Shared so the curated map stays a one-line lookup.
+func silentSkip(_ json.RawMessage) sqsOnlyDecision {
+	return sqsOnlyDecision{SkipSilently: true}
+}
+
+// EvaluateSQSOnlyGlobalSetting consults the curated sqsOnlySettings list
+// for the given raw getServerSettings record and reports whether the
+// key (i) is in the list AND (ii) is currently at a non-default value
+// worth surfacing in the migration report. The returned note is the
+// user-facing wording the report should display in the Detail column.
+//
+// Exported so the predictive-report pipeline (internal/predict) can
+// apply the same SQS-only classification without duplicating the per-
+// key value-vs-default rules.
+//
+// Returns isSQSOnly=false for keys that are silently skipped (e.g.
+// read-only server timestamps); callers should additionally consult
+// IsSilentlySkippedGlobalSetting to suppress those from the report.
+func EvaluateSQSOnlyGlobalSetting(key string, raw json.RawMessage) (note string, isSQSOnly bool) {
+	handler, ok := sqsOnlySettings[key]
+	if !ok {
+		return "", false
+	}
+	decision := handler(raw)
+	if decision.SkipSilently {
+		return "", false
+	}
+	return decision.Note, true
+}
+
+// IsSilentlySkippedGlobalSetting reports whether the curated list
+// classifies this (key, value) as "drop from the report entirely" —
+// e.g. read-only server metadata like sonar.core.startTime, or
+// SQS-only feature flags whose value matches SQS's default.
+//
+// Real-migrate's partitionSQSOnlySettings already strips these out
+// before any API call. The predictive-report pipeline consults this
+// function to keep its output consistent with the real-migrate report.
+func IsSilentlySkippedGlobalSetting(key string, raw json.RawMessage) bool {
+	handler, ok := sqsOnlySettings[key]
+	if !ok {
+		return false
+	}
+	return handler(raw).SkipSilently
 }
 
 // partitionSQSOnlySettings splits the raw SQS getServerSettings list,
@@ -208,7 +317,7 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 		if key == "" {
 			continue
 		}
-		if !isSettingCustomized(raw, sqsDefaultByKey[key]) {
+		if !IsSettingCustomized(raw, sqsDefaultByKey[key]) {
 			continue
 		}
 		customized = append(customized, raw)
@@ -750,7 +859,7 @@ func unionPreservingOrder(a, b []string) []string {
 	return out
 }
 
-// isSettingCustomized reports whether the SQS-side value for a setting
+// IsSettingCustomized reports whether the SQS-side value for a setting
 // actually differs from its default. SQS reveals the default in two
 // places, in priority order:
 //
@@ -767,7 +876,7 @@ func unionPreservingOrder(a, b []string) []string {
 // default. Without comparing against parentValue/parentValues those
 // settings would be migrated unnecessarily, inflating the SQC API
 // call count and noising up the migration report.
-func isSettingCustomized(raw json.RawMessage, defaultValue string) bool {
+func IsSettingCustomized(raw json.RawMessage, defaultValue string) bool {
 	if fvs := extractObjectArray(raw, "fieldValues"); len(fvs) > 0 {
 		// PROPERTY_SET — comparing two arbitrary JSON object arrays
 		// for "is this the default" is non-trivial, and these

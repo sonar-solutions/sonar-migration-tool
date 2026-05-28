@@ -119,7 +119,7 @@ func readCustomizedSQSGlobals(e *Executor) ([]json.RawMessage, error) {
 		if key == "" {
 			continue
 		}
-		if !isSettingCustomized(it.Data, defaults[key]) {
+		if !IsSettingCustomized(it.Data, defaults[key]) {
 			continue
 		}
 		customized = append(customized, it.Data)

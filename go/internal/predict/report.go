@@ -21,10 +21,12 @@ const predictivePDFFilename = "predictive_migration_summary.pdf"
 // Inputs: extract data + mapping CSVs (organizations.csv, gates.csv,
 // projects.csv, ...) under exportDir.
 //
-// Output: <exportDir>/predictive_migration_summary.pdf. The "Global
-// Settings" section is omitted from this report (#235) because
-// classifying settings requires runtime SQC support detection that the
-// predict pipeline can't perform.
+// Output: <exportDir>/predictive_migration_summary.pdf. The Global
+// Settings section is included now that #237 added a curated list of
+// SQS-only setting keys — settings on that list are reported as
+// Skipped (not-on-sqc); everything else is reported as Applied
+// (predicted), with the caveat that real-migrate may still fall back
+// to project scope or fail at runtime for the unpredictable cases.
 func GeneratePredictiveReport(exportDir string) (string, error) {
 	runDir, err := BuildPredictiveRun(exportDir)
 	if err != nil {
@@ -35,7 +37,6 @@ func GeneratePredictiveReport(exportDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("collecting summary: %w", err)
 	}
-	mig.OmitSections = map[string]bool{"Global Settings": true}
 
 	pdfBytes, err := summary.RenderPDF(mig)
 	if err != nil {
