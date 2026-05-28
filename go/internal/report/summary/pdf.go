@@ -77,7 +77,7 @@ func RenderPDF(summary *MigrationSummary) ([]byte, error) {
 		if summary.OmitSections[section.Name] {
 			continue
 		}
-		renderSection(pdf, section)
+		renderSection(pdf, section, summary.Predictive)
 	}
 
 	renderLimitations(pdf, summary.Limitations)
@@ -137,12 +137,46 @@ func addPageFooter(pdf *fpdf.Fpdf) {
 	pdf.CellFormat(0, 10, fmt.Sprintf("Page %d", pdf.PageNo()), "", 0, "C", false, 0, "")
 }
 
+// renderPredictiveTitle renders the title for the predictive report
+// (#240): "SonarQube Migration Prediction" centered, with "Prediction"
+// underlined while the rest stays plain bold. fpdf draws the underline
+// programmatically when "U" is part of the style string, so no extra
+// font registration is needed.
+func renderPredictiveTitle(pdf *fpdf.Fpdf) {
+	const fontSize = 22.0
+	const lineH = 12.0
+	prefix := "SonarQube Migration "
+	suffix := "Prediction"
+
+	pdf.SetFont(pdfFontFamily, "B", fontSize)
+	prefixW := pdf.GetStringWidth(prefix)
+	pdf.SetFont(pdfFontFamily, "BU", fontSize)
+	suffixW := pdf.GetStringWidth(suffix)
+
+	pageW, _ := pdf.GetPageSize()
+	leftMargin, _, rightMargin, _ := pdf.GetMargins()
+	usableW := pageW - leftMargin - rightMargin
+	startX := leftMargin + (usableW-(prefixW+suffixW))/2
+
+	y := pdf.GetY()
+	pdf.SetXY(startX, y)
+	pdf.SetFont(pdfFontFamily, "B", fontSize)
+	pdf.Write(lineH, prefix)
+	pdf.SetFont(pdfFontFamily, "BU", fontSize)
+	pdf.Write(lineH, suffix)
+	pdf.Ln(lineH)
+}
+
 func renderTitlePage(pdf *fpdf.Fpdf, summary *MigrationSummary) {
 	pdf.SetY(30)
 
 	setColor(pdf, colorDarkBlue)
-	pdf.SetFont(pdfFontFamily, "B", 22)
-	pdf.CellFormat(0, 12, "SonarQube Migration Summary", "", 1, "C", false, 0, "")
+	if summary.Predictive {
+		renderPredictiveTitle(pdf)
+	} else {
+		pdf.SetFont(pdfFontFamily, "B", 22)
+		pdf.CellFormat(0, 12, "SonarQube Migration Summary", "", 1, "C", false, 0, "")
+	}
 	pdf.Ln(4)
 
 	setColor(pdf, colorBlack)
@@ -236,7 +270,7 @@ func renderCountCell(pdf *fpdf.Fpdf, w float64, count int, color [3]int) {
 	pdf.CellFormat(w, 7, itoa(count), "1", 0, "C", true, 0, "")
 }
 
-func renderSection(pdf *fpdf.Fpdf, section Section) {
+func renderSection(pdf *fpdf.Fpdf, section Section, predictive bool) {
 	total := len(section.Succeeded) + len(section.NearPerfect) + len(section.Partial) + len(section.Failed) + len(section.Skipped)
 	if total == 0 {
 		return
@@ -254,7 +288,7 @@ func renderSection(pdf *fpdf.Fpdf, section Section) {
 	pdf.CellFormat(0, 6, sectionCountSummary(section), "", 1, "L", false, 0, "")
 	pdf.Ln(2)
 
-	renderUnifiedTable(pdf, section)
+	renderUnifiedTable(pdf, section, predictive)
 }
 
 // unifiedRow is one row in the per-section unified table.
@@ -285,10 +319,12 @@ var sectionsWithoutOrganization = map[string]bool{
 
 // renderUnifiedTable renders the per-section table:
 //   Name | Organization | Outcome (colored) | Details
-// For sections in sectionsWithoutOrganization, the Organization column is
-// dropped, producing a 3-column table: Name | Outcome | Details.
-func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
-	hideOrg := sectionsWithoutOrganization[section.Name]
+// For sections in sectionsWithoutOrganization (and for the predictive
+// report, #240, where org mapping isn't meaningful), the Organization
+// column is dropped — producing a 3-column table: Name | Outcome |
+// Details.
+func renderUnifiedTable(pdf *fpdf.Fpdf, section Section, predictive bool) {
+	hideOrg := predictive || sectionsWithoutOrganization[section.Name]
 
 	headers := []string{"Name", "Organization", "Outcome", "Details"}
 	widths := []float64{55, 35, 25, 81}
@@ -299,7 +335,7 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section) {
 
 	renderTableHeader(pdf, headers, widths)
 
-	rows := buildUnifiedRows(section)
+	rows := buildUnifiedRows(section, predictive)
 	if section.Name == "Quality Profiles" {
 		sort.SliceStable(rows, func(i, j int) bool {
 			li, lj := strings.ToLower(rows[i].language), strings.ToLower(rows[j].language)
@@ -492,17 +528,27 @@ type fpdfCell interface {
 // Succeeded → NearPerfect → Partial → Failed → Skipped (skipped grouped by
 // reason order). Order mirrors the green → yellow → orange → red → grey
 // taxonomy from issues #224 and #227.
-func buildUnifiedRows(section Section) []unifiedRow {
+//
+// When predictive is true (#240), the success-bucket outcome label is
+// rendered as "Perfect" instead of "Success" and the Details column
+// drops the synthetic predict:<task>:<org>:<name> cloud-id placeholder
+// (those carry no useful information for prediction).
+func buildUnifiedRows(section Section, predictive bool) []unifiedRow {
 	var rows []unifiedRow
+
+	successLabel := outcomeSuccess
+	if predictive {
+		successLabel = "Perfect"
+	}
 
 	for _, item := range section.Succeeded {
 		rows = append(rows, unifiedRow{
 			name:     item.Name,
 			language: item.Language,
 			org:      item.Organization,
-			outcome:  outcomeSuccess,
+			outcome:  successLabel,
 			color:    colorGreen,
-			details:  successDetails(item),
+			details:  successDetails(item, predictive),
 		})
 	}
 	for _, item := range section.NearPerfect {
@@ -572,10 +618,18 @@ func buildUnifiedRows(section Section) []unifiedRow {
 //   - |scan:<status> — issue #208 era, scan-history import outcome.
 //
 // Both markers are split off and rendered on separate lines after
-// the cloud key.
-func successDetails(item EntityItem) string {
+// the cloud key. When predictive is true (#240) the cloud key itself
+// is suppressed — the predict pipeline emits a synthetic placeholder
+// ("predict:<task>:<org>:<name>") that carries no useful information.
+func successDetails(item EntityItem, predictive bool) string {
 	cloudKey, scan, ncdFallback := parseProjectDetailMarkers(item.Detail)
-	parts := []string{cloudKey}
+	if predictive {
+		cloudKey = ""
+	}
+	parts := []string{}
+	if cloudKey != "" {
+		parts = append(parts, cloudKey)
+	}
 	if ncdFallback != "" {
 		parts = append(parts, fmt.Sprintf(
 			"new code definition: %s on SonarQube Server is not supported at project scope on SonarQube Cloud — falling back to the org default",
@@ -583,9 +637,6 @@ func successDetails(item EntityItem) string {
 	}
 	if scan != "" {
 		parts = append(parts, fmt.Sprintf("scan history: %s", scanStatusLabel(scan)))
-	}
-	if len(parts) == 1 {
-		return cloudKey
 	}
 	return strings.Join(parts, "\n")
 }

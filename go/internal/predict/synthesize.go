@@ -170,15 +170,20 @@ func writeMappingJSONL(store *common.DataStore, taskName string, rows []map[stri
 	return w.WriteChunk(out)
 }
 
-// writeCreateJSONL writes one synthetic create-task row per non-skipped
-// mapping. The row carries:
-//   - every field from the original mapping row
-//   - the synthetic cloud id (predict-<entity>-<name>-<org>) under IDField
-//   - was_preexisting=false (a real migrate would discover this at runtime)
+// writeCreateJSONL writes one synthetic create-task row per UNIQUE
+// entity identity. #240 calls for "report the object only once for all
+// organizations" — so even if a quality gate is migrated to N
+// SonarQube Cloud orgs, the predictive report shows one row for it.
+// The identity is the entity name (plus language for Quality Profiles,
+// where two profiles can legitimately share a name across languages).
 //
-// The synthetic id is stable per (name, org) so the summary collector's
-// dedup-by-composite-key still works for entities migrated across
-// multiple source orgs.
+// The row carries:
+//   - every field from the first mapping row encountered for that identity
+//   - the synthetic cloud id (predict:<task>:<org>:<name>) under IDField
+//     — the predictive renderer suppresses it (#240) but it stays in
+//     the JSONL so summary's collectSucceeded dedup-by-composite-key
+//     still has something stable to key on
+//   - was_preexisting=false (a real migrate would discover this at runtime)
 func writeCreateJSONL(store *common.DataStore, ct createTaskDef, rows []map[string]any, orgLookup map[string]string) error {
 	w, err := store.Writer(ct.OutputTask)
 	if err != nil {
@@ -189,6 +194,7 @@ func writeCreateJSONL(store *common.DataStore, ct createTaskDef, rows []map[stri
 		nameField = "name"
 	}
 	out := make([]json.RawMessage, 0, len(rows))
+	seen := make(map[string]bool, len(rows))
 	for _, row := range rows {
 		// Enrich with sonarcloud_org_key (mirrors migrate behaviour).
 		if sqKey, ok := row["sonarqube_org_key"].(string); ok && sqKey != "" {
@@ -204,6 +210,18 @@ func writeCreateJSONL(store *common.DataStore, ct createTaskDef, rows []map[stri
 		if name == "" {
 			continue
 		}
+		// Dedup across SQC orgs by entity identity (#240). For Quality
+		// Profiles, identity includes the language since "Sonar way"
+		// in Java and "Sonar way" in JS are different profiles.
+		dedupKey := name
+		if lang, ok := row["language"].(string); ok && lang != "" {
+			dedupKey = lang + "/" + name
+		}
+		if seen[dedupKey] {
+			continue
+		}
+		seen[dedupKey] = true
+
 		enriched := make(map[string]any, len(row)+2)
 		for k, v := range row {
 			enriched[k] = v

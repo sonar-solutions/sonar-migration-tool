@@ -129,7 +129,7 @@ func buildPredictedOutcomeRecord(key string, raw json.RawMessage, orgs []string)
 			"org":    org,
 			"status": "applied",
 			"reason": "",
-			"detail": "Predicted: will be applied at org scope",
+			"detail": "Setting does not exist at global org level in SQC, will be applied for each project instead",
 		})
 	}
 	return map[string]any{
