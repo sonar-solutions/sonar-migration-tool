@@ -17,63 +17,63 @@ func TestLookupMetricReplacement(t *testing.T) {
 		name   string
 		input  string
 		wantOK bool
-		want   []replacementCondition
+		want   []ReplacementCondition
 	}{
 		{"unmapped passes through", "coverage", false, nil},
 		{"aica suffix dropped — preserves op/error",
 			"new_security_rating_with_aica", true,
-			[]replacementCondition{{Metric: "new_security_rating"}}},
+			[]ReplacementCondition{{Metric: "new_security_rating"}}},
 		{"software_quality_security_rating",
 			"software_quality_security_rating", true,
-			[]replacementCondition{{Metric: "security_rating"}}},
+			[]ReplacementCondition{{Metric: "security_rating"}}},
 		{"debt ratio rename",
 			"software_quality_maintainability_debt_ratio", true,
-			[]replacementCondition{{Metric: "sqale_debt_ratio"}}},
+			[]ReplacementCondition{{Metric: "sqale_debt_ratio"}}},
 		{"composite — software_quality_blocker_issues → security_rating + reliability_rating worse than D",
 			"software_quality_blocker_issues", true,
-			[]replacementCondition{
+			[]ReplacementCondition{
 				{Metric: "security_rating", Op: "GT", Error: "4"},
 				{Metric: "reliability_rating", Op: "GT", Error: "4"},
 			}},
 		{"composite — software_quality_low_issues with <= A",
 			"software_quality_low_issues", true,
-			[]replacementCondition{
+			[]ReplacementCondition{
 				{Metric: "security_rating", Op: "GT", Error: "1"},
 				{Metric: "reliability_rating", Op: "GT", Error: "1"},
 			}},
 		{"new_software_quality_blocker_issues → new_security_rating + new_reliability_rating worse than D",
 			"new_software_quality_blocker_issues", true,
-			[]replacementCondition{
+			[]ReplacementCondition{
 				{Metric: "new_security_rating", Op: "GT", Error: "4"},
 				{Metric: "new_reliability_rating", Op: "GT", Error: "4"},
 			}},
 		{"software_quality_reliability_rating → reliability_rating (#232)",
 			"software_quality_reliability_rating", true,
-			[]replacementCondition{{Metric: "reliability_rating"}}},
+			[]ReplacementCondition{{Metric: "reliability_rating"}}},
 		{"new_software_quality_maintainability_rating → new_maintainability_rating",
 			"new_software_quality_maintainability_rating", true,
-			[]replacementCondition{{Metric: "new_maintainability_rating"}}},
+			[]ReplacementCondition{{Metric: "new_maintainability_rating"}}},
 		{"new_software_quality_reliability_issues → new_reliability_rating <= A",
 			"new_software_quality_reliability_issues", true,
-			[]replacementCondition{{Metric: "new_reliability_rating", Op: "GT", Error: "1"}}},
+			[]ReplacementCondition{{Metric: "new_reliability_rating", Op: "GT", Error: "1"}}},
 		{"new_software_quality_security_issues → new_security_rating <= A",
 			"new_software_quality_security_issues", true,
-			[]replacementCondition{{Metric: "new_security_rating", Op: "GT", Error: "1"}}},
+			[]ReplacementCondition{{Metric: "new_security_rating", Op: "GT", Error: "1"}}},
 		{"new_software_quality_security_rating_with_aica → new_security_rating <= A",
 			"new_software_quality_security_rating_with_aica", true,
-			[]replacementCondition{{Metric: "new_security_rating", Op: "GT", Error: "1"}}},
+			[]ReplacementCondition{{Metric: "new_security_rating", Op: "GT", Error: "1"}}},
 		{"new_software_quality_security_rating_without_aica → new_security_rating <= A",
 			"new_software_quality_security_rating_without_aica", true,
-			[]replacementCondition{{Metric: "new_security_rating", Op: "GT", Error: "1"}}},
+			[]ReplacementCondition{{Metric: "new_security_rating", Op: "GT", Error: "1"}}},
 		{"no SQC equivalent → drop",
-			"contains_ai_code", true, []replacementCondition{}},
+			"contains_ai_code", true, []ReplacementCondition{}},
 		{"new_software_quality_maintainability_issues → new_issues",
 			"new_software_quality_maintainability_issues", true,
-			[]replacementCondition{{Metric: "new_issues"}}},
+			[]ReplacementCondition{{Metric: "new_issues"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := lookupMetricReplacement(tc.input)
+			got, ok := LookupMetricReplacement(tc.input)
 			if ok != tc.wantOK {
 				t.Fatalf("ok: got %v, want %v", ok, tc.wantOK)
 			}
@@ -231,7 +231,7 @@ func TestIsObviousMetricRemap(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isObviousMetricRemap(tc.source, tc.targets); got != tc.want {
+			if got := IsObviousMetricRemap(tc.source, tc.targets); got != tc.want {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})

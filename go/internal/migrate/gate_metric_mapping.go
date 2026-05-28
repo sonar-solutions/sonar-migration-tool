@@ -1,21 +1,21 @@
 package migrate
 
-// replacementCondition describes how a single SonarQube Cloud condition is
+// ReplacementCondition describes how a single SonarQube Cloud condition is
 // derived from a SonarQube Server condition during migration. Op and Error
 // override the source values when non-empty; otherwise the source op /
 // threshold is preserved as-is.
-type replacementCondition struct {
+type ReplacementCondition struct {
 	Metric string
 	Op     string // "" = inherit source condition op
 	Error  string // "" = inherit source condition threshold
 }
 
 // Convenience helpers for the table below.
-func keep(metric string) []replacementCondition {
-	return []replacementCondition{{Metric: metric}}
+func keep(metric string) []ReplacementCondition {
+	return []ReplacementCondition{{Metric: metric}}
 }
 
-func ratingWorseThan(metric string, letter string) replacementCondition {
+func ratingWorseThan(metric string, letter string) ReplacementCondition {
 	// SonarQube rating quality-gate conditions use op=GT with the numeric
 	// rating value as the threshold. "metric <= D" in the issue table means
 	// "fire when the rating is worse than D", i.e. value greater than 4.
@@ -29,7 +29,7 @@ func ratingWorseThan(metric string, letter string) replacementCondition {
 	if !ok {
 		v = "1"
 	}
-	return replacementCondition{Metric: metric, Op: "GT", Error: v}
+	return ReplacementCondition{Metric: metric, Op: "GT", Error: v}
 }
 
 // metricMapping maps a SonarQube Server quality-gate metric to one or more
@@ -45,9 +45,9 @@ func ratingWorseThan(metric string, letter string) replacementCondition {
 //     condition. The migration logs this at Warn level.
 //
 // Metrics that already exist verbatim on SQC are intentionally absent: the
-// caller leaves the condition unchanged when lookupMetricReplacement
+// caller leaves the condition unchanged when LookupMetricReplacement
 // returns ok=false.
-var metricMapping = map[string][]replacementCondition{
+var metricMapping = map[string][]ReplacementCondition{
 	// *_with_aica / *_without_aica variants — drop the AICA suffix,
 	// preserve op + threshold.
 	"new_maintainability_rating_with_aica":     keep("new_maintainability_rating"),
@@ -179,7 +179,7 @@ var metricMapping = map[string][]replacementCondition{
 	"software_quality_security_remediation_effort":            {},
 }
 
-// lookupMetricReplacement returns the list of SonarQube Cloud target
+// LookupMetricReplacement returns the list of SonarQube Cloud target
 // conditions that should replace a SonarQube Server quality-gate condition
 // on the given source metric. The bool indicates whether the source metric
 // is known to the mapping table:
@@ -187,7 +187,7 @@ var metricMapping = map[string][]replacementCondition{
 //   - ok=true,  len(targets)>0  → expand to the listed target conditions
 //   - ok=true,  len(targets)==0 → drop the condition (no SQC equivalent)
 //   - ok=false                  → metric exists verbatim on SQC, pass through
-func lookupMetricReplacement(sourceMetric string) (targets []replacementCondition, ok bool) {
+func LookupMetricReplacement(sourceMetric string) (targets []ReplacementCondition, ok bool) {
 	t, ok := metricMapping[sourceMetric]
 	return t, ok
 }
@@ -206,11 +206,11 @@ var obviousMetricRemaps = map[string]string{
 	"new_software_quality_maintainability_rating": "new_maintainability_rating",
 }
 
-// isObviousMetricRemap reports whether the source metric maps 1:1 to a
+// IsObviousMetricRemap reports whether the source metric maps 1:1 to a
 // target metric that is obvious from the names alone (e.g.
 // software_quality_reliability_rating → reliability_rating). Only single-
 // target mappings qualify — composite expansions are never obvious.
-func isObviousMetricRemap(sourceMetric string, targetMetrics []string) bool {
+func IsObviousMetricRemap(sourceMetric string, targetMetrics []string) bool {
 	if len(targetMetrics) != 1 {
 		return false
 	}
