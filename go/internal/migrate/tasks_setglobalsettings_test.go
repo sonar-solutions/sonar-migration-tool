@@ -1091,7 +1091,7 @@ func TestIsSettingCustomized(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := isSettingCustomized(mk(c.raw), c.defaultVal)
+			got := IsSettingCustomized(mk(c.raw), c.defaultVal)
 			if got != c.wantCustom {
 				t.Errorf("%s: want customized=%v, got %v (raw=%v default=%q)",
 					c.description, c.wantCustom, got, c.raw, c.defaultVal)
@@ -1144,7 +1144,7 @@ func TestPartitionSQSOnlySettings(t *testing.T) {
 		{
 			name:     "ratingGrid customized emits a note",
 			raw:      map[string]any{"key": "sonar.technicalDebt.ratingGrid", "value": "0.03,0.07,0.2,0.5"},
-			wantNote: "revert to the platform default 0.05,0.1,0.2,0.5",
+			wantNote: "does not exist on SonarQube Cloud",
 		},
 		{
 			name: "unknown setting passes through",

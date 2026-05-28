@@ -49,14 +49,15 @@ type QProfileInfo struct {
 
 // MetadataInput holds the inputs for building the Metadata protobuf message.
 type MetadataInput struct {
-	AnalysisDate   time.Time
-	OrgKey         string
-	ProjectKey     string
-	BranchName     string
-	BranchType     pb.Metadata_BranchType
-	ProjectVersion string
-	QProfiles      []QProfileInfo
-	FileCountByExt map[string]int32
+	AnalysisDate        time.Time
+	OrgKey              string
+	ProjectKey          string
+	BranchName          string
+	ReferenceBranchName string
+	BranchType          pb.Metadata_BranchType
+	ProjectVersion      string
+	QProfiles           []QProfileInfo
+	FileCountByExt      map[string]int32
 }
 
 // BuildMetadata constructs the Metadata protobuf message.
@@ -64,6 +65,11 @@ func BuildMetadata(input MetadataInput, rootRef int32) *pb.Metadata {
 	scmRevision := randomHex(20)
 	if input.ProjectVersion == "" {
 		input.ProjectVersion = "1.0.0"
+	}
+
+	refBranch := input.ReferenceBranchName
+	if refBranch == "" {
+		refBranch = input.BranchName
 	}
 
 	qprofiles := make(map[string]*pb.Metadata_QProfile, len(input.QProfiles))
@@ -92,6 +98,7 @@ func BuildMetadata(input MetadataInput, rootRef int32) *pb.Metadata {
 		RootComponentRef:                rootRef,
 		BranchName:                      input.BranchName,
 		BranchType:                      input.BranchType,
+		ReferenceBranchName:             refBranch,
 		ScmRevisionId:                   scmRevision,
 		ProjectVersion:                  input.ProjectVersion,
 		QprofilesPerLanguage:            qprofiles,
@@ -144,15 +151,17 @@ func BuildComponents(projectKey string, files []ComponentInput) (*pb.Component, 
 
 // IssueInput holds extracted issue data for building Issue protobuf messages.
 type IssueInput struct {
-	RuleRepo  string
-	RuleKey   string
-	Message   string
-	Severity  string
-	StartLine int32
-	EndLine   int32
-	StartOff  int32
-	EndOff    int32
-	Component string // component key for ref lookup
+	Key          string    // original SonarQube issue key — used for BackdateChangesets
+	CreationDate time.Time // original creation date — used for BackdateChangesets
+	RuleRepo     string
+	RuleKey      string
+	Message      string
+	Severity     string
+	StartLine    int32
+	EndLine      int32
+	StartOff     int32
+	EndOff       int32
+	Component    string // component key for ref lookup
 }
 
 // BuildIssues groups issues by component ref and returns a map of ref->[]Issue.
@@ -180,6 +189,83 @@ func BuildIssues(issues []IssueInput, cr *ComponentRef) map[int32][]*pb.Issue {
 			}
 		}
 		result[ref] = append(result[ref], pbIssue)
+	}
+	return result
+}
+
+// ExternalIssueInput holds extracted data for building ExternalIssue protobuf messages.
+type ExternalIssueInput struct {
+	EngineID  string
+	RuleID    string
+	Message   string
+	Severity  string
+	Type      string // CODE_SMELL, BUG, VULNERABILITY
+	StartLine int32
+	EndLine   int32
+	StartOff  int32
+	EndOff    int32
+	Component string
+}
+
+// BuildExternalIssues groups external issues by component ref and returns a map of ref->[]ExternalIssue.
+func BuildExternalIssues(issues []ExternalIssueInput, cr *ComponentRef) map[int32][]*pb.ExternalIssue {
+	result := make(map[int32][]*pb.ExternalIssue)
+	for _, iss := range issues {
+		ref, ok := cr.refs[iss.Component]
+		if !ok {
+			continue
+		}
+		pbIss := &pb.ExternalIssue{
+			EngineId: iss.EngineID,
+			RuleId:   iss.RuleID,
+			Msg:      iss.Message,
+		}
+		if sev := mapSeverity(iss.Severity); sev != pb.Severity_UNSET_SEVERITY {
+			pbIss.Severity = &sev
+		}
+		if it := mapIssueType(iss.Type); it != pb.IssueType_ISSUE_TYPE_UNSET {
+			pbIss.Type = &it
+		}
+		if iss.StartLine > 0 {
+			pbIss.TextRange = &pb.TextRange{
+				StartLine:   iss.StartLine,
+				EndLine:     iss.EndLine,
+				StartOffset: iss.StartOff,
+				EndOffset:   iss.EndOff,
+			}
+		}
+		result[ref] = append(result[ref], pbIss)
+	}
+	return result
+}
+
+// AdHocRuleInput holds data for building AdHocRule messages.
+type AdHocRuleInput struct {
+	EngineID    string
+	RuleID      string
+	Name        string
+	Description string
+	Severity    string
+	Type        string
+}
+
+// BuildAdHocRules creates AdHocRule protobuf messages from the input slice.
+func BuildAdHocRules(rules []AdHocRuleInput) []*pb.AdHocRule {
+	result := make([]*pb.AdHocRule, 0, len(rules))
+	for _, r := range rules {
+		pbr := &pb.AdHocRule{
+			EngineId:    r.EngineID,
+			RuleId:      r.RuleID,
+			Name:        r.Name,
+			Description: r.Description,
+		}
+		if sev := mapSeverity(r.Severity); sev != pb.Severity_UNSET_SEVERITY {
+			pbr.Severity = &sev
+		}
+		if it := mapIssueType(r.Type); it != pb.IssueType_ISSUE_TYPE_UNSET {
+			pbr.Type = &it
+		}
+		result = append(result, pbr)
 	}
 	return result
 }
@@ -262,6 +348,22 @@ func mapSeverity(s string) pb.Severity {
 		return pb.Severity_BLOCKER
 	default:
 		return pb.Severity_UNSET_SEVERITY
+	}
+}
+
+// mapIssueType converts a string issue type to its protobuf enum value.
+func mapIssueType(t string) pb.IssueType {
+	switch strings.ToUpper(t) {
+	case "CODE_SMELL":
+		return pb.IssueType_CODE_SMELL
+	case "BUG":
+		return pb.IssueType_BUG
+	case "VULNERABILITY":
+		return pb.IssueType_VULNERABILITY
+	case "SECURITY_HOTSPOT":
+		return pb.IssueType_SECURITY_HOTSPOT
+	default:
+		return pb.IssueType_ISSUE_TYPE_UNSET
 	}
 }
 

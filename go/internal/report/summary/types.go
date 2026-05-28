@@ -10,20 +10,37 @@ import "time"
 // (issue #154). It documents SonarQube Server features that have no
 // SonarQube Cloud counterpart, so the operator knows which parts of
 // the source platform did NOT make it across — e.g. applications.
+//
+// OmitSections lets a caller hide named sections from both the
+// executive summary table and the per-section detail tables. The
+// predictive-report command (#235) sets this for "Global Settings"
+// because settings prediction needs runtime SQC support detection.
 type MigrationSummary struct {
-	RunID       string
-	GeneratedAt time.Time
-	Sections    []Section
-	Limitations []string
+	RunID        string
+	GeneratedAt  time.Time
+	Sections     []Section
+	Limitations  []string
+	OmitSections map[string]bool
 }
 
 // Section represents a category of migrated entities (e.g., Projects, Quality Gates).
+//
+// The four success/non-success buckets correspond to the five-status taxonomy
+// from issues #224 and #227:
+//   - Succeeded   → green  (perfect-fidelity migration)
+//   - NearPerfect → yellow (migrated with a known close-equivalent substitution,
+//                   e.g. a metric mapping from #143)
+//   - Partial     → orange (created on SQC but a follow-up configuration step
+//                   was incomplete, or a feature was dropped)
+//   - Failed      → red    (create call itself failed)
+//   - Skipped     → grey   (deliberately skipped by configuration)
 type Section struct {
-	Name      string
-	Succeeded []EntityItem
-	Partial   []EntityItem // created on SQC but follow-up configuration was incomplete
-	Failed    []EntityItem
-	Skipped   []EntityItem
+	Name        string
+	Succeeded   []EntityItem
+	NearPerfect []EntityItem
+	Partial     []EntityItem
+	Failed      []EntityItem
+	Skipped     []EntityItem
 }
 
 // EntityItem represents a single entity in the report.

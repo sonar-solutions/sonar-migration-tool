@@ -48,6 +48,8 @@ type Client struct {
 	Organizations   *OrganizationsClient
 	NewCodePeriods  *NewCodePeriodsClient
 	DOP             *DOPClient
+	Issues          *IssuesClient
+	Hotspots        *HotspotsClient
 }
 
 // New wraps a base sqapi.Client with typed Cloud write-path endpoint methods.
@@ -66,6 +68,8 @@ func New(c *sqapi.Client) *Client {
 		Organizations:   &OrganizationsClient{b},
 		NewCodePeriods:  &NewCodePeriodsClient{b},
 		DOP:             &DOPClient{b},
+		Issues:          &IssuesClient{b},
+		Hotspots:        &HotspotsClient{b},
 	}
 }
 

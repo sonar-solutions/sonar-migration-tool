@@ -247,6 +247,27 @@ go run . report --report_type migration --export_directory ./files/
 sonar-migration-tool report --report_type migration --export_directory ./files/
 ```
 
+**Predictive Report** — generate the same PDF migration summary the
+`migrate` step produces, but *before* migrating, from the output of
+`extract` + `structure` and the user-edited mapping CSVs. Useful to
+preview how the migration will go without touching SonarQube Cloud.
+
+```bash
+# From source
+go run . predictive-report --export_directory ./files/
+
+# Built binary
+sonar-migration-tool predictive-report --export_directory ./files/
+```
+
+Output: `<export_directory>/predictive_migration_summary.pdf`. Two
+classes of outcomes from a real migrate run are excluded because they
+cannot be predicted ahead of time:
+
+- SonarQube Cloud API errors or rate limiting.
+- Global settings — discovery of SQC-supported settings is dynamic, so
+  the Global Settings section is omitted from the predictive report.
+
 **Reset** — deletes all content in every org in the enterprise:
 ```bash
 # From source

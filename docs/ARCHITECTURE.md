@@ -86,6 +86,7 @@ Both `extract` and `migrate` use a typed task engine with topological sort plann
 4. **Data flow** — Tasks read input from a `DataStore` (which loads JSONL files from previous tasks) and write output via a `ChunkWriter` (which produces JSONL files for downstream tasks).
 
 ### Extract Tasks (67 tasks)
+<!-- updated: 2026-05-26_17:30:00 -->
 
 Organized by category in `go/internal/extract/tasks_*.go`:
 - **System** — Server version, edition, plugins
@@ -96,9 +97,11 @@ Organized by category in `go/internal/extract/tasks_*.go`:
 - **Templates** — Permission templates, associated groups/users
 - **Views** — Portfolios, applications (Enterprise+ only)
 - **Issues** — Accepted issues, safe hotspots
+- **Scan History** — `getProjectIssuesFull` (issues with comments/tags/flows), `getProjectHotspotsFull` (hotspots with review details), component trees, source code, SCM data (requires `--include-scan-history`)
 - **Webhooks** — Global and project-level webhooks
 
 ### Migrate Tasks (44+ tasks)
+<!-- updated: 2026-05-26_17:30:00 -->
 
 Organized by category in `go/internal/migrate/tasks_*.go`:
 - **Create** — Projects, groups, quality gates, quality profiles, permission templates, portfolios
@@ -107,6 +110,9 @@ Organized by category in `go/internal/migrate/tasks_*.go`:
 - **Permissions** — Template permissions, project permissions
 - **Rules** — Custom rule activation
 - **ALM** — DevOps platform binding detection
+- **Scan History** — Import scan reports via reconstructed protobuf format (native issues, external issues via ExternalIssue protobuf, hotspots mapped to issues)
+- **Issue Metadata Sync** — `syncIssueMetadata`: two-phase task that waits for Cloud indexing, matches source→cloud issues by composite key (rule|filePath|line), then syncs status transitions (with fallback transition paths), comments, and tags per matched pair. Idempotent via `metadata-synchronized` tag. Requires `--include-scan-history`.
+- **Hotspot Metadata Sync** — `syncHotspotMetadata`: same two-phase pattern, matches source→cloud hotspots by composite key, syncs REVIEWED status/resolution and comments. Idempotent. Requires `--include-scan-history`.
 - **Delete/Reset** — Cleanup tasks for the `reset` command
 
 ## Data Flow
@@ -129,6 +135,7 @@ SonarQube Cloud API
 ```
 
 ## API Binding Library (sq-api-go)
+<!-- updated: 2026-05-26_17:30:00 -->
 
 The `lib/sq-api-go/` module provides typed Go methods for SonarQube Server and Cloud APIs. Key features:
 
@@ -137,14 +144,17 @@ The `lib/sq-api-go/` module provides typed Go methods for SonarQube Server and C
 - **mTLS support** — Client certificate authentication
 - **Automatic pagination** — Handles `p`/`ps` pagination parameters
 - **Retry with backoff** — 3 attempts with exponential backoff
+- **Cloud API clients** — `IssuesClient` and `HotspotsClient` in `cloud/` provide typed methods for Cloud issue/hotspot search, transitions, comments, and tags
 
 ## Version Detection
+<!-- updated: 2026-05-26_17:30:00 -->
 
 The tool auto-detects SonarQube Server version and edition:
 
 - **Server < 10:** Basic authentication (username:token)
 - **Server >= 10:** Bearer token authentication
 - **Edition-aware:** Tasks are filtered by edition — portfolio-related tasks only run on Enterprise and Data Center editions
+- **Edition detection fallback:** When `/api/system/info` returns 403 (non-admin token), edition detection falls back to `/api/navigation/global` to extract the edition from the response
 
 ## Configuration
 
@@ -155,3 +165,39 @@ Commands accept flags, positional arguments, or a JSON config file (`--config pa
 - **Framework:** stdlib `testing` + `net/http/httptest` for HTTP mocking
 - **Run tests:** `cd go && go test ./... -count=1`
 - **Coverage:** `cd go && go test ./... -coverprofile=coverage.out`
+
+## Roadmap: Data Migration Specs
+<!-- updated: 2026-05-26_17:30:00 -->
+
+The `roadmap/specs/` directory contains 25 PRD specifications for harvesting data migration features from CloudVoyager (the Node.js predecessor). These specs provide a complete blueprint for building full SonarQube Server → Cloud migration — including issues, hotspots, source code, measures, and all metadata — via a reconstructed SonarScanner protobuf report format.
+
+See [roadmap/README.md](../roadmap/README.md) for the full spec index, dependency graph, priority matrix, and implementation strategy.
+
+| Epic | Specs | Priority | Summary |
+|------|-------|----------|---------|
+| Core Data Migration | SPEC-001 through SPEC-005 | P0 | Scanner protocol engine, issues, hotspots, source code, measures |
+| Scale & Reliability | SPEC-006 through SPEC-010 | P0/P1 | >10K handling, batch distribution, metadata sync, user mapping |
+| Version Compatibility | SPEC-011 through SPEC-013 | P1 | Multi-version pipelines, Clean Code attributes, external issues |
+| Performance | SPEC-014 through SPEC-016 | P1 | Parallel sync, auto-tuning, rate limiting |
+| Migration Workflow | SPEC-017 through SPEC-020 | P1/P2 | Checkpoint/resume, multi-org mapping, CSV filtering, branches |
+| Verification & Reporting | SPEC-021, SPEC-022 | P1/P2 | Migration verification, comprehensive reporting |
+| User Experience | SPEC-023 through SPEC-025 | P2/P3 | Desktop app, sync-metadata command, config validation |
+
+### Issue #104: Migrate All Issues (Implementation Status)
+<!-- updated: 2026-05-27_08:00:00 -->
+
+Full end-to-end issue and hotspot migration pipeline. Current status by phase:
+
+| Phase | Task | Status | Notes |
+|-------|------|--------|-------|
+| Extract | `getProjectIssuesFull` | Complete | Extracts issues with comments, tags, flows. Live-verified against SQ Enterprise 2026.2.0 |
+| Extract | `getProjectHotspotsFull` | Complete | Extracts hotspots with review details. Live-verified against SQ Enterprise 2026.2.0 |
+| Scan History Import | Protobuf report builder | Complete | Native issues, external issues (via ExternalIssue protobuf classification), hotspots mapped to issues |
+| Migrate | `syncIssueMetadata` | Complete | Composite key matching (rule\|filePath\|line), fallback status transitions, comment sync, tag sync, idempotent via `metadata-synchronized` tag |
+| Migrate | `syncHotspotMetadata` | Complete | Composite key matching, REVIEWED status/resolution sync, comment sync, idempotent |
+| Cloud API | `IssuesClient` | Complete | `lib/sq-api-go/cloud/` — search, transitions, comments, tags |
+| Cloud API | `HotspotsClient` | Complete | `lib/sq-api-go/cloud/` — search, status changes, comments |
+| Infrastructure | Edition detection fallback | Complete | `/api/navigation/global` fallback when `/api/system/info` returns 403 (non-admin tokens) |
+| Testing | Unit tests + race detector | Passing | All unit tests pass, race detector clean |
+
+**ReferenceBranchName fix:** `MetadataInput` now includes a `ReferenceBranchName` field. `BuildMetadata` sets `ReferenceBranchName` on the protobuf `Metadata` message, defaulting to `BranchName` if not explicitly provided. This matches CloudVoyager's behavior where `referenceBranchName` is always set (defaults to `branchName`). Without this field, SonarCloud's Compute Engine rejected the protobuf report with a generic processing error.

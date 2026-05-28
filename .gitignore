@@ -14,6 +14,9 @@
 coverage.out
 coverage.sonar.out
 go/sonar-migration-tool
+sonar-migration-tool-race
+sonar-migration-tool-fresh
+sonar-migration-tool
 go/cmd/cetest/
 
 # Claude Code
@@ -65,3 +68,4 @@ README.md.bak
 
 # Node (no longer used — frontend is Go templates + HTMX)
 node_modules/
+.gstack/

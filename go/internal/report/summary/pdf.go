@@ -26,8 +26,9 @@ var (
 	colorWhite     = [3]int{255, 255, 255}
 	colorBlack     = [3]int{0, 0, 0}
 	colorGreen     = [3]int{34, 139, 34}
+	colorYellow    = [3]int{180, 150, 0} // near-perfect (issue #224 yellow status)
 	colorRed       = [3]int{200, 0, 0}
-	colorAmber     = [3]int{200, 110, 0}
+	colorAmber     = [3]int{200, 110, 0} // partial migration (issue #224 orange status)
 	colorDarkGray  = [3]int{90, 90, 90}
 )
 
@@ -48,10 +49,11 @@ var skipReasonOrder = []struct {
 
 // Outcome labels used in the unified per-section table.
 const (
-	outcomeSuccess = "Success"
-	outcomePartial = "Partial"
-	outcomeFailed  = "Failed"
-	outcomeSkipped = "Skipped"
+	outcomeSuccess     = "Success"
+	outcomeNearPerfect = "Near Perfect"
+	outcomePartial     = "Partial"
+	outcomeFailed      = "Failed"
+	outcomeSkipped     = "Skipped"
 )
 
 // RenderPDF builds a PDF document from the migration summary and returns the bytes.
@@ -72,6 +74,9 @@ func RenderPDF(summary *MigrationSummary) ([]byte, error) {
 	renderTitlePage(pdf, summary)
 
 	for _, section := range summary.Sections {
+		if summary.OmitSections[section.Name] {
+			continue
+		}
 		renderSection(pdf, section)
 	}
 
@@ -146,12 +151,22 @@ func renderTitlePage(pdf *fpdf.Fpdf, summary *MigrationSummary) {
 	pdf.CellFormat(0, 7, "Generated: "+summary.GeneratedAt.Format("2006-01-02 15:04:05"), "", 1, "C", false, 0, "")
 	pdf.Ln(10)
 
-	renderExecutiveSummary(pdf, summary.Sections)
+	renderExecutiveSummary(pdf, summary.Sections, summary.OmitSections)
 }
 
-func renderExecutiveSummary(pdf *fpdf.Fpdf, sections []Section) {
-	headers := []string{"Section", "Succeeded", "Partial", "Failed", "Skipped", "Total"}
-	widths := []float64{50, 25, 25, 25, 25, 25}
+// renderExecutiveSummary renders the six-column summary table at the top of
+// the report: Objects | Perfect | Near Perfect | Partial | Failed | Skipped.
+// The five status buckets follow the green/yellow/orange/red/grey taxonomy
+// defined in issues #224 and #227; colours are conveyed by the count cells.
+// Sections present in `omit` are skipped entirely (predictive reports
+// omit "Global Settings", #235).
+func renderExecutiveSummary(pdf *fpdf.Fpdf, sections []Section, omit map[string]bool) {
+	headers := []string{"Objects", "Perfect", "Near Perfect", "Partial", "Failed", "Skipped"}
+	const (
+		objectsWidth = 45.0
+		countWidth   = 30.0
+	)
+	widths := []float64{objectsWidth, countWidth, countWidth, countWidth, countWidth, countWidth}
 
 	setFillColor(pdf, colorDarkBlue)
 	pdf.SetTextColor(255, 255, 255)
@@ -166,40 +181,49 @@ func renderExecutiveSummary(pdf *fpdf.Fpdf, sections []Section) {
 	pdf.Ln(-1)
 
 	pdf.SetFont(pdfFontFamily, "", 10)
-	var totalS, totalP, totalF, totalSk int
-	for i, sec := range sections {
-		s, p, f, sk := len(sec.Succeeded), len(sec.Partial), len(sec.Failed), len(sec.Skipped)
-		totalS += s
-		totalP += p
-		totalF += f
-		totalSk += sk
+	var totalPerfect, totalYellow, totalOrange, totalRed, totalGrey int
+	rowIdx := 0
+	for _, sec := range sections {
+		if omit[sec.Name] {
+			continue
+		}
+		perfect := len(sec.Succeeded)
+		yellow := len(sec.NearPerfect)
+		orange := len(sec.Partial)
+		red := len(sec.Failed)
+		grey := len(sec.Skipped)
+		totalPerfect += perfect
+		totalYellow += yellow
+		totalOrange += orange
+		totalRed += red
+		totalGrey += grey
 
-		if i%2 == 0 {
+		if rowIdx%2 == 0 {
 			setFillColor(pdf, colorLightGray)
 		} else {
 			setFillColor(pdf, colorWhite)
 		}
+		rowIdx++
 		setColor(pdf, colorBlack)
 		pdf.CellFormat(widths[0], 7, sec.Name, "1", 0, "L", true, 0, "")
-		renderCountCell(pdf, widths[1], s, colorGreen)
-		renderCountCell(pdf, widths[2], p, colorAmber)
-		renderCountCell(pdf, widths[3], f, colorRed)
-		renderCountCell(pdf, widths[4], sk, colorDarkGray)
-		setColor(pdf, colorBlack)
-		pdf.CellFormat(widths[5], 7, itoa(s+p+f+sk), "1", 0, "C", true, 0, "")
+		renderCountCell(pdf, widths[1], perfect, colorGreen)
+		renderCountCell(pdf, widths[2], yellow, colorYellow)
+		renderCountCell(pdf, widths[3], orange, colorAmber)
+		renderCountCell(pdf, widths[4], red, colorRed)
+		renderCountCell(pdf, widths[5], grey, colorDarkGray)
 		pdf.Ln(-1)
 	}
 
-	// Totals row
+	// Totals row.
 	setFillColor(pdf, colorDarkBlue)
 	pdf.SetTextColor(255, 255, 255)
 	pdf.SetFont(pdfFontFamily, "B", 10)
 	pdf.CellFormat(widths[0], 8, "Total", "1", 0, "L", true, 0, "")
-	pdf.CellFormat(widths[1], 8, itoa(totalS), "1", 0, "C", true, 0, "")
-	pdf.CellFormat(widths[2], 8, itoa(totalP), "1", 0, "C", true, 0, "")
-	pdf.CellFormat(widths[3], 8, itoa(totalF), "1", 0, "C", true, 0, "")
-	pdf.CellFormat(widths[4], 8, itoa(totalSk), "1", 0, "C", true, 0, "")
-	pdf.CellFormat(widths[5], 8, itoa(totalS+totalP+totalF+totalSk), "1", 0, "C", true, 0, "")
+	pdf.CellFormat(widths[1], 8, itoa(totalPerfect), "1", 0, "C", true, 0, "")
+	pdf.CellFormat(widths[2], 8, itoa(totalYellow), "1", 0, "C", true, 0, "")
+	pdf.CellFormat(widths[3], 8, itoa(totalOrange), "1", 0, "C", true, 0, "")
+	pdf.CellFormat(widths[4], 8, itoa(totalRed), "1", 0, "C", true, 0, "")
+	pdf.CellFormat(widths[5], 8, itoa(totalGrey), "1", 0, "C", true, 0, "")
 	pdf.Ln(-1)
 }
 
@@ -213,7 +237,7 @@ func renderCountCell(pdf *fpdf.Fpdf, w float64, count int, color [3]int) {
 }
 
 func renderSection(pdf *fpdf.Fpdf, section Section) {
-	total := len(section.Succeeded) + len(section.Partial) + len(section.Failed) + len(section.Skipped)
+	total := len(section.Succeeded) + len(section.NearPerfect) + len(section.Partial) + len(section.Failed) + len(section.Skipped)
 	if total == 0 {
 		return
 	}
@@ -464,8 +488,10 @@ type fpdfCell interface {
 	CellFormat(w, h float64, txtStr, borderStr string, ln int, alignStr string, fill bool, link int, linkStr string)
 }
 
-// buildUnifiedRows flattens the section's four buckets into ordered rows:
-// Succeeded → Partial → Failed → Skipped (skipped grouped by reason order).
+// buildUnifiedRows flattens the section's buckets into ordered rows:
+// Succeeded → NearPerfect → Partial → Failed → Skipped (skipped grouped by
+// reason order). Order mirrors the green → yellow → orange → red → grey
+// taxonomy from issues #224 and #227.
 func buildUnifiedRows(section Section) []unifiedRow {
 	var rows []unifiedRow
 
@@ -477,6 +503,20 @@ func buildUnifiedRows(section Section) []unifiedRow {
 			outcome:  outcomeSuccess,
 			color:    colorGreen,
 			details:  successDetails(item),
+		})
+	}
+	for _, item := range section.NearPerfect {
+		name := item.Name
+		if name == "" {
+			name = "(unknown)"
+		}
+		rows = append(rows, unifiedRow{
+			name:     name,
+			language: item.Language,
+			org:      item.Organization,
+			outcome:  outcomeNearPerfect,
+			color:    colorYellow,
+			details:  partialDetails(item),
 		})
 	}
 	for _, item := range section.Partial {
@@ -589,6 +629,9 @@ var sectionsWithoutSkipped = map[string]bool{
 func sectionCountSummary(section Section) string {
 	parts := []string{
 		fmt.Sprintf("%d succeeded", len(section.Succeeded)),
+	}
+	if len(section.NearPerfect) > 0 {
+		parts = append(parts, fmt.Sprintf("%d near perfect", len(section.NearPerfect)))
 	}
 	if len(section.Partial) > 0 {
 		parts = append(parts, fmt.Sprintf("%d partial", len(section.Partial)))

@@ -145,6 +145,12 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 			var conditions []map[string]any
 			json.Unmarshal(conditionsRaw, &conditions)
 
+			// First pass: expand every source condition into zero or more
+			// target conditions, recording notes for drops / remaps. The
+			// actual POSTs are deferred so the resolver (#234) can collapse
+			// collisions across multiple source conditions before any HTTP
+			// traffic.
+			var pending []targetCondition
 			for _, cond := range conditions {
 				metric, _ := cond["metric"].(string)
 				op, _ := cond["op"].(string)
@@ -153,26 +159,27 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 					continue
 				}
 
-				targets, mapped := lookupMetricReplacement(metric)
+				targets, mapped := LookupMetricReplacement(metric)
 				if mapped && len(targets) == 0 {
 					e.Logger.Warn("addGateConditions: source metric has no SonarQube Cloud equivalent — condition skipped (#143)",
 						"gate", gateName, "metric", metric, "op", op, "error", errorVal)
-					recordGateConditionNote(notesW, gateIDStr, gateName, "dropped", metric, nil)
+					recordGateConditionNote(notesW, gateIDStr, gateName, gateConditionNoteInput{
+						Action:       "dropped",
+						SourceMetric: metric,
+						SourceOp:     op,
+						SourceError:  errorVal,
+					})
 					counter.Fail()
 					continue
 				}
 				if !mapped {
-					targets = []replacementCondition{{Metric: metric}}
-				} else {
-					e.Logger.Info("addGateConditions: source metric remapped to SonarQube Cloud equivalent(s) (#143)",
-						"gate", gateName, "source_metric", metric, "target_metrics", targets)
-					targetMetrics := make([]string, 0, len(targets))
-					for _, repl := range targets {
-						targetMetrics = append(targetMetrics, repl.Metric)
-					}
-					recordGateConditionNote(notesW, gateIDStr, gateName, "remapped", metric, targetMetrics)
+					targets = []ReplacementCondition{{Metric: metric}}
 				}
 
+				// Compute effective target conditions (each target inherits
+				// the source's op/threshold unless the mapping table
+				// overrides them, e.g. composite expansions).
+				targetConds := make([]targetCondition, 0, len(targets))
 				for _, repl := range targets {
 					effOp := repl.Op
 					if effOp == "" {
@@ -182,20 +189,56 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 					if effErr == "" {
 						effErr = errorVal
 					}
-					e.Logger.Debug("gate api call: POST /api/qualitygates/create_condition",
-						"gate_id", gateID, "metric", repl.Metric, "op", effOp, "error", effErr, "org", orgKey,
-						"source_metric", metric)
-					_, err := e.Cloud.QualityGates.CreateCondition(ctx, cloud.CreateConditionParams{
-						GateID: gateID, Organization: orgKey,
-						Metric: repl.Metric, Op: effOp, Error: effErr,
+					targetConds = append(targetConds, targetCondition{
+						Metric:       repl.Metric,
+						Op:           effOp,
+						Error:        effErr,
+						SourceMetric: metric,
 					})
-					if err != nil {
-						counter.Fail()
-						logAPIWarn(e.Logger, "addGateConditions failed", err,
-							"metric", repl.Metric, "source_metric", metric)
-					} else {
-						counter.Success()
+				}
+
+				if mapped {
+					e.Logger.Info("addGateConditions: source metric remapped to SonarQube Cloud equivalent(s) (#143)",
+						"gate", gateName, "source_metric", metric, "target_metrics", targets)
+					targetMetrics := make([]string, 0, len(targetConds))
+					for _, tc := range targetConds {
+						targetMetrics = append(targetMetrics, tc.Metric)
 					}
+					// Suppress the sidecar note (and therefore the
+					// report's "Near Perfect" Issues line + yellow
+					// classification) for remaps that are obvious from
+					// the metric names alone — e.g. software_quality_*
+					// _rating → its same-axis SQC equivalent. Operators
+					// don't need a callout for those.
+					if !IsObviousMetricRemap(metric, targetMetrics) {
+						recordGateConditionNote(notesW, gateIDStr, gateName, gateConditionNoteInput{
+							Action:       "remapped",
+							SourceMetric: metric,
+							SourceOp:     op,
+							SourceError:  errorVal,
+							Targets:      targetConds,
+						})
+					}
+				}
+
+				pending = append(pending, targetConds...)
+			}
+
+			// Second pass: collapse collisions per #234, then POST.
+			for _, tc := range resolveTargetConditions(pending) {
+				e.Logger.Debug("gate api call: POST /api/qualitygates/create_condition",
+					"gate_id", gateID, "metric", tc.Metric, "op", tc.Op, "error", tc.Error, "org", orgKey,
+					"source_metric", tc.SourceMetric)
+				_, err := e.Cloud.QualityGates.CreateCondition(ctx, cloud.CreateConditionParams{
+					GateID: gateID, Organization: orgKey,
+					Metric: tc.Metric, Op: tc.Op, Error: tc.Error,
+				})
+				if err != nil {
+					counter.Fail()
+					logAPIWarn(e.Logger, "addGateConditions failed", err,
+						"metric", tc.Metric, "source_metric", tc.SourceMetric)
+				} else {
+					counter.Success()
 				}
 			}
 			return nil
@@ -204,22 +247,46 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 	return err
 }
 
-// recordGateConditionNote appends a sidecar JSONL entry describing a
-// per-condition mapping decision (a metric remap per #143 or a dropped
-// condition with no SQC equivalent). The summary report reads this file to
-// mark the parent quality gate as Partial.
-func recordGateConditionNote(w *common.ChunkWriter, cloudGateID, gateName, action, sourceMetric string, targetMetrics []string) {
+// gateConditionNoteInput is the per-condition decision payload written to
+// the addGateConditions.notes sidecar JSONL. Carrying source op/threshold
+// and per-target op/threshold lets the report render the full #143-style
+// mapping (e.g. "software_quality_blocker_issues > 0 --> security_rating
+// <= D") rather than just metric names.
+type gateConditionNoteInput struct {
+	Action       string            // "remapped" | "dropped"
+	SourceMetric string            // source SQS metric
+	SourceOp     string            // source condition op (GT, LT, ...)
+	SourceError  string            // source threshold
+	Targets      []targetCondition // target conditions; empty for "dropped"
+}
+
+// recordGateConditionNote appends a sidecar JSONL entry describing one
+// per-condition mapping decision. The summary report reads this file to
+// classify the parent gate (NearPerfect / Partial) and render Issues.
+func recordGateConditionNote(w *common.ChunkWriter, cloudGateID, gateName string, n gateConditionNoteInput) {
 	if w == nil || cloudGateID == "" {
 		return
 	}
 	rec := map[string]any{
 		"cloud_gate_id": cloudGateID,
 		"gate_name":     gateName,
-		"action":        action, // "remapped" | "dropped"
-		"source_metric": sourceMetric,
+		"action":        n.Action,
+		"source": map[string]string{
+			"metric": n.SourceMetric,
+			"op":     n.SourceOp,
+			"error":  n.SourceError,
+		},
 	}
-	if len(targetMetrics) > 0 {
-		rec["target_metrics"] = targetMetrics
+	if len(n.Targets) > 0 {
+		out := make([]map[string]string, 0, len(n.Targets))
+		for _, t := range n.Targets {
+			out = append(out, map[string]string{
+				"metric": t.Metric,
+				"op":     t.Op,
+				"error":  t.Error,
+			})
+		}
+		rec["targets"] = out
 	}
 	b, _ := json.Marshal(rec)
 	_ = w.WriteOne(b)

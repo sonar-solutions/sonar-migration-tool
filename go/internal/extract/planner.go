@@ -95,6 +95,7 @@ var scanHistoryTaskNames = map[string]bool{
 	"getProjectComponentTree": true,
 	"getProjectSourceCode":    true,
 	"getProjectSCMData":       true,
+	"getProjectHotspotsFull":  true,
 }
 
 // TargetTasks determines which tasks to extract based on config.

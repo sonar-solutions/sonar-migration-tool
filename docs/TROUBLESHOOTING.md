@@ -129,6 +129,118 @@ sonar-migration-tool reset <TOKEN> <ENTERPRISE_KEY> --export_directory ./files/
 
 ---
 
+## CE Task "Issue whilst processing the report" (importScanHistory)
+<!-- updated: 2026-05-27_20:40:00 -->
+
+When `importScanHistory` CE tasks fail on SonarCloud with "There was an issue whilst processing the report", the following causes have been identified:
+
+### ROOT CAUSE: Go ZIP Data Descriptors (FIXED)
+<!-- updated: 2026-05-27_20:00:00 -->
+
+**Symptom**: All CE tasks fail within ~150ms with "There was an issue whilst processing the report" and `hasScannerContext: false`.
+
+**Root cause**: Go's `archive/zip` `Writer.Create()` uses *streaming mode* by default — it sets the data descriptor flag (bit 3 / 0x0008) in the local file header and places CRC32 and sizes AFTER the file data. SonarCloud's Compute Engine (Java) uses `java.util.zip.ZipInputStream`, which cannot parse ZIP entries that use the `Store` method combined with data descriptors. However, Java's ZIP parser *does* handle data descriptors correctly for `Deflate`-compressed entries.
+
+**Evidence chain**:
+1. Real sonar-scanner report → CE SUCCESS (1255ms)
+2. Real scanner files re-zipped with `zip` command → CE parsed it (hasScannerContext: true)
+3. Real scanner files re-zipped with Go `zip.Writer` (`zip.Store` + `zw.CreateRaw(fh)`) → CE FAILED (hasScannerContext: false), even with correct CRC32 and sizes pre-computed in the local header
+4. Go `zip.Writer` with `zip.Deflate` + `zw.CreateHeader(fh)` → CE SUCCESS
+
+**Fix**: Changed `addBytes()` in `packager.go` to use `zip.Deflate` compression method with `zw.CreateHeader(fh)` instead of `zip.Store` with `zw.CreateRaw(fh)`. The `Store` + `CreateRaw` approach was attempted first (pre-computing CRC32 and sizes to avoid data descriptors) but CE still failed. The working fix uses `Deflate` + `CreateHeader`, which lets Go's zip writer handle compression and emit data descriptors — Java's `ZipInputStream` handles data descriptors correctly for Deflate-compressed entries, just not for Store entries.
+
+**Verification**: After the fix, CE errors changed from the generic "issue processing the report" to legitimate business logic errors (e.g., "no matching quality profile for language 'js'"), confirming the ZIP is now parsed correctly.
+
+### Known Differences from CloudVoyager (Informational)
+
+These differences have been investigated. They do NOT cause CE processing failures but represent areas of reduced fidelity:
+
+1. **Component filtering**: Our code filters to only include components WITH source code (`filterComponentsWithSource` in `tasks_scanhistory.go`). CloudVoyager includes ALL FIL components even without source. If many components lack source, this could produce a much smaller component set.
+
+2. **ActiveRule fields**: Our `BuildActiveRules` only sets `RuleRepo`, `RuleKey`, `Severity`, and `QProfileKey`. CloudVoyager also sets `ParamsByKey`, `CreatedAt`, `UpdatedAt`, and `Impacts`. Our proto schema supports all these fields but we don't populate them.
+
+3. **Duplications**: CloudVoyager includes `duplications-{ref}.pb` files. We do not include any duplication data.
+
+4. **Analysis date**: We use `time.Now()`. CloudVoyager uses the extraction timestamp. Unlikely to cause failures.
+
+### Branch Name Mapping (FIXED)
+<!-- updated: 2026-05-27_19:00:00 -->
+
+**Symptom**: CE fails with "Invalid branch type 'SHORT'. Branch 'main' already exists with type 'LONG'" when the SQ main branch name differs from the SC main branch name.
+
+**Root cause**: The migration tool was using the SQ branch name (`main`) in the protobuf metadata and CE submit, but the SC project's main branch was named `master`.
+
+**Fix**: Added CloudVoyager-pattern branch name mapping in `tasks_scanhistory.go`:
+1. `collectBranchInfo()` now returns `branchInfo` structs with `IsMain` flag (from SQ extracted data)
+2. Before importing, queries SC via `e.Cloud.Branches.List()` to discover the actual SC main branch name
+3. Uses the SC main branch name in the protobuf metadata (`BranchName`) and CE submit (`characteristic=branch=...`), while keeping the SQ branch name for filtering extracted data (issues, components, sources)
+
+### "Component has been deleted by end-user during analysis"
+<!-- updated: 2026-05-27_19:00:00 -->
+
+**Symptom**: ALL CE tasks fail with "Component has been deleted by end-user during analysis", even for projects not involved in migration.
+
+**Root cause**: This is a SonarCloud staging environment issue, not a code issue. All projects in the organization entered a soft-deleted state. The projects still appear via the search API but CE treats them as deleted.
+
+**Solution**: Re-create the projects on the SC staging environment, or use a fresh organization/enterprise. This error is NOT caused by our ZIP format, protobuf content, or submission logic.
+
+### Issue Date Preservation (FIXED)
+<!-- updated: 2026-05-27_22:30:00 -->
+
+**Symptom**: All migrated issues appear introduced at migration time; SonarCloud new-code-period logic treats all historical issues as new.
+
+**Root cause** (two bugs, both required fixing):
+
+1. `BackdateChangesets` existed in `scanreport/backdate.go` but was never called from `importBranch()` — dead code.
+2. `toExtractedIssues()` built a date-map keyed by issue key (e.g. `AQAB2...`) but looked it up by `ruleRepo:ruleKey` (e.g. `python:S1234`) — mismatched keys meant every `CreationDate` was zero.
+
+**Fix**:
+1. Added `Key string` and `CreationDate time.Time` fields to `IssueInput` and `ExternalIssueInput` in `builder.go`.
+2. `loadExtractedIssues()` and `loadExtractedHotspots()` now populate these from the raw JSON (`key` and `creationDate` fields).
+3. `toExtractedIssues()` simplified — reads `Key` and `CreationDate` directly from `IssueInput` (no second extract re-read).
+4. `importBranch()` now builds a component-key-keyed alias map and calls `BackdateChangesets(extracted, changesetsByKey, now)` after building changesets.
+
+**Verification**: After fix, migrated issues on SC show their original SonarQube creation dates.
+
+### Issue Comment Deduplication (FIXED)
+<!-- updated: 2026-05-27_22:30:00 -->
+
+**Symptom**: If `syncIssueMetadata` ran multiple times (e.g., first run had a tag-sync failure), user comments would be duplicated on the Cloud issue.
+
+**Root cause**: `syncIssueComments()` had no idempotency check. If comments were added successfully but the final `syncIssueTags()` call failed, the `metadata-synchronized` tag was never set, causing the pair to be retried. On retry, comments were added again.
+
+**Fix**: Added `isAlreadyMigratedIssueComment()` in `tasks_issuesync.go` — mirrors the hotspot pattern. Before adding a comment, it checks whether a Cloud comment with identical text already exists. The `cloudComments` field from `pair.cloud` is passed to `syncIssueComments()` for this check.
+
+### Hotspot TO_REVIEW Comment Sync (FIXED)
+<!-- updated: 2026-05-27_22:30:00 -->
+
+**Symptom**: User comments on TO_REVIEW hotspots were not migrated.
+
+**Root cause**: `buildHotspotPairs()` filtered to only `REVIEWED` hotspot pairs, discarding all TO_REVIEW hotspots even when they had user comments.
+
+**Fix**: Updated filter condition to include any pair that needs status sync (source is REVIEWED) OR needs comment sync (source has any comments), regardless of status.
+
+### Resolved Issues
+
+- **ReferenceBranchName**: Previously not set in `MetadataInput`. Now set correctly, defaulting to `BranchName` — matches CloudVoyager behavior.
+- **ZIP data descriptors**: Fixed via `Deflate` + `CreateHeader` (see root cause above).
+- **Branch name mapping**: Fixed to query SC main branch name (see above).
+- **Issue date preservation**: Fixed via `BackdateChangesets` wiring + `IssueInput.CreationDate` (see above).
+- **Issue comment deduplication**: Fixed via `isAlreadyMigratedIssueComment` idempotency guard (see above).
+- **Hotspot TO_REVIEW comment sync**: Fixed via inclusive actionable-pair filter (see above).
+
+### Confirmed NON-issues
+
+- **ZIP entry names**: Our code uses `external-issues-{ref}.pb` (with hyphens) at `packager.go`. CloudVoyager's working `report-packager` also uses hyphens. These match.
+- **Submit endpoint**: Both use `/api/ce/submit`.
+- **Multipart form structure**: Both use the same form fields: `report`, `projectKey`, `organization`, `characteristic` (branch/branchType), and `properties`.
+- **context-props.pb**: Both include an empty `context-props.pb`.
+- **Auth method**: `sqco_` tokens require Bearer auth (not Basic). Our `authTransport` correctly uses Bearer.
+- **Metadata fields**: Comprehensive comparison against CloudVoyager's `build-metadata.js` shows all fields match: analysisDate (epoch ms), organizationKey, projectKey, rootComponentRef, branchName, branchType (BRANCH=1), referenceBranchName, scmRevisionId (random 40-char hex), projectVersion ("1.0.0"), qprofilesPerLanguage, analyzedIndexedFileCountPerType.
+- **Protobuf content**: Issue, ExternalIssue, AdHocRule, ActiveRule, Component, and Changesets messages all use correct field numbers per the proto schema. Length-delimited encoding (varint prefix) matches the Java CE parser expectations.
+
+---
+
 ## Getting Help
 
 1. Check `files/*/requests.log` for detailed error information.
