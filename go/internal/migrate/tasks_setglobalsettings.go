@@ -78,6 +78,9 @@ var sqsOnlySettings = map[string]func(raw json.RawMessage) sqsOnlyDecision{
 	"sonar.core.startTime":                                    silentSkip, // read-only server timestamp
 	"sonar.builtInQualityProfiles.disableNotificationOnUpdate": silentSkip,
 	"sonar.announcement.htmlMessage":                          silentSkip,
+	"sonar.announcement.message":                              silentSkip,
+	"sonar.cfamily.generateComputedConfig":                    silentSkip,
+	"sonar.documentation.baseUrl":                             silentSkip,
 	"sonar.login.displayMessage":                              silentSkip,
 	"sonar.login.message":                                     silentSkip,
 	"sonar.license.notifications.remainingLocThreshold":       silentSkip,
@@ -107,15 +110,32 @@ var sqsOnlySettings = map[string]func(raw json.RawMessage) sqsOnlyDecision{
 		return sqsOnlyDecision{SkipSilently: true}
 	},
 	"sonar.technicalDebt.ratingGrid": func(raw json.RawMessage) sqsOnlyDecision {
-		// SQC always uses the platform default. Mention this only
-		// when SQS was customized away from that default value.
+		// SonarQube Cloud always uses the platform default for the
+		// rating grid; the SQS-side value is dropped on migration.
+		// Surface a note ONLY when the operator customised it away
+		// from that default so they see exactly what reverts.
 		const ratingGridDefault = "0.05,0.1,0.2,0.5"
 		v := extractField(raw, "value")
 		if v == "" || v == ratingGridDefault {
 			return sqsOnlyDecision{SkipSilently: true}
 		}
-		return sqsOnlyDecision{Note: sqsOnlyNoteText}
+		return sqsOnlyDecision{Note: fmt.Sprintf(
+			"Configured value %q will be replaced by the non-configurable SonarQube Cloud default %q.",
+			v, ratingGridDefault)}
 	},
+	"sonar.dbcleaner.branchesToKeepWhenInactive": func(raw json.RawMessage) sqsOnlyDecision {
+		// The SQS branch-name list is migrated as a regex to the SQC
+		// org-scope setting sonar.branch.longLivedBranches.regex.
+		// Surface a note whenever the operator has customised it so
+		// they understand the transformation.
+		if extractField(raw, "value") == "" && len(extractStringArray(raw, "values")) == 0 {
+			return sqsOnlyDecision{SkipSilently: true}
+		}
+		return sqsOnlyDecision{
+			Note: "Will be adapted as a regex and migrated to the org-scope setting sonar.branch.longLivedBranches.regex.",
+		}
+	},
+
 	"sonar.allowPermissionManagementForProjectAdmins": func(raw json.RawMessage) sqsOnlyDecision {
 		// SQC has no equivalent feature flag; the SQS default is
 		// "false" (don't delegate permission management to project
@@ -557,7 +577,7 @@ func applyOneGlobalSetting(ctx context.Context, e *Executor, raw json.RawMessage
 					Org:    org,
 					Status: outcomeSkipped,
 					Reason: "project-scope-only",
-					Detail: "Skipped (handled by setProjectSettings)" + mergeSuffix,
+					Detail: "Setting does not exist at global org level on SonarQube Cloud; has been applied for each project instead." + mergeSuffix,
 				})
 				continue
 			}

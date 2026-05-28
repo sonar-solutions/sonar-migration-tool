@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/migrate"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 )
 
@@ -105,6 +106,15 @@ func BuildPredictiveRun(exportDir string) (string, error) {
 		if len(rows) == 0 {
 			continue
 		}
+		// Predict-side dedup (#240): if the same entity (e.g. a QG
+		// named "Backend QG" or a QP "Sonar way / Java" or a group
+		// "developers") is mapped from several SonarQube Server orgs,
+		// the predictive report should list it once with the
+		// outcome for its non-skipped occurrence (Perfect, Near
+		// Perfect, Partial, ...). Without this dedup, collectSkipped
+		// would emit a Skipped row for every skipped-org occurrence
+		// even when the entity already appears in Succeeded.
+		rows = dedupeMappingRows(rows, ct, orgLookup)
 		if err := writeMappingJSONL(store, ct.MappingsTask, rows, orgLookup); err != nil {
 			return "", fmt.Errorf("synthesizing %s: %w", ct.MappingsTask, err)
 		}
@@ -121,6 +131,9 @@ func BuildPredictiveRun(exportDir string) (string, error) {
 		}
 		if err := synthesizeSetGlobalSettings(exportDir, runDir, extractMapping, orgLookup); err != nil {
 			return "", fmt.Errorf("synthesizing setGlobalSettings: %w", err)
+		}
+		if err := synthesizeSetNewCodePeriods(exportDir, runDir, extractMapping); err != nil {
+			return "", fmt.Errorf("synthesizing setNewCodePeriods: %w", err)
 		}
 	}
 
@@ -144,6 +157,61 @@ func buildOrgKeyLookup(exportDir string) (map[string]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// dedupeMappingRows collapses CSV rows that describe the same entity
+// across multiple source orgs into a single row per identity. When
+// the same entity is mapped from N orgs and at least one of those orgs
+// is non-skipped, the non-skipped row wins — that way the predictive
+// report shows the entity once with its real outcome (Perfect, Near
+// Perfect, Partial, ...) rather than also reporting it as Skipped for
+// every other source org. If every occurrence is skipped, the first
+// row wins and the entity surfaces once in the Skipped bucket.
+//
+// Identity is the value of ct.NameField (default "name"), plus the
+// language field for Quality Profiles where "Sonar way" in Java vs JS
+// are distinct entities. Rows missing the name/key field pass through
+// unchanged so any quirks in upstream CSVs don't silently drop data.
+func dedupeMappingRows(rows []map[string]any, ct createTaskDef, orgLookup map[string]string) []map[string]any {
+	nameField := ct.NameField
+	if nameField == "" {
+		nameField = "name"
+	}
+	enrich := func(row map[string]any) {
+		if sqKey, ok := row["sonarqube_org_key"].(string); ok && sqKey != "" {
+			if scKey, found := orgLookup[sqKey]; found {
+				row["sonarcloud_org_key"] = scKey
+			}
+		}
+	}
+
+	out := make([]map[string]any, 0, len(rows))
+	indexByKey := make(map[string]int, len(rows))
+	for _, row := range rows {
+		enrich(row)
+		name, _ := row[nameField].(string)
+		if name == "" {
+			out = append(out, row)
+			continue
+		}
+		key := name
+		if lang, ok := row["language"].(string); ok && lang != "" {
+			key = lang + "/" + name
+		}
+		orgKey, _ := row["sonarcloud_org_key"].(string)
+		skipped := shouldSkipOrg(orgKey)
+
+		if idx, ok := indexByKey[key]; ok {
+			existing, _ := out[idx]["sonarcloud_org_key"].(string)
+			if shouldSkipOrg(existing) && !skipped {
+				out[idx] = row
+			}
+			continue
+		}
+		indexByKey[key] = len(out)
+		out = append(out, row)
+	}
+	return out
 }
 
 // writeMappingJSONL writes one JSONL row per CSV row, enriched with the
@@ -208,6 +276,13 @@ func writeCreateJSONL(store *common.DataStore, ct createTaskDef, rows []map[stri
 		}
 		name, _ := row[nameField].(string)
 		if name == "" {
+			continue
+		}
+		// Built-in groups (e.g. "sonar-users", replaced by SQC's
+		// implicit "Members") are surfaced as Skipped by the summary
+		// collector, not as Succeeded — leave them out of the
+		// synthetic create-task output.
+		if ct.OutputTask == "createGroups" && migrate.IsBuiltInGroup(name) {
 			continue
 		}
 		// Dedup across SQC orgs by entity identity (#240). For Quality

@@ -45,7 +45,7 @@ var skipReasonOrder = []struct {
 	// SQS-only settings appear last so the section ends with the
 	// "not applicable on SQC" notes — one row per such setting,
 	// no Organization (issue #200).
-	{SkipReasonSQSOnly, "Not applicable on SonarQube Cloud"},
+	{SkipReasonSQSOnly, "Not applicable on SonarQube cloud"},
 }
 
 // Outcome labels used in the unified per-section table.
@@ -569,7 +569,7 @@ func buildUnifiedRows(section Section, predictive bool) []unifiedRow {
 			org:      item.Organization,
 			outcome:  outcomeNearPerfect,
 			color:    colorYellow,
-			details:  partialDetails(item),
+			details:  partialDetails(item, predictive),
 		})
 	}
 	for _, item := range section.Partial {
@@ -583,7 +583,7 @@ func buildUnifiedRows(section Section, predictive bool) []unifiedRow {
 			org:      item.Organization,
 			outcome:  outcomePartial,
 			color:    colorAmber,
-			details:  partialDetails(item),
+			details:  partialDetails(item, predictive),
 		})
 	}
 	for _, item := range section.Failed {
@@ -648,17 +648,24 @@ func successDetails(item EntityItem, predictive bool) string {
 	return strings.Join(parts, "\n")
 }
 
-// partialDetails formats the Details column for a Partial item — each issue
-// rendered on its own line, prefixed by the cloud key if known.
-func partialDetails(item EntityItem) string {
+// partialDetails formats the Details column for a Partial / NearPerfect
+// item — each issue rendered on its own line, prefixed by the cloud
+// key if known. The predictive renderer passes predictive=true so the
+// synthetic predict:<task>:<org>:<name> placeholder is suppressed
+// (issue #240; matches the equivalent stripping in successDetails).
+func partialDetails(item EntityItem, predictive bool) string {
 	issues := strings.Join(item.Issues, "\n")
-	if item.Detail != "" && issues != "" {
-		return item.Detail + "\n" + issues
+	detail := item.Detail
+	if predictive {
+		detail = ""
+	}
+	if detail != "" && issues != "" {
+		return detail + "\n" + issues
 	}
 	if issues != "" {
 		return issues
 	}
-	return item.Detail
+	return detail
 }
 
 // skippedDetails formats the Details column for a Skipped item — prefer the
@@ -722,7 +729,7 @@ func skipBreakdown(skipped []EntityItem) []string {
 	var parts []string
 	for _, entry := range skipReasonOrder {
 		if c := counts[entry.Reason]; c > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", c, strings.ToLower(entry.Label)))
+			parts = append(parts, fmt.Sprintf("%d %s", c, lowerLabelPreservingProductName(entry.Label)))
 		}
 	}
 	return parts
@@ -833,4 +840,15 @@ func sanitizeForPDF(s string) string {
 
 func itoa(n int) string {
 	return fmt.Sprintf("%d", n)
+}
+
+// lowerLabelPreservingProductName lowercases a skip-reason label for
+// the per-section counts summary line ("3 not applicable on SonarQube
+// cloud") while keeping the "SonarQube" product name properly cased.
+// A naïve strings.ToLower would render "sonarqube" — readable, but
+// inconsistent with the way the product is named everywhere else in
+// the report.
+func lowerLabelPreservingProductName(s string) string {
+	out := strings.ToLower(s)
+	return strings.ReplaceAll(out, "sonarqube", "SonarQube")
 }
