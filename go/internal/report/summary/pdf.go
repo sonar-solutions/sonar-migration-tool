@@ -74,6 +74,9 @@ func RenderPDF(summary *MigrationSummary) ([]byte, error) {
 	renderTitlePage(pdf, summary)
 
 	for _, section := range summary.Sections {
+		if summary.OmitSections[section.Name] {
+			continue
+		}
 		renderSection(pdf, section)
 	}
 
@@ -148,14 +151,16 @@ func renderTitlePage(pdf *fpdf.Fpdf, summary *MigrationSummary) {
 	pdf.CellFormat(0, 7, "Generated: "+summary.GeneratedAt.Format("2006-01-02 15:04:05"), "", 1, "C", false, 0, "")
 	pdf.Ln(10)
 
-	renderExecutiveSummary(pdf, summary.Sections)
+	renderExecutiveSummary(pdf, summary.Sections, summary.OmitSections)
 }
 
 // renderExecutiveSummary renders the six-column summary table at the top of
 // the report: Objects | Perfect | Near Perfect | Partial | Failed | Skipped.
 // The five status buckets follow the green/yellow/orange/red/grey taxonomy
 // defined in issues #224 and #227; colours are conveyed by the count cells.
-func renderExecutiveSummary(pdf *fpdf.Fpdf, sections []Section) {
+// Sections present in `omit` are skipped entirely (predictive reports
+// omit "Global Settings", #235).
+func renderExecutiveSummary(pdf *fpdf.Fpdf, sections []Section, omit map[string]bool) {
 	headers := []string{"Objects", "Perfect", "Near Perfect", "Partial", "Failed", "Skipped"}
 	const (
 		objectsWidth = 45.0
@@ -177,7 +182,11 @@ func renderExecutiveSummary(pdf *fpdf.Fpdf, sections []Section) {
 
 	pdf.SetFont(pdfFontFamily, "", 10)
 	var totalPerfect, totalYellow, totalOrange, totalRed, totalGrey int
-	for i, sec := range sections {
+	rowIdx := 0
+	for _, sec := range sections {
+		if omit[sec.Name] {
+			continue
+		}
 		perfect := len(sec.Succeeded)
 		yellow := len(sec.NearPerfect)
 		orange := len(sec.Partial)
@@ -189,11 +198,12 @@ func renderExecutiveSummary(pdf *fpdf.Fpdf, sections []Section) {
 		totalRed += red
 		totalGrey += grey
 
-		if i%2 == 0 {
+		if rowIdx%2 == 0 {
 			setFillColor(pdf, colorLightGray)
 		} else {
 			setFillColor(pdf, colorWhite)
 		}
+		rowIdx++
 		setColor(pdf, colorBlack)
 		pdf.CellFormat(widths[0], 7, sec.Name, "1", 0, "L", true, 0, "")
 		renderCountCell(pdf, widths[1], perfect, colorGreen)

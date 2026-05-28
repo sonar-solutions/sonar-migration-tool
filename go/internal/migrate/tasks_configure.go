@@ -159,7 +159,7 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 					continue
 				}
 
-				targets, mapped := lookupMetricReplacement(metric)
+				targets, mapped := LookupMetricReplacement(metric)
 				if mapped && len(targets) == 0 {
 					e.Logger.Warn("addGateConditions: source metric has no SonarQube Cloud equivalent — condition skipped (#143)",
 						"gate", gateName, "metric", metric, "op", op, "error", errorVal)
@@ -173,7 +173,7 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 					continue
 				}
 				if !mapped {
-					targets = []replacementCondition{{Metric: metric}}
+					targets = []ReplacementCondition{{Metric: metric}}
 				}
 
 				// Compute effective target conditions (each target inherits
@@ -210,7 +210,7 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 					// the metric names alone — e.g. software_quality_*
 					// _rating → its same-axis SQC equivalent. Operators
 					// don't need a callout for those.
-					if !isObviousMetricRemap(metric, targetMetrics) {
+					if !IsObviousMetricRemap(metric, targetMetrics) {
 						recordGateConditionNote(notesW, gateIDStr, gateName, gateConditionNoteInput{
 							Action:       "remapped",
 							SourceMetric: metric,
