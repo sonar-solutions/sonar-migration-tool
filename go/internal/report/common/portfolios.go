@@ -104,8 +104,8 @@ func GeneratePortfolioMarkdown(dir string, mapping structure.ExtractMapping, idM
 	portfolios := ProcessPortfolios(dir, mapping, idMap)
 	active := report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Portfolio Name", "name"}, {"Project selection type", "selection"},
-			{"Contains Nested Portfolios", "children"}, {"# of Projects", "project_count"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Portfolio Name", Key: "name"}, {Header: "Project selection type", Key: "selection"},
+			{Header: "Contains Nested Portfolios", Key: "children"}, {Header: "# of Projects", Key: "project_count"},
 		},
 		portfolios,
 		report.WithTitle("Active Portfolios", 3),
@@ -117,7 +117,7 @@ func GeneratePortfolioMarkdown(dir string, mapping structure.ExtractMapping, idM
 	)
 	inactive := report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Portfolio Name", "name"}, {"Project selection type", "selection"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Portfolio Name", Key: "name"}, {Header: "Project selection type", Key: "selection"},
 		},
 		portfolios,
 		report.WithTitle("Inactive Portfolios", 3),

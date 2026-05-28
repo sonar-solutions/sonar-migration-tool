@@ -37,10 +37,10 @@ func GenerateCoverageMarkdown(measures common.Measures) string {
 	}
 	return report.GenerateSection(
 		[]report.Column{
-			{"Lines to Cover", "lines_to_cover"}, {"Covered Lines", "covered_lines"},
-			{"Uncovered Lines", "uncovered_lines"}, {"Coverage %", "coverage"},
-			{"New Lines to Cover", "new_lines_to_cover"}, {"New Covered Lines", "new_covered_lines"},
-			{"New Uncovered Lines", "new_uncovered_lines"}, {"New Code Coverage %", "new_coverage"},
+			{Header: "Lines to Cover", Key: "lines_to_cover"}, {Header: "Covered Lines", Key: "covered_lines"},
+			{Header: "Uncovered Lines", Key: "uncovered_lines"}, {Header: "Coverage %", Key: "coverage"},
+			{Header: "New Lines to Cover", Key: "new_lines_to_cover"}, {Header: "New Covered Lines", Key: "new_covered_lines"},
+			{Header: "New Uncovered Lines", Key: "new_uncovered_lines"}, {Header: "New Code Coverage %", Key: "new_coverage"},
 		},
 		[]map[string]any{row},
 		report.WithTitle("Test Coverage", 3),

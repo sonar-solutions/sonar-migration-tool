@@ -61,8 +61,8 @@ func GenerateGateMarkdown(dir string, mapping structure.ExtractMapping, idMap Se
 
 	active := report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Quality Gate Name", "name"},
-			{"# of Projects using", "project_count"}, {"Is Default", "is_default"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Quality Gate Name", Key: "name"},
+			{Header: "# of Projects using", Key: "project_count"}, {Header: "Is Default", Key: "is_default"},
 		},
 		rows,
 		report.WithTitle("Active Custom Quality Gates", 3),
@@ -75,7 +75,7 @@ func GenerateGateMarkdown(dir string, mapping structure.ExtractMapping, idMap Se
 	)
 
 	unused := report.GenerateSection(
-		[]report.Column{{"Server ID", "server_id"}, {"Quality Gate Name", "name"}},
+		[]report.Column{{Header: "Server ID", Key: "server_id"}, {Header: "Quality Gate Name", Key: "name"}},
 		rows,
 		report.WithTitle("Unused Custom Quality Gates", 3),
 		report.WithFilter(func(r map[string]any) bool {

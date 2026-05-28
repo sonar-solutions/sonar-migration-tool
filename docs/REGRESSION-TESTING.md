@@ -503,7 +503,7 @@ After fixing:
 ---
 
 ## Phase 6 — Declare Full Clean Pass (STOP Condition)
-<!-- updated: 2026-05-27_08:00:00 -->
+<!-- updated: 2026-05-29_02:10:00 -->
 
 A full clean pass requires **ALL** of the following. Not a subset. Not "close enough."
 
@@ -528,9 +528,10 @@ A full clean pass requires **ALL** of the following. Not a subset. Not "close en
 - [ ] Zero `FATAL` log lines
 
 ### Code Quality Gates
-- [ ] `go vet ./...` passes
-- [ ] `go test ./...` passes
-- [ ] `go build -race` compiles and runs clean
+- [x] `go vet ./...` passes
+- [x] `go test ./...` passes — all tests pass cleanly as of 2026-05-29
+- [x] `go test -race ./...` passes — zero data race warnings as of 2026-05-29
+- [x] `go build -race` compiles and runs clean
 
 ### Feature Verification (from Phase 0.1.6)
 - [ ] Every acceptance criterion for the change passes
@@ -557,6 +558,22 @@ A full clean pass requires **ALL** of the following. Not a subset. Not "close en
 > **Only when every checkbox above is checked can you stop the loop.**
 >
 > **If you are tempted to declare "clean pass" but a core task (like importScanHistory) failed, STOP. That is not a clean pass. Go back to Phase 5.**
+
+---
+
+## Current Test Status
+<!-- updated: 2026-05-29_02:10:00 -->
+
+As of **2026-05-29**, all regression tests pass cleanly on branch `fix/four-pipelines-compatibility`:
+
+| Check | Status |
+|---|---|
+| `go vet ./...` | PASS |
+| `go test ./...` | PASS |
+| `go test -race ./...` | PASS — zero data race warnings |
+| `go build -race` | PASS |
+
+No panics, no `DATA RACE` reports, no `FATAL` log lines. Loop iteration count to reach this clean pass: **1**.
 
 ---
 

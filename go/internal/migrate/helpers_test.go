@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	sqapi "github.com/sonar-solutions/sq-api-go"
@@ -89,17 +90,17 @@ func TestForEachMigrateItem(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 	}
 
-	var count int
+	var count atomic.Int32
 	err := forEachMigrateItem(context.Background(), e, "test", "dep",
 		func(_ context.Context, item json.RawMessage, w *common.ChunkWriter) error {
-			count++
+			count.Add(1)
 			return nil
 		})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 2 {
-		t.Errorf("expected 2 iterations, got %d", count)
+	if count.Load() != 2 {
+		t.Errorf("expected 2 iterations, got %d", count.Load())
 	}
 }
 

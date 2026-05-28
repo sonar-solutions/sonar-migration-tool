@@ -30,7 +30,7 @@ func ProcessApplications(dir string, mapping structure.ExtractMapping, idMap Ser
 func GenerateApplicationMarkdown(dir string, mapping structure.ExtractMapping, idMap ServerIDMapping) (string, string) {
 	apps := ProcessApplications(dir, mapping, idMap)
 	columns := []report.Column{
-		{"Server ID", "server_id"}, {"Application Name", "name"}, {"# Projects", "project_count"},
+		{Header: "Server ID", Key: "server_id"}, {Header: "Application Name", Key: "name"}, {Header: "# Projects", Key: "project_count"},
 	}
 	active := report.GenerateSection(columns, apps,
 		report.WithTitle("Active Applications", 3),
@@ -41,7 +41,7 @@ func GenerateApplicationMarkdown(dir string, mapping structure.ExtractMapping, i
 		}),
 	)
 	inactive := report.GenerateSection(
-		[]report.Column{{"Server ID", "server_id"}, {"Application Name", "name"}},
+		[]report.Column{{Header: "Server ID", Key: "server_id"}, {Header: "Application Name", Key: "name"}},
 		apps,
 		report.WithTitle("Inactive Applications", 3),
 		report.WithFilter(func(r map[string]any) bool {

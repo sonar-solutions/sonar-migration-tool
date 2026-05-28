@@ -188,9 +188,9 @@ func GenerateProjectMetricsMarkdown(projects Projects, projectScans map[string]m
 	}
 	return report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Project Name", "name"}, {"Total Rules", "rules"},
-			{"Template Rules", "template_rules"}, {"Plugin Rules", "plugin_rules"},
-			{"Most Recent Scan", "most_recent_scan"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Project Name", Key: "name"}, {Header: "Total Rules", Key: "rules"},
+			{Header: "Template Rules", Key: "template_rules"}, {Header: "Plugin Rules", Key: "plugin_rules"},
+			{Header: "Most Recent Scan", Key: "most_recent_scan"},
 		},
 		rows,
 		report.WithTitle("Project Metrics", 2),

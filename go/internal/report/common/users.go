@@ -61,8 +61,8 @@ func GenerateUserMarkdown(dir string, mapping structure.ExtractMapping, idMap Se
 
 	md := report.GenerateSection(
 		[]report.Column{
-			{"Total Users", "total"}, {"Unique Users", "unique"}, {"Active Users", "active"},
-			{"SSO Users", "sso"}, {"Groups", "groups"},
+			{Header: "Total Users", Key: "total"}, {Header: "Unique Users", Key: "unique"}, {Header: "Active Users", Key: "active"},
+			{Header: "SSO Users", Key: "sso"}, {Header: "Groups", Key: "groups"},
 		},
 		[]map[string]any{row},
 		report.WithTitle("User Management", 3),

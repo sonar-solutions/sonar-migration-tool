@@ -135,13 +135,13 @@ func GenerateTaskMarkdown(dir string, mapping structure.ExtractMapping, idMap Se
 	}
 	return report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Type", "type"},
-			{"Total", "total"}, {"Succeeded", "succeeded"}, {"Failed", "failed"}, {"Canceled", "canceled"},
-			{"Min Queue Time (ms)", "min_queue_time"}, {"Max Queue Time (ms)", "max_queue_time"},
-			{"Avg Queue Time (ms)", "avg_queue_time"},
-			{"Min Execution Time (ms)", "min_execution_time"}, {"Max Execution Time (ms)", "max_execution_time"},
-			{"Avg Execution Time (ms)", "avg_execution_time"},
-			{"First Run", "first_run"}, {"Last Run", "last_run"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Type", Key: "type"},
+			{Header: "Total", Key: "total"}, {Header: "Succeeded", Key: "succeeded"}, {Header: "Failed", Key: "failed"}, {Header: "Canceled", Key: "canceled"},
+			{Header: "Min Queue Time (ms)", Key: "min_queue_time"}, {Header: "Max Queue Time (ms)", Key: "max_queue_time"},
+			{Header: "Avg Queue Time (ms)", Key: "avg_queue_time"},
+			{Header: "Min Execution Time (ms)", Key: "min_execution_time"}, {Header: "Max Execution Time (ms)", Key: "max_execution_time"},
+			{Header: "Avg Execution Time (ms)", Key: "avg_execution_time"},
+			{Header: "First Run", Key: "first_run"}, {Header: "Last Run", Key: "last_run"},
 		},
 		rows,
 		report.WithTitle("Tasks (Past 30 Days)", 3),

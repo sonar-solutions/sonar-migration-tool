@@ -128,8 +128,8 @@ func GeneratePermissionTemplateMarkdown(dir string, mapping structure.ExtractMap
 
 	md := report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Template Name", "name"}, {"Description", "description"},
-			{"Project key pattern", "pattern"}, {"Default For", "defaults"}, {"Projects", "project_count"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Template Name", Key: "name"}, {Header: "Description", Key: "description"},
+			{Header: "Project key pattern", Key: "pattern"}, {Header: "Default For", Key: "defaults"}, {Header: "Projects", Key: "project_count"},
 		},
 		templates,
 		report.WithTitle("Permission Templates", 3),
