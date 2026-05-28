@@ -24,11 +24,19 @@ type gateMappingNote struct {
 	TargetMetrics []string `json:"target_metrics,omitempty"`
 }
 
+// gateNoteSummary captures the per-gate outcome of addGateConditions: the
+// human-readable Issues lines the report renders, plus a flag indicating
+// whether any source condition had to be dropped for lack of a SonarQube
+// Cloud equivalent. Dropped conditions are the #227 orange criterion;
+// remap-only gates qualify as #227 yellow (near-perfect).
+type gateNoteSummary struct {
+	Issues     []string
+	HasDropped bool
+}
+
 // collectGateMappingNotes reads the addGateConditions.notes sidecar and
-// returns one human-readable Partial-migration message per cloud gate
-// affected. The key is the cloud_gate_id; values are the strings the
-// summary report appends to the gate's Issues list.
-func collectGateMappingNotes(runDir string) map[string][]string {
+// returns the per-gate outcome keyed by cloud_gate_id.
+func collectGateMappingNotes(runDir string) map[string]gateNoteSummary {
 	dir := filepath.Join(runDir, "addGateConditions.notes")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -103,7 +111,7 @@ func collectGateMappingNotes(runDir string) map[string][]string {
 		f.Close()
 	}
 
-	out := make(map[string][]string, len(byGate))
+	out := make(map[string]gateNoteSummary, len(byGate))
 	for gateID, ag := range byGate {
 		var msgs []string
 		if len(ag.remapped) > 0 {
@@ -119,18 +127,27 @@ func collectGateMappingNotes(runDir string) map[string][]string {
 					strings.Join(ag.dropped, "\n"))
 		}
 		if len(msgs) > 0 {
-			out[gateID] = msgs
+			out[gateID] = gateNoteSummary{
+				Issues:     msgs,
+				HasDropped: len(ag.dropped) > 0,
+			}
 		}
 	}
 	return out
 }
 
-// applyGateMappingNotes moves any Succeeded quality gate whose cloud gate id
-// appears in notes into the Partial bucket, attaching the human-readable
-// issue strings. Gates already in Partial get their Issues list extended.
-func applyGateMappingNotes(succeeded, partial []EntityItem, notes map[string][]string) ([]EntityItem, []EntityItem) {
+// applyGateMappingNotes routes Succeeded quality gates with addGateConditions
+// notes into either NearPerfect (yellow, #227) or Partial (orange, #227):
+//
+//   - A gate whose only notes are "remapped" (close-equivalent metric
+//     substitution per #143) lands in NearPerfect.
+//   - A gate with at least one "dropped" condition — i.e. a source metric
+//     with no SonarQube Cloud equivalent — lands in Partial.
+//   - A gate already in Partial (e.g. set_as_default failed) keeps that
+//     classification and absorbs the note Issues; orange dominates yellow.
+func applyGateMappingNotes(succeeded, nearPerfect, partial []EntityItem, notes map[string]gateNoteSummary) ([]EntityItem, []EntityItem, []EntityItem) {
 	if len(notes) == 0 || (len(succeeded) == 0 && len(partial) == 0) {
-		return succeeded, partial
+		return succeeded, nearPerfect, partial
 	}
 
 	// Index existing Partial entries by cloud_gate_id so we can extend
@@ -144,33 +161,37 @@ func applyGateMappingNotes(succeeded, partial []EntityItem, notes map[string][]s
 
 	keep := succeeded[:0:0]
 	for _, item := range succeeded {
-		issues, ok := notes[item.Detail]
+		note, ok := notes[item.Detail]
 		if !ok {
 			keep = append(keep, item)
 			continue
 		}
-		// Move to Partial.
 		moved := EntityItem{
 			Name:         item.Name,
 			Language:     item.Language,
 			Organization: item.Organization,
 			Detail:       item.Detail,
-			Issues:       append([]string(nil), issues...),
+			Issues:       append([]string(nil), note.Issues...),
 		}
-		partial = append(partial, moved)
+		if note.HasDropped {
+			partial = append(partial, moved)
+		} else {
+			nearPerfect = append(nearPerfect, moved)
+		}
 	}
 
-	// Append notes for gates already in Partial (e.g., from another
-	// upstream source).
-	for gateID, issues := range notes {
+	// Append notes for gates already in Partial (e.g., set_as_default
+	// failed in collectPartial). Orange dominates yellow, so we never
+	// move them out — just extend Issues.
+	for gateID, note := range notes {
 		idx, ok := partialIdx[gateID]
 		if !ok {
 			continue
 		}
-		partial[idx].Issues = append(partial[idx].Issues, issues...)
+		partial[idx].Issues = append(partial[idx].Issues, note.Issues...)
 	}
 
-	return keep, partial
+	return keep, nearPerfect, partial
 }
 
 // gateMappingDataStore is an interface satisfied by *common.DataStore so the
