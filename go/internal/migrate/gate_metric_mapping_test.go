@@ -29,10 +29,10 @@ func TestLookupMetricReplacement(t *testing.T) {
 		{"debt ratio rename",
 			"software_quality_maintainability_debt_ratio", true,
 			[]replacementCondition{{Metric: "sqale_debt_ratio"}}},
-		{"composite — software_quality_blocker_issues with fixed <= D",
+		{"composite — software_quality_blocker_issues → security_rating + reliability_rating worse than D",
 			"software_quality_blocker_issues", true,
 			[]replacementCondition{
-				{Metric: "security_review_rating", Op: "GT", Error: "4"},
+				{Metric: "security_rating", Op: "GT", Error: "4"},
 				{Metric: "reliability_rating", Op: "GT", Error: "4"},
 			}},
 		{"composite — software_quality_low_issues with <= A",
@@ -41,12 +41,15 @@ func TestLookupMetricReplacement(t *testing.T) {
 				{Metric: "security_rating", Op: "GT", Error: "1"},
 				{Metric: "reliability_rating", Op: "GT", Error: "1"},
 			}},
-		{"new_software_quality_blocker_issues — duplicate target per issue table",
+		{"new_software_quality_blocker_issues → new_security_rating + new_reliability_rating worse than D",
 			"new_software_quality_blocker_issues", true,
 			[]replacementCondition{
-				{Metric: "new_security_review_rating", Op: "GT", Error: "4"},
-				{Metric: "new_security_review_rating", Op: "GT", Error: "4"},
+				{Metric: "new_security_rating", Op: "GT", Error: "4"},
+				{Metric: "new_reliability_rating", Op: "GT", Error: "4"},
 			}},
+		{"software_quality_reliability_rating → reliability_rating (#232)",
+			"software_quality_reliability_rating", true,
+			[]replacementCondition{{Metric: "reliability_rating"}}},
 		{"new_software_quality_maintainability_rating → new_maintainability_rating",
 			"new_software_quality_maintainability_rating", true,
 			[]replacementCondition{{Metric: "new_maintainability_rating"}}},
@@ -149,17 +152,17 @@ func TestAddGateConditionsAppliesMetricMapping(t *testing.T) {
 	defer mu.Unlock()
 
 	// Expected: 1 (coverage, LT 80) + 1 (new_security_rating, inherited GT 1)
-	//         + 2 (security_review_rating GT 4, reliability_rating GT 4)
+	//         + 2 (security_rating GT 4, reliability_rating GT 4)
 	//         + 0 (contains_ai_code dropped)
 	if len(recorded) != 4 {
 		t.Fatalf("expected 4 create_condition calls, got %d: %+v", len(recorded), recorded)
 	}
 
 	want := map[string]call{
-		"coverage":               {metric: "coverage", op: "LT", errVal: "80"},
-		"new_security_rating":    {metric: "new_security_rating", op: "GT", errVal: "1"},
-		"security_review_rating": {metric: "security_review_rating", op: "GT", errVal: "4"},
-		"reliability_rating":     {metric: "reliability_rating", op: "GT", errVal: "4"},
+		"coverage":            {metric: "coverage", op: "LT", errVal: "80"},
+		"new_security_rating": {metric: "new_security_rating", op: "GT", errVal: "1"},
+		"security_rating":     {metric: "security_rating", op: "GT", errVal: "4"},
+		"reliability_rating":  {metric: "reliability_rating", op: "GT", errVal: "4"},
 	}
 
 	keys := make([]string, 0, len(recorded))
@@ -167,7 +170,7 @@ func TestAddGateConditionsAppliesMetricMapping(t *testing.T) {
 		keys = append(keys, c.metric)
 	}
 	sort.Strings(keys)
-	wantKeys := []string{"coverage", "new_security_rating", "reliability_rating", "security_review_rating"}
+	wantKeys := []string{"coverage", "new_security_rating", "reliability_rating", "security_rating"}
 	for i := range wantKeys {
 		if keys[i] != wantKeys[i] {
 			t.Fatalf("metrics: got %v, want %v", keys, wantKeys)
