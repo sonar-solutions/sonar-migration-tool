@@ -20,12 +20,14 @@ type pagingResult struct {
 	Total     int `json:"total"`
 }
 
-// fetchAllIssues paginates through /api/issues/search using the given status
-// parameter name and values, returning all issues for the project.
-func fetchAllIssues(ctx context.Context, client *sqapi.Client, projectKey, paramName string, statusValues []string) ([]Issue, error) {
-	var all []Issue
+// paginateAll is a generic helper that iterates through a paginated API until
+// no items remain or the accumulated count reaches the reported total. The
+// fetchPage closure receives a 1-based page number and must return
+// (items, totalCount, error).
+func paginateAll[T any](ctx context.Context, fetchPage func(context.Context, int) ([]T, int, error)) ([]T, error) {
+	var all []T
 	for page := 1; ; page++ {
-		items, total, err := fetchIssuesPage(ctx, client, projectKey, paramName, statusValues, page, defaultPageSize)
+		items, total, err := fetchPage(ctx, page)
 		if err != nil {
 			return nil, err
 		}
@@ -37,6 +39,14 @@ func fetchAllIssues(ctx context.Context, client *sqapi.Client, projectKey, param
 	return all, nil
 }
 
+// fetchAllIssues paginates through /api/issues/search using the given status
+// parameter name and values, returning all issues for the project.
+func fetchAllIssues(ctx context.Context, client *sqapi.Client, projectKey, paramName string, statusValues []string) ([]Issue, error) {
+	return paginateAll(ctx, func(ctx context.Context, page int) ([]Issue, int, error) {
+		return fetchIssuesPage(ctx, client, projectKey, paramName, statusValues, page, defaultPageSize)
+	})
+}
+
 func fetchIssuesPage(ctx context.Context, client *sqapi.Client, projectKey, paramName string, statusValues []string, page, pageSize int) ([]Issue, int, error) {
 	params := url.Values{
 		"componentKeys": {projectKey},
@@ -44,7 +54,7 @@ func fetchIssuesPage(ctx context.Context, client *sqapi.Client, projectKey, para
 		"p":             {strconv.Itoa(page)},
 		"ps":            {strconv.Itoa(pageSize)},
 	}
-	u := client.BaseURL() + "/api/issues/search?" + params.Encode()
+	u := client.BaseURL() + "api/issues/search?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("building issues request: %w", err)
@@ -70,18 +80,9 @@ func fetchIssuesPage(ctx context.Context, client *sqapi.Client, projectKey, para
 // fetchAllHotspots paginates through /api/hotspots/search, returning all
 // hotspots for the project.
 func fetchAllHotspots(ctx context.Context, client *sqapi.Client, projectKey string) ([]Hotspot, error) {
-	var all []Hotspot
-	for page := 1; ; page++ {
-		items, total, err := fetchHotspotsPage(ctx, client, projectKey, page, defaultPageSize)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, items...)
-		if len(items) == 0 || len(all) >= total {
-			break
-		}
-	}
-	return all, nil
+	return paginateAll(ctx, func(ctx context.Context, page int) ([]Hotspot, int, error) {
+		return fetchHotspotsPage(ctx, client, projectKey, page, defaultPageSize)
+	})
 }
 
 func fetchHotspotsPage(ctx context.Context, client *sqapi.Client, projectKey string, page, pageSize int) ([]Hotspot, int, error) {
@@ -90,7 +91,7 @@ func fetchHotspotsPage(ctx context.Context, client *sqapi.Client, projectKey str
 		"p":          {strconv.Itoa(page)},
 		"ps":         {strconv.Itoa(pageSize)},
 	}
-	u := client.BaseURL() + "/api/hotspots/search?" + params.Encode()
+	u := client.BaseURL() + "api/hotspots/search?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("building hotspots request: %w", err)
@@ -181,7 +182,7 @@ func fetchComponentMetricsPage(ctx context.Context, client *sqapi.Client, projec
 		"p":          {strconv.Itoa(page)},
 		"ps":         {strconv.Itoa(pageSize)},
 	}
-	u := client.BaseURL() + "/api/measures/component_tree?" + params.Encode()
+	u := client.BaseURL() + "api/measures/component_tree?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("building metrics request: %w", err)
@@ -214,18 +215,9 @@ func fetchComponentMetricsPage(ctx context.Context, client *sqapi.Client, projec
 // fetchAllGroups retrieves all groups via the standard /api/user_groups/search
 // endpoint, used by the SQ 9.9, 10.0, and 10.4 pipelines.
 func fetchAllGroups(ctx context.Context, client *sqapi.Client) ([]Group, error) {
-	var all []Group
-	for page := 1; ; page++ {
-		items, total, err := fetchGroupsPage(ctx, client, page, defaultPageSize)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, items...)
-		if len(items) == 0 || len(all) >= total {
-			break
-		}
-	}
-	return all, nil
+	return paginateAll(ctx, func(ctx context.Context, page int) ([]Group, int, error) {
+		return fetchGroupsPage(ctx, client, page, defaultPageSize)
+	})
 }
 
 func fetchGroupsPage(ctx context.Context, client *sqapi.Client, page, pageSize int) ([]Group, int, error) {
@@ -233,7 +225,7 @@ func fetchGroupsPage(ctx context.Context, client *sqapi.Client, page, pageSize i
 		"p":  {strconv.Itoa(page)},
 		"ps": {strconv.Itoa(pageSize)},
 	}
-	u := client.BaseURL() + "/api/user_groups/search?" + params.Encode()
+	u := client.BaseURL() + "api/user_groups/search?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("building groups request: %w", err)

@@ -80,18 +80,9 @@ func (p *SQ2025Pipeline) ExtractGroups(ctx context.Context) ([]Group, error) {
 }
 
 func (p *SQ2025Pipeline) fetchGroupsV2(ctx context.Context) ([]Group, error) {
-	var all []Group
-	for page := 1; ; page++ {
-		items, total, err := p.fetchGroupsV2Page(ctx, page, 500)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, items...)
-		if len(items) == 0 || len(all) >= total {
-			break
-		}
-	}
-	return all, nil
+	return paginateAll(ctx, func(ctx context.Context, page int) ([]Group, int, error) {
+		return p.fetchGroupsV2Page(ctx, page, 500)
+	})
 }
 
 func (p *SQ2025Pipeline) fetchGroupsV2Page(ctx context.Context, page, pageSize int) ([]Group, int, error) {
@@ -99,7 +90,7 @@ func (p *SQ2025Pipeline) fetchGroupsV2Page(ctx context.Context, page, pageSize i
 		"pageIndex": {strconv.Itoa(page)},
 		"pageSize":  {strconv.Itoa(pageSize)},
 	}
-	u := p.client.BaseURL() + "/api/v2/authorizations/groups?" + params.Encode()
+	u := p.client.BaseURL() + "api/v2/authorizations/groups?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, 0, fmt.Errorf("building V2 groups request: %w", err)
@@ -115,6 +106,8 @@ func (p *SQ2025Pipeline) fetchGroupsV2Page(ctx context.Context, page, pageSize i
 	if resp.StatusCode != http.StatusOK {
 		return nil, 0, fmt.Errorf("V2 groups API returned HTTP %d", resp.StatusCode)
 	}
+	// The V2 API only surfaces name and description; ID, membersCount, and
+	// default are absent from the V2 payload and will be zero/false in Group.
 	var result struct {
 		Groups []struct {
 			Name        string `json:"name"`

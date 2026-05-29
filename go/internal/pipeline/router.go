@@ -60,7 +60,7 @@ func selectPipeline(major, minor int, client *sqapi.Client) (Pipeline, error) {
 
 // detectVersionString fetches the raw version string from /api/server/version.
 func detectVersionString(ctx context.Context, client *sqapi.Client) (string, error) {
-	u := client.BaseURL() + "/api/server/version"
+	u := client.BaseURL() + "api/server/version"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", fmt.Errorf("building version request: %w", err)
