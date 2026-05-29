@@ -15,11 +15,13 @@ func rawJSON(t *testing.T, v map[string]any) json.RawMessage {
 }
 
 func TestAnalyzeProfile_CustomSeverity(t *testing.T) {
+	// Custom severity is per-activation: lives in getProfileRules'
+	// actives map, decorated with the synthetic "key" rule key.
 	in := ProfileAnalysisInput{
 		CloudProfileKey: "cp1", ProfileName: "Java way", Language: "java",
-		ActiveRules: []json.RawMessage{
-			rawJSON(t, map[string]any{"key": "java:S1", "severity": "CRITICAL", "repo": "java"}),
-			rawJSON(t, map[string]any{"key": "java:S2", "severity": "MAJOR", "repo": "java"}),
+		Activations: []json.RawMessage{
+			rawJSON(t, map[string]any{"key": "java:S1", "qProfile": "qp1", "severity": "CRITICAL"}),
+			rawJSON(t, map[string]any{"key": "java:S2", "qProfile": "qp1", "severity": "MAJOR"}),
 		},
 		BaseRulesByKey: map[string]json.RawMessage{
 			"java:S1": rawJSON(t, map[string]any{"key": "java:S1", "severity": "MAJOR"}),
@@ -45,12 +47,16 @@ func TestAnalyzeProfile_CustomSeverity(t *testing.T) {
 }
 
 func TestAnalyzeProfile_Prioritized(t *testing.T) {
+	// Prioritized data lives on the per-activation record (sourced
+	// from getProfileRules' "actives" map), NOT on the rule catalog
+	// rows. The migrate task decorates each activation with a
+	// synthetic "key" field carrying the rule key.
 	in := ProfileAnalysisInput{
 		CloudProfileKey: "cp1", ProfileName: "x", Language: "java",
-		ActiveRules: []json.RawMessage{
-			rawJSON(t, map[string]any{"key": "java:S1", "prioritizedRule": true, "repo": "java"}),
-			rawJSON(t, map[string]any{"key": "java:S2", "prioritizedRule": false, "repo": "java"}),
-			rawJSON(t, map[string]any{"key": "java:S3", "repo": "java"}),
+		Activations: []json.RawMessage{
+			rawJSON(t, map[string]any{"key": "java:S1", "qProfile": "qp1", "prioritizedRule": true}),
+			rawJSON(t, map[string]any{"key": "java:S2", "qProfile": "qp1", "prioritizedRule": false}),
+			rawJSON(t, map[string]any{"key": "java:S3", "qProfile": "qp1"}),
 		},
 	}
 	out := AnalyzeProfile(in)
@@ -99,15 +105,18 @@ func TestAnalyzeProfile_ThirdParty(t *testing.T) {
 }
 
 func TestAnalyzeProfile_CustomParams(t *testing.T) {
+	// Per-activation params with values come from getProfileRules'
+	// actives map (decorated with the synthetic rule "key" field).
 	in := ProfileAnalysisInput{
 		CloudProfileKey: "cp1", ProfileName: "x", Language: "java",
-		ActiveRules: []json.RawMessage{
+		Activations: []json.RawMessage{
 			rawJSON(t, map[string]any{
-				"key":  "java:S1",
-				"repo": "java",
+				"key":      "java:S1",
+				"qProfile": "qp1",
 				"params": []map[string]string{
 					{"key": "maxLines", "value": "50"},        // custom
 					{"key": "exemptFromMain", "value": "true"}, // matches default
+					{"key": "noValueGiven", "value": ""},       // empty → ignored
 				},
 			}),
 		},
@@ -117,6 +126,7 @@ func TestAnalyzeProfile_CustomParams(t *testing.T) {
 				"params": []map[string]any{
 					{"key": "maxLines", "defaultValue": "100"},
 					{"key": "exemptFromMain", "defaultValue": "true"},
+					{"key": "noValueGiven", "defaultValue": "X"},
 				},
 			}),
 		},
@@ -129,7 +139,7 @@ func TestAnalyzeProfile_CustomParams(t *testing.T) {
 		}
 	}
 	if len(custom) != 1 {
-		t.Fatalf("expected exactly 1 custom-params finding (only maxLines differs), got %d (%+v)", len(custom), custom)
+		t.Fatalf("expected exactly 1 custom-params finding (only maxLines differs; exemptFromMain matches default; noValueGiven is empty), got %d (%+v)", len(custom), custom)
 	}
 	if custom[0].RuleKey != "java:S1" || custom[0].Detail != "maxLines=50 (default 100)" {
 		t.Errorf("unexpected Detail: got %+v", custom[0])

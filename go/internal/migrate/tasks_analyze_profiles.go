@@ -22,6 +22,7 @@ func runAnalyzeProfileRules(ctx context.Context, e *Executor) error {
 	activeByProfile := indexExtractByServerAndField(e, "getActiveProfileRules", "profileKey")
 	deactivatedByProfile := indexExtractByServerAndField(e, "getDeactivatedProfileRules", "profileKey")
 	baseByServer := indexBaseRules(e)
+	activationsByProfile := indexProfileActivations(e)
 
 	err := forEachMigrateItem(ctx, e, "analyzeProfileRules", "createProfiles",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
@@ -38,6 +39,7 @@ func runAnalyzeProfileRules(ctx context.Context, e *Executor) error {
 				ActiveRules:               activeByProfile[serverURL+"\x00"+sourceKey],
 				DeactivatedInheritedRules: deactivatedByProfile[serverURL+"\x00"+sourceKey],
 				BaseRulesByKey:            baseByServer[serverURL],
+				Activations:               activationsByProfile[serverURL+"\x00"+sourceKey],
 			}
 			findings := AnalyzeProfile(input)
 			for _, f := range findings {
@@ -70,6 +72,41 @@ func indexExtractByServerAndField(e *Executor, task, field string) map[string][]
 		}
 		key := it.ServerURL + "\x00" + val
 		out[key] = append(out[key], it.Data)
+	}
+	return out
+}
+
+// indexProfileActivations parses getProfileRules JSONL records — each
+// record is a map of ruleKey → array of activations (one per profile
+// that has the rule active) sourced from SonarQube's "actives" map.
+// Flatten across all chunks and group by (serverURL, qProfile) so the
+// analyzer can look up "the activations belonging to THIS profile" in
+// O(1). Each activation is decorated with a synthetic "key" field
+// carrying the rule key so downstream detectors can read it without
+// having to thread the rule key separately.
+func indexProfileActivations(e *Executor) map[string][]json.RawMessage {
+	items, _ := readExtractItems(e, "getProfileRules")
+	out := make(map[string][]json.RawMessage)
+	for _, it := range items {
+		var rulesMap map[string]json.RawMessage
+		if err := json.Unmarshal(it.Data, &rulesMap); err != nil {
+			continue
+		}
+		for ruleKey, activationsRaw := range rulesMap {
+			var activations []json.RawMessage
+			if err := json.Unmarshal(activationsRaw, &activations); err != nil {
+				continue
+			}
+			for _, act := range activations {
+				qProfile := extractField(act, "qProfile")
+				if qProfile == "" {
+					continue
+				}
+				enriched := common.EnrichRaw(act, map[string]any{"key": ruleKey})
+				bucket := it.ServerURL + "\x00" + qProfile
+				out[bucket] = append(out[bucket], enriched)
+			}
+		}
 	}
 	return out
 }

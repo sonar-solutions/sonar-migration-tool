@@ -50,6 +50,14 @@ type ProfileAnalysisInput struct {
 	// the active-rule severity / params against the base rule's
 	// default and detect template-instantiated rules via templateKey.
 	BaseRulesByKey map[string]json.RawMessage
+	// Activations carries per-rule activation records for THIS
+	// profile, sourced from getProfileRules' "actives" map. Each
+	// record is the activation object decorated with a synthetic
+	// "key" field carrying the rule key. Used by criteria that need
+	// per-activation flags the rule catalog doesn't expose:
+	// prioritizedRule (criterion #2), severity overrides
+	// (criterion #1), custom params with value (criterion #4).
+	Activations []json.RawMessage
 }
 
 // AnalyzeProfile runs every #226 yellow detection across the given
@@ -67,18 +75,19 @@ func AnalyzeProfile(in ProfileAnalysisInput) []ProfileFinding {
 	return out
 }
 
-// detectCustomSeverities — criterion #1: active rule's severity differs
-// from the base rule's default severity, OR its impacts (MQR mode)
-// differ from the base rule's default impacts. Both signal a custom
-// severity choice that does not propagate to SonarQube Cloud.
+// detectCustomSeverities — criterion #1: per-activation severity
+// differs from the base rule's default severity. Reads from
+// in.Activations because the per-activation severity (the one the
+// operator picked for THIS profile) lives in getProfileRules' actives
+// map, not on the rule catalog that getActiveProfileRules emits.
 func detectCustomSeverities(in ProfileAnalysisInput) []ProfileFinding {
 	var out []ProfileFinding
-	for _, ar := range in.ActiveRules {
-		ruleKey := extractField(ar, "key")
+	for _, act := range in.Activations {
+		ruleKey := extractField(act, "key")
 		if ruleKey == "" {
 			continue
 		}
-		activeSeverity := extractField(ar, "severity")
+		activeSeverity := extractField(act, "severity")
 		base := in.BaseRulesByKey[ruleKey]
 		baseSeverity := extractField(base, "severity")
 		if activeSeverity == "" || baseSeverity == "" {
@@ -92,18 +101,24 @@ func detectCustomSeverities(in ProfileAnalysisInput) []ProfileFinding {
 	return out
 }
 
-// detectPrioritized — criterion #2: rule has prioritizedRule=true.
-// Prioritised rules are an SQS concept with no SQC counterpart.
+// detectPrioritized — criterion #2: rule has prioritizedRule=true on
+// THIS profile's activation. Prioritised rules are an SQS concept
+// with no SQC counterpart. Reads from in.Activations because the
+// prioritizedRule flag is per-activation and lives in
+// getProfileRules' "actives" map — not on the rule catalog that
+// getActiveProfileRules emits.
 func detectPrioritized(in ProfileAnalysisInput) []ProfileFinding {
 	var out []ProfileFinding
-	for _, ar := range in.ActiveRules {
-		if !extractBool(ar, "prioritizedRule") {
+	seen := make(map[string]bool)
+	for _, act := range in.Activations {
+		if !extractBool(act, "prioritizedRule") {
 			continue
 		}
-		ruleKey := extractField(ar, "key")
-		if ruleKey == "" {
+		ruleKey := extractField(act, "key")
+		if ruleKey == "" || seen[ruleKey] {
 			continue
 		}
+		seen[ruleKey] = true
 		out = append(out, profileFinding(in, FindingKindPrioritized, ruleKey, ""))
 	}
 	return out
@@ -129,36 +144,30 @@ func detectThirdParty(in ProfileAnalysisInput) []ProfileFinding {
 	return out
 }
 
-// detectCustomParams — criterion #4: active rule's params carry
+// detectCustomParams — criterion #4: per-activation params carry
 // values that differ from the rule's default. The SQS-side custom
 // values are dropped during SQC restore (the SQC rule uses the
-// language pack's default). Each (rule, param) pair yields one finding.
+// language pack's default). Each (rule, param) pair yields one
+// finding.
 //
-// IMPORTANT: SonarQube emits an empty `value` (or omits the field) to
-// signal "this activation uses the rule's default" — only a non-empty
-// value that differs from the rule's default is a genuine custom
-// value. Treating empty as custom (issue #226 follow-up) produced a
-// flood of false positives in the report.
-//
-// Note also that getActiveProfileRules writes the rule CATALOG filtered
-// by activation status; the per-activation custom values actually live
-// in getProfileRules' "actives" map. Reading them here gives a
-// best-effort signal until the analyzer switches data source.
+// Reads from in.Activations: SonarQube's "actives" map only includes
+// params the operator has actually customised, with the chosen
+// value. Empty / missing entries imply "uses default" — a defensive
+// `val == ""` guard remains so we never flag a param that simply
+// echoes the default.
 func detectCustomParams(in ProfileAnalysisInput) []ProfileFinding {
 	var out []ProfileFinding
-	for _, ar := range in.ActiveRules {
-		ruleKey := extractField(ar, "key")
+	for _, act := range in.Activations {
+		ruleKey := extractField(act, "key")
 		if ruleKey == "" {
 			continue
 		}
 		base := in.BaseRulesByKey[ruleKey]
 		baseDefaults := ruleParamDefaults(base)
-		for _, p := range ruleParams(ar) {
+		for _, p := range ruleParams(act) {
 			name := p["key"]
 			val := p["value"]
 			if name == "" || val == "" {
-				// Empty value = activation uses the rule default →
-				// not a custom value, no finding.
 				continue
 			}
 			def := baseDefaults[name]
@@ -249,6 +258,14 @@ var standardRuleRepos = map[string]bool{
 	"common-rpg": true, "rpg": true, "common-vb": true, "vb": true,
 	"common-tsql": true, "tsql": true, "plsql": true, "common-objc": true,
 	"objc": true, "common-c": true, "c": true, "cpp": true,
+	// Recent additions to the Sonar-shipped language set (post-2024).
+	"dart": true, "common-dart": true,
+	"rust": true, "common-rust": true,
+	"ipynb": true,
+	"jcl": true,
+	"shell": true,
+	"ansible": true,
+	"dotnetcli": true,
 }
 
 // ruleParams unmarshals the "params" array on an active-rule record

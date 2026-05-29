@@ -71,20 +71,39 @@ func collectProfileFindings(store *common.DataStore) map[string]*profileFindings
 				continue
 			}
 			// Dedup by rule key — the analyzer can emit several rows
-			// per rule (one per parameter for criterion #4); fold them
-			// onto a single bullet per rule with all details inlined.
+			// per rule (one per parameter for criterion #4, one per
+			// source-org-mapped profile when several SQS orgs migrate
+			// into the same SQC org). Fold onto a single bullet per
+			// rule with deduplicated detail strings inlined.
 			sort.SliceStable(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
 			byRule := make(map[string][]string)
+			seenDetail := make(map[string]map[string]bool)
 			var order []string
 			for _, e := range entries {
 				if _, seen := byRule[e.key]; !seen {
 					order = append(order, e.key)
+					byRule[e.key] = nil
+					seenDetail[e.key] = make(map[string]bool)
 				}
-				if e.detail != "" {
-					byRule[e.key] = append(byRule[e.key], e.detail)
-				} else {
-					byRule[e.key] = byRule[e.key] // ensure key present
+				if e.detail == "" || seenDetail[e.key][e.detail] {
+					continue
 				}
+				seenDetail[e.key][e.detail] = true
+				byRule[e.key] = append(byRule[e.key], e.detail)
+			}
+			// Per-criterion rendering: a few criteria collapse to a
+			// single sentence with the rule keys comma-separated.
+			// custom-severity drops the severity-transition detail
+			// (the message itself states the outcome — revert to
+			// default), and third-party drops the repo name (the
+			// message itself says the rules will be removed).
+			if kind == "custom-severity" {
+				lines = append(lines, "Because rules custom severities are not supported in SQC, the following rules with will be reverted to their default severities: "+strings.Join(order, ", "))
+				continue
+			}
+			if kind == "third-party" {
+				lines = append(lines, "Because SQC does not support 3rd party plugins, the following 3rd party rules will be removed from the quality profile: "+strings.Join(order, ", "))
+				continue
 			}
 			var ruleLines []string
 			for _, k := range order {
