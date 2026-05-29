@@ -24,6 +24,7 @@ func synthesizeAnalyzeProfileRulesNotes(exportDir, runDir string, extractMapping
 	activeByProfile := indexExtractRecords(exportDir, extractMapping, "getActiveProfileRules", "profileKey")
 	deactivatedByProfile := indexExtractRecords(exportDir, extractMapping, "getDeactivatedProfileRules", "profileKey")
 	baseByServer := indexBaseRulesByServer(exportDir, extractMapping)
+	activationsByProfile := indexProfileActivationsForPredict(exportDir, extractMapping)
 
 	w, err := store.Writer("analyzeProfileRules")
 	if err != nil {
@@ -44,6 +45,7 @@ func synthesizeAnalyzeProfileRulesNotes(exportDir, runDir string, extractMapping
 			ActiveRules:               activeByProfile[serverURL+"\x00"+sourceKey],
 			DeactivatedInheritedRules: deactivatedByProfile[serverURL+"\x00"+sourceKey],
 			BaseRulesByKey:            baseByServer[serverURL],
+			Activations:               activationsByProfile[serverURL+"\x00"+sourceKey],
 		}
 		for _, f := range migrate.AnalyzeProfile(in) {
 			b, err := json.Marshal(f)
@@ -71,6 +73,39 @@ func indexExtractRecords(exportDir string, mapping structure.ExtractMapping, tas
 		}
 		key := it.ServerURL + "\x00" + val
 		out[key] = append(out[key], it.Data)
+	}
+	return out
+}
+
+// indexProfileActivationsForPredict mirrors migrate.indexProfileActivations
+// for the predict pipeline: parses getProfileRules JSONL records — each
+// record is a map of ruleKey → array of activations — and groups them
+// by (serverURL, qProfile). Each activation is decorated with a
+// synthetic "key" field so the shared analyzer can read the rule key
+// without an out-of-band parameter.
+func indexProfileActivationsForPredict(exportDir string, mapping structure.ExtractMapping) map[string][]json.RawMessage {
+	items, _ := structure.ReadExtractData(exportDir, mapping, "getProfileRules")
+	out := make(map[string][]json.RawMessage)
+	for _, it := range items {
+		var rulesMap map[string]json.RawMessage
+		if err := json.Unmarshal(it.Data, &rulesMap); err != nil {
+			continue
+		}
+		for ruleKey, activationsRaw := range rulesMap {
+			var activations []json.RawMessage
+			if err := json.Unmarshal(activationsRaw, &activations); err != nil {
+				continue
+			}
+			for _, act := range activations {
+				qProfile := jsonStringField(act, "qProfile")
+				if qProfile == "" {
+					continue
+				}
+				enriched := common.EnrichRaw(act, map[string]any{"key": ruleKey})
+				bucket := it.ServerURL + "\x00" + qProfile
+				out[bucket] = append(out[bucket], enriched)
+			}
+		}
 	}
 	return out
 }

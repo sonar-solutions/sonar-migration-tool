@@ -21,11 +21,18 @@ type profileFinding struct {
 	Detail          string `json:"detail,omitempty"`
 }
 
-// profileFindingsByGate groups the per-rule findings emitted by the
+// profileFindings groups the per-rule findings emitted by the
 // analyzeProfileRules task into one human-readable Issues list per
 // quality profile. The outer map is keyed by cloud_profile_key.
+//
+// HasOrangeCriterion is true when at least one finding belongs to a
+// criterion treated as Partial (orange) rather than NearPerfect
+// (yellow) — currently just "third-party" rules. Those represent a
+// real loss of coverage on SQC (rules dropped from the profile), so
+// the QP should be classified Partial.
 type profileFindings struct {
-	Issues []string
+	Issues             []string
+	HasOrangeCriterion bool
 }
 
 // collectProfileFindings reads analyzeProfileRules JSONL and folds
@@ -62,6 +69,33 @@ func collectProfileFindings(store *common.DataStore) map[string]*profileFindings
 
 	out := make(map[string]*profileFindings, len(byProfile))
 	for cloudKey, kinds := range byProfile {
+		// Instantiated rules (template-instance criterion) always
+		// have a custom severity, so they'd also appear under the
+		// custom-severity criterion. Suppress them there since the
+		// template-instance message already says the rule is not
+		// migrated at all — reporting a severity revert for the
+		// same rule is misleading.
+		if templateEntries, hasTemplate := kinds["template-instance"]; hasTemplate {
+			instantiated := make(map[string]bool, len(templateEntries))
+			for _, e := range templateEntries {
+				instantiated[e.key] = true
+			}
+			if csEntries := kinds["custom-severity"]; len(csEntries) > 0 {
+				filtered := csEntries[:0]
+				for _, e := range csEntries {
+					if instantiated[e.key] {
+						continue
+					}
+					filtered = append(filtered, e)
+				}
+				if len(filtered) == 0 {
+					delete(kinds, "custom-severity")
+				} else {
+					kinds["custom-severity"] = filtered
+				}
+			}
+		}
+
 		var lines []string
 		// Render in a stable order — matches the criterion order in
 		// the issue so the report reads the same way every time.
@@ -71,20 +105,55 @@ func collectProfileFindings(store *common.DataStore) map[string]*profileFindings
 				continue
 			}
 			// Dedup by rule key — the analyzer can emit several rows
-			// per rule (one per parameter for criterion #4); fold them
-			// onto a single bullet per rule with all details inlined.
+			// per rule (one per parameter for criterion #4, one per
+			// source-org-mapped profile when several SQS orgs migrate
+			// into the same SQC org). Fold onto a single bullet per
+			// rule with deduplicated detail strings inlined.
 			sort.SliceStable(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
 			byRule := make(map[string][]string)
+			seenDetail := make(map[string]map[string]bool)
 			var order []string
 			for _, e := range entries {
 				if _, seen := byRule[e.key]; !seen {
 					order = append(order, e.key)
+					byRule[e.key] = nil
+					seenDetail[e.key] = make(map[string]bool)
 				}
-				if e.detail != "" {
-					byRule[e.key] = append(byRule[e.key], e.detail)
-				} else {
-					byRule[e.key] = byRule[e.key] // ensure key present
+				if e.detail == "" || seenDetail[e.key][e.detail] {
+					continue
 				}
+				seenDetail[e.key][e.detail] = true
+				byRule[e.key] = append(byRule[e.key], e.detail)
+			}
+			// Per-criterion rendering: a few criteria collapse to a
+			// single sentence with the rule keys comma-separated.
+			// custom-severity drops the severity-transition detail
+			// (the message itself states the outcome — revert to
+			// default), and third-party drops the repo name (the
+			// message itself says the rules will be removed).
+			if kind == "custom-severity" {
+				lines = append(lines, "Because rules custom severities are not supported in SQC, the following rules with will be reverted to their default severities: "+strings.Join(order, ", "))
+				continue
+			}
+			if kind == "third-party" {
+				lines = append(lines, "Because SQC does not support 3rd party plugins, the following 3rd party rules will be removed from the quality profile: "+strings.Join(order, ", "))
+				continue
+			}
+			if kind == "prioritized" {
+				lines = append(lines, "Since SQC does not support prioritized rules, the following rules will be migrated in the profile as regular rules: "+strings.Join(order, ", "))
+				continue
+			}
+			if kind == "template-instance" {
+				lines = append(lines, "Because rule templates and instantiated rules are not supported in SQC, the following rules will not be migrated: "+strings.Join(order, ", "))
+				continue
+			}
+			if kind == "custom-params" {
+				lines = append(lines, "The following rules custom parameters could not be migrated due to an unexpected error: "+strings.Join(order, ", "))
+				continue
+			}
+			if kind == "disabled-inherited" {
+				lines = append(lines, "Since SQC does not support parent profile rules disabled in child profiles, the following rules will be enabled in the profile: "+strings.Join(order, ", "))
+				continue
 			}
 			var ruleLines []string
 			for _, k := range order {
@@ -99,7 +168,11 @@ func collectProfileFindings(store *common.DataStore) map[string]*profileFindings
 		if len(lines) == 0 {
 			continue
 		}
-		out[cloudKey] = &profileFindings{Issues: lines}
+		_, hasOrange := kinds["third-party"]
+		out[cloudKey] = &profileFindings{
+			Issues:             lines,
+			HasOrangeCriterion: hasOrange,
+		}
 	}
 	return out
 }
@@ -138,7 +211,15 @@ func applyProfileFindings(succeeded, nearPerfect, partial []EntityItem, findings
 			Detail:       item.Detail,
 			Issues:       append([]string(nil), f.Issues...),
 		}
-		nearPerfect = append(nearPerfect, moved)
+		// 3rd-party rules (and any other future orange criteria) are
+		// a real loss of coverage on SQC — route the QP into Partial
+		// rather than NearPerfect. All other yellow criteria stay
+		// NearPerfect.
+		if f.HasOrangeCriterion {
+			partial = append(partial, moved)
+		} else {
+			nearPerfect = append(nearPerfect, moved)
+		}
 	}
 
 	// Extend Partial entries with the yellow findings (orange dominates).

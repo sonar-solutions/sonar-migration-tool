@@ -404,7 +404,7 @@ func TestUnifiedRowDisplayNameWithLanguage(t *testing.T) {
 }
 
 func TestSuccessDetailsScanHistory(t *testing.T) {
-	got := successDetails(EntityItem{Detail: "proj1|scan:failed"}, false)
+	got := successDetails(EntityItem{Detail: "proj1|scan:failed"}, false, false)
 	if !strings.Contains(got, "proj1") || !strings.Contains(got, "Failed") {
 		t.Errorf("expected scan history in details, got %q", got)
 	}

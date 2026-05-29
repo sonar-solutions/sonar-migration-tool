@@ -553,6 +553,11 @@ func buildUnifiedRows(section Section, predictive bool) []unifiedRow {
 		successLabel = "Perfect"
 	}
 
+	// Quality profile cloud ids (cloud_profile_key) are opaque SQC
+	// identifiers, not user-facing — strip them from the Details
+	// column for the Quality Profiles section regardless of mode.
+	hideCloudKey := section.Name == "Quality Profiles"
+
 	for _, item := range section.Succeeded {
 		rows = append(rows, unifiedRow{
 			name:     item.Name,
@@ -560,7 +565,7 @@ func buildUnifiedRows(section Section, predictive bool) []unifiedRow {
 			org:      item.Organization,
 			outcome:  successLabel,
 			color:    colorGreen,
-			details:  successDetails(item, predictive),
+			details:  successDetails(item, predictive, hideCloudKey),
 		})
 	}
 	for _, item := range section.NearPerfect {
@@ -574,7 +579,7 @@ func buildUnifiedRows(section Section, predictive bool) []unifiedRow {
 			org:      item.Organization,
 			outcome:  outcomeNearPerfect,
 			color:    colorYellow,
-			details:  partialDetails(item, predictive),
+			details:  partialDetails(item, predictive, hideCloudKey),
 		})
 	}
 	for _, item := range section.Partial {
@@ -588,7 +593,7 @@ func buildUnifiedRows(section Section, predictive bool) []unifiedRow {
 			org:      item.Organization,
 			outcome:  outcomePartial,
 			color:    colorAmber,
-			details:  partialDetails(item, predictive),
+			details:  partialDetails(item, predictive, hideCloudKey),
 		})
 	}
 	for _, item := range section.Failed {
@@ -635,9 +640,9 @@ func buildUnifiedRows(section Section, predictive bool) []unifiedRow {
 // other Detail string (e.g. the #249 dbcleaner-branches transformation
 // note) is kept verbatim so genuinely informative content reaches the
 // report.
-func successDetails(item EntityItem, predictive bool) string {
+func successDetails(item EntityItem, predictive, hideCloudKey bool) string {
 	cloudKey, scan, ncdFallback := parseProjectDetailMarkers(item.Detail)
-	if predictive && strings.HasPrefix(cloudKey, "predict:") {
+	if hideCloudKey || (predictive && strings.HasPrefix(cloudKey, "predict:")) {
 		cloudKey = ""
 	}
 	parts := []string{}
@@ -661,10 +666,10 @@ func successDetails(item EntityItem, predictive bool) string {
 // synthetic predict:<task>:<org>:<name> placeholder is suppressed
 // (issue #240). Non-synthetic Detail strings are kept so genuinely
 // informative content (e.g. transformation notes) still renders.
-func partialDetails(item EntityItem, predictive bool) string {
+func partialDetails(item EntityItem, predictive, hideCloudKey bool) string {
 	issues := strings.Join(item.Issues, "\n")
 	detail := item.Detail
-	if predictive && strings.HasPrefix(detail, "predict:") {
+	if hideCloudKey || (predictive && strings.HasPrefix(detail, "predict:")) {
 		detail = ""
 	}
 	if detail != "" && issues != "" {
