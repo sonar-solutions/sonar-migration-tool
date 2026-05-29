@@ -106,12 +106,15 @@ func (p *SQ2025Pipeline) fetchGroupsV2Page(ctx context.Context, page, pageSize i
 	if resp.StatusCode != http.StatusOK {
 		return nil, 0, fmt.Errorf("V2 groups API returned HTTP %d", resp.StatusCode)
 	}
-	// The V2 API only surfaces name and description; ID, membersCount, and
-	// default are absent from the V2 payload and will be zero/false in Group.
+	// The V2 API exposes id (string UUID), name, description, managed, and
+	// default — but NOT membersCount (confirmed absent from the V2 schema).
+	// Group.ID (int) cannot hold a UUID string, so it is left zero.
+	// The managed flag has no counterpart in Group and is discarded.
 	var result struct {
 		Groups []struct {
 			Name        string `json:"name"`
 			Description string `json:"description"`
+			Default     bool   `json:"default"`
 		} `json:"groups"`
 		Page struct {
 			PageIndex int `json:"pageIndex"`
@@ -124,7 +127,7 @@ func (p *SQ2025Pipeline) fetchGroupsV2Page(ctx context.Context, page, pageSize i
 	}
 	groups := make([]Group, 0, len(result.Groups))
 	for _, g := range result.Groups {
-		groups = append(groups, Group{Name: g.Name, Description: g.Description})
+		groups = append(groups, Group{Name: g.Name, Description: g.Description, Default: g.Default})
 	}
 	return groups, result.Page.Total, nil
 }
