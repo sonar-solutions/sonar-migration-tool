@@ -123,20 +123,11 @@ var sqsOnlySettings = map[string]func(raw json.RawMessage) sqsOnlyDecision{
 		}
 		return sqsOnlyDecision{Note: skipDetailNotOnSQC}
 	},
-	"sonar.dbcleaner.branchesToKeepWhenInactive": func(raw json.RawMessage) sqsOnlyDecision {
-		// Special-cased pending #249: the SQS key is migrated as a
-		// regex into the SQC org-scope setting
-		// sonar.branch.longLivedBranches.regex. Keep the dedicated
-		// transformation note instead of the canonical Skipped
-		// wording so the operator sees the planned behaviour. Will be
-		// revisited when #249 lands the actual transformation.
-		if extractField(raw, "value") == "" && len(extractStringArray(raw, "values")) == 0 {
-			return sqsOnlyDecision{SkipSilently: true}
-		}
-		return sqsOnlyDecision{
-			Note: "Will be adapted as a regex and migrated to the org-scope setting sonar.branch.longLivedBranches.regex.",
-		}
-	},
+	// Note: sonar.dbcleaner.branchesToKeepWhenInactive is intentionally
+	// NOT in this curated map — #249 implements the actual migration
+	// path (combine SQS values into a regex, POST to SQC org-scope
+	// sonar.branch.longLivedBranches.regex), so the per-key handler
+	// in runSetGlobalSettings owns it now.
 
 	"sonar.allowPermissionManagementForProjectAdmins": func(raw json.RawMessage) sqsOnlyDecision {
 		// SQC has no equivalent feature flag; the SQS default is
@@ -448,6 +439,14 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 		customized = append(customized, raw)
 	}
 
+	// Peel off sonar.dbcleaner.branchesToKeepWhenInactive — #249
+	// migrates it as a regex into the SQC org-scope setting
+	// sonar.branch.longLivedBranches.regex, not via the standard
+	// per-org applyOneGlobalSetting path. Handled below after the
+	// parallel loop.
+	var dbCleanerRaw json.RawMessage
+	dbCleanerRaw, customized = extractDbCleanerBranches(customized)
+
 	// SQS exposes platform-enforced exclusion patterns via the
 	// sonar.global.* keys (today: sonar.global.exclusions and
 	// sonar.global.test.exclusions). SQC has no global counterparts,
@@ -531,6 +530,13 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 	if err := g.Wait(); err != nil {
 		return err
 	}
+
+	// #249: migrate sonar.dbcleaner.branchesToKeepWhenInactive as a
+	// regex to the SQC org-scope sonar.branch.longLivedBranches.regex
+	// setting. Done outside the parallel loop because the source key
+	// itself does not exist on SQC — the apply-via-list_definitions
+	// path would just mark it Skipped/not-on-sqc.
+	applyDbCleanerBranchesGlobal(ctx, e, dbCleanerRaw, orgList, w, &mu, counter)
 
 	// Section-level notes for SQS-only settings (issue #200).
 	// Written AFTER the parallel loop so they always trail the
