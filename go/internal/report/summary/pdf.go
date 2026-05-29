@@ -630,12 +630,14 @@ func buildUnifiedRows(section Section, predictive bool) []unifiedRow {
 //   - |scan:<status> — issue #208 era, scan-history import outcome.
 //
 // Both markers are split off and rendered on separate lines after
-// the cloud key. When predictive is true (#240) the cloud key itself
-// is suppressed — the predict pipeline emits a synthetic placeholder
-// ("predict:<task>:<org>:<name>") that carries no useful information.
+// the cloud key. When predictive is true (#240) the SYNTHETIC
+// "predict:<task>:<org>:<name>" placeholder is suppressed — but any
+// other Detail string (e.g. the #249 dbcleaner-branches transformation
+// note) is kept verbatim so genuinely informative content reaches the
+// report.
 func successDetails(item EntityItem, predictive bool) string {
 	cloudKey, scan, ncdFallback := parseProjectDetailMarkers(item.Detail)
-	if predictive {
+	if predictive && strings.HasPrefix(cloudKey, "predict:") {
 		cloudKey = ""
 	}
 	parts := []string{}
@@ -657,11 +659,12 @@ func successDetails(item EntityItem, predictive bool) string {
 // item — each issue rendered on its own line, prefixed by the cloud
 // key if known. The predictive renderer passes predictive=true so the
 // synthetic predict:<task>:<org>:<name> placeholder is suppressed
-// (issue #240; matches the equivalent stripping in successDetails).
+// (issue #240). Non-synthetic Detail strings are kept so genuinely
+// informative content (e.g. transformation notes) still renders.
 func partialDetails(item EntityItem, predictive bool) string {
 	issues := strings.Join(item.Issues, "\n")
 	detail := item.Detail
-	if predictive {
+	if predictive && strings.HasPrefix(detail, "predict:") {
 		detail = ""
 	}
 	if detail != "" && issues != "" {

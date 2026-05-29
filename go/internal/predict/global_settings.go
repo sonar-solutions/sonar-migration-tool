@@ -79,6 +79,19 @@ func synthesizeSetGlobalSettings(exportDir, runDir string, extractMapping struct
 		}
 		seenKey[key] = true
 
+		// #249: sonar.dbcleaner.branchesToKeepWhenInactive migrates as
+		// a regex into the SQC org-scope sonar.branch.longLivedBranches
+		// .regex setting. Predict the same Applied outcome here so the
+		// report shows it green.
+		if key == "sonar.dbcleaner.branchesToKeepWhenInactive" {
+			rec := buildPredictedDbCleanerRecord(key, it.Data)
+			b, _ := json.Marshal(rec)
+			if err := w.WriteOne(b); err != nil {
+				return err
+			}
+			continue
+		}
+
 		// Honor the curated silent-skip list (read-only keys like
 		// sonar.core.startTime, plus SQS-only feature flags whose
 		// value matches SQS's default). Real-migrate drops these in
@@ -143,6 +156,52 @@ func synthesizeSetGlobalSettings(exportDir, runDir string, extractMapping struct
 		}
 		if err := w.WriteOne(b); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// buildPredictedDbCleanerRecord builds the predictive Applied outcome
+// for #249: sonar.dbcleaner.branchesToKeepWhenInactive will be
+// migrated as a regex into sonar.branch.longLivedBranches.regex at
+// SQC org scope. Returns one section-level outcome (Org="") since
+// the regex is the same across orgs.
+func buildPredictedDbCleanerRecord(key string, raw json.RawMessage) map[string]any {
+	values := extractStringValues(raw)
+	regex := migrate.CombineBranchesAsRegex(values)
+	detail := fmt.Sprintf("Will be migrated to %s on SonarQube Cloud", "sonar.branch.longLivedBranches.regex")
+	if note := migrate.DbCleanerBranchesTransformNote(values, regex); note != "" {
+		detail = note
+	}
+	return map[string]any{
+		"key":    key,
+		"values": values,
+		"outcomes": []map[string]string{{
+			"org":    "",
+			"status": "applied",
+			"detail": detail,
+		}},
+	}
+}
+
+// extractStringValues pulls a top-level "values" string array out of
+// a JSON object blob, falling back to a single-element list if only
+// the legacy "value" field is set.
+func extractStringValues(raw json.RawMessage) []string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	if v, ok := obj["values"]; ok {
+		var out []string
+		if err := json.Unmarshal(v, &out); err == nil {
+			return out
+		}
+	}
+	if v, ok := obj["value"]; ok {
+		var s string
+		if err := json.Unmarshal(v, &s); err == nil && s != "" {
+			return []string{s}
 		}
 	}
 	return nil
