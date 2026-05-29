@@ -69,6 +69,33 @@ func collectProfileFindings(store *common.DataStore) map[string]*profileFindings
 
 	out := make(map[string]*profileFindings, len(byProfile))
 	for cloudKey, kinds := range byProfile {
+		// Instantiated rules (template-instance criterion) always
+		// have a custom severity, so they'd also appear under the
+		// custom-severity criterion. Suppress them there since the
+		// template-instance message already says the rule is not
+		// migrated at all — reporting a severity revert for the
+		// same rule is misleading.
+		if templateEntries, hasTemplate := kinds["template-instance"]; hasTemplate {
+			instantiated := make(map[string]bool, len(templateEntries))
+			for _, e := range templateEntries {
+				instantiated[e.key] = true
+			}
+			if csEntries := kinds["custom-severity"]; len(csEntries) > 0 {
+				filtered := csEntries[:0]
+				for _, e := range csEntries {
+					if instantiated[e.key] {
+						continue
+					}
+					filtered = append(filtered, e)
+				}
+				if len(filtered) == 0 {
+					delete(kinds, "custom-severity")
+				} else {
+					kinds["custom-severity"] = filtered
+				}
+			}
+		}
+
 		var lines []string
 		// Render in a stable order — matches the criterion order in
 		// the issue so the report reads the same way every time.
