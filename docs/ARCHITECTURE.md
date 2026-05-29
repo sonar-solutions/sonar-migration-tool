@@ -155,20 +155,22 @@ The `lib/sq-api-go/` module provides typed Go methods for SonarQube Server and C
 - **Cloud API clients** — `IssuesClient` and `HotspotsClient` in `cloud/` provide typed methods for Cloud issue/hotspot search, transitions, comments, and tags
 
 ## Version-Specific Pipeline Architecture (SPEC-011)
-<!-- updated: 2026-05-29_02:30:00 -->
+<!-- updated: 2026-05-29_08:00:00 -->
 
 `go/internal/pipeline/` implements four version-specific extraction pipelines selected once at startup via a version router. No runtime version branching occurs inside the extraction or build phases.
 
 ```
 go/internal/pipeline/
-├── pipeline.go      # Pipeline interface + normalized types (Issue, Hotspot, Measure, Group)
-├── helpers.go       # Shared paginated HTTP helpers (issues, hotspots, metrics, groups)
-├── router.go        # DetectPipeline(): calls /api/server/version, parses, selects
-├── router_test.go   # Version parsing, routing, interface compliance, parameter tests
-├── sq99.go          # SQ 9.9 LTS — statuses param, 15-key batching
-├── sq100.go         # SQ 10.0-10.3 — statuses param, 15-key batching
-├── sq104.go         # SQ 10.4-10.8 — issueStatuses param, 15-key batching
-└── sq2025.go        # SQ 2025.1+ — issueStatuses, no batching, V2 groups, IN_SANDBOX filter
+├── pipeline.go       # Pipeline interface + normalized types (Issue, Hotspot, Measure, Group)
+├── helpers.go        # Shared paginated HTTP helpers + paginateAll[T] generic
+├── helpers_test.go   # paginateAll tests + fetchAllMetrics batch accumulator tests
+├── router.go         # DetectPipeline(): calls /api/server/version, parses, selects
+├── router_test.go    # Version parsing, routing, interface compliance, parameter tests
+├── sq99.go           # SQ 9.9 LTS — statuses param, 15-key batching
+├── sq100.go          # SQ 10.0-10.3 — statuses param, 15-key batching
+├── sq104.go          # SQ 10.4-10.8 — issueStatuses param, 15-key batching
+├── sq2025.go         # SQ 2025.1+ — issueStatuses, no batching, V2 groups, IN_SANDBOX filter
+└── sq2025_test.go    # V2 groups fallback tests (200/404/5xx) + IN_SANDBOX filter test
 ```
 
 **Key behaviors per pipeline:**
@@ -184,6 +186,10 @@ go/internal/pipeline/
 **Forward compatibility:** An unknown major version ≥ 11 falls back to the SQ 10.4 pipeline with a `WARN` log. An error is returned for versions < 9.9.
 
 All four pipelines implement the `Pipeline` interface; compile-time checks (`var _ Pipeline = (*SQ99Pipeline)(nil)`) enforce this.
+
+**URL construction:** All helpers use `client.BaseURL() + "api/..."` (no leading `/`). `BaseURL()` always returns a URL ending with `/` (enforced by `normalizeBaseURL` in sq-api-go), so prepending a `/` would produce double-slash paths (`//api/...`) that Go's `httptest` server does not normalize.
+
+**V2 groups note:** The `/api/v2/authorizations/groups` response omits `membersCount`, `id`, and `default`. Those fields are zero/false for any group fetched via V2. The standard-API fallback is triggered by any V2 error (not just 404), intentionally ensuring callers get groups even when the V2 endpoint is temporarily unavailable.
 
 ## Version Detection
 <!-- updated: 2026-05-29_02:30:00 -->
