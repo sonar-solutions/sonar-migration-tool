@@ -414,6 +414,17 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 	// InheritedRules=true where SQS's parentValue is also true: the
 	// customized filter dropped it, and the section-level note for
 	// "exists only on SQS" never reached the report.
+	// Drop internal settings (#244) before anything else so they never
+	// reach the partition / customized-filter / per-org loops.
+	filtered := sqsValues[:0]
+	for _, raw := range sqsValues {
+		if IsInternalSqsSetting(extractField(raw, "key")) {
+			continue
+		}
+		filtered = append(filtered, raw)
+	}
+	sqsValues = filtered
+
 	sqsValues, sqsOnlyNotes := partitionSQSOnlySettings(sqsValues)
 
 	customized := make([]json.RawMessage, 0, len(sqsValues))
@@ -517,6 +528,55 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 	// regular per-org rows in the report's Skipped bucket — and
 	// because the writer is shared, the mutex still applies.
 	for _, rec := range sqsOnlyNotes {
+		b, _ := json.Marshal(rec)
+		mu.Lock()
+		_ = w.WriteOne(b)
+		mu.Unlock()
+	}
+
+	// Default-value sweep (#244). Every setting in
+	// getServerSettingsDefinitions that didn't reach the main loop —
+	// because it was at the SQS default value or never customised —
+	// gets a single section-level Skipped row so the operator sees
+	// the inventory of "untouched" settings. Internal keys (sonar-
+	// tools _SQ_INTERNAL_SETTINGS port) and keys already classified
+	// by partitionSQSOnlySettings are excluded.
+	customizedKeys := make(map[string]bool, len(customized))
+	for _, raw := range customized {
+		if k := extractField(raw, "key"); k != "" {
+			customizedKeys[k] = true
+		}
+	}
+	partitionHandled := make(map[string]bool, len(sqsOnlyNotes))
+	for _, note := range sqsOnlyNotes {
+		partitionHandled[note.Key] = true
+	}
+	for _, def := range sqsDefItems {
+		key := extractField(def.Data, "key")
+		if key == "" {
+			continue
+		}
+		if IsInternalSqsSetting(key) {
+			continue
+		}
+		if customizedKeys[key] || partitionHandled[key] {
+			continue
+		}
+		// Already-curated SQS-only keys (sqsOnlySettings map +
+		// sqsOnlyPrefixes) are handled by partitionSQSOnlySettings
+		// when their value is non-default. When their value is at
+		// default, the partition's per-key handler emits SkipSilently
+		// — honour that here too so we don't double-report them.
+		if _, found := resolveSQSOnlyHandler(key); found {
+			continue
+		}
+		rec := globalSettingResult{Key: key}
+		rec.Outcomes = []orgOutcome{{
+			Org:    "",
+			Status: outcomeSkipped,
+			Reason: "default-value",
+			Detail: "Setting is left to default on SQS, no migration needed.",
+		}}
 		b, _ := json.Marshal(rec)
 		mu.Lock()
 		_ = w.WriteOne(b)
