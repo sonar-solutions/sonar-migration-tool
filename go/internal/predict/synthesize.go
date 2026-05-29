@@ -274,7 +274,11 @@ func writeCreateJSONL(store *common.DataStore, ct createTaskDef, rows []map[stri
 			}
 		}
 		orgKey, _ := row["sonarcloud_org_key"].(string)
-		if shouldSkipOrg(orgKey) {
+		// Portfolios are enterprise-level on SQC — the mapping CSV has
+		// no organization column, so the per-org skip check doesn't
+		// apply. Every other section is org-scoped and we still need
+		// to drop rows that map to a skipped/empty SQC org.
+		if ct.OutputTask != "createPortfolios" && shouldSkipOrg(orgKey) {
 			continue
 		}
 		name, _ := row[nameField].(string)
