@@ -21,11 +21,18 @@ type profileFinding struct {
 	Detail          string `json:"detail,omitempty"`
 }
 
-// profileFindingsByGate groups the per-rule findings emitted by the
+// profileFindings groups the per-rule findings emitted by the
 // analyzeProfileRules task into one human-readable Issues list per
 // quality profile. The outer map is keyed by cloud_profile_key.
+//
+// HasOrangeCriterion is true when at least one finding belongs to a
+// criterion treated as Partial (orange) rather than NearPerfect
+// (yellow) — currently just "third-party" rules. Those represent a
+// real loss of coverage on SQC (rules dropped from the profile), so
+// the QP should be classified Partial.
 type profileFindings struct {
-	Issues []string
+	Issues             []string
+	HasOrangeCriterion bool
 }
 
 // collectProfileFindings reads analyzeProfileRules JSONL and folds
@@ -105,6 +112,22 @@ func collectProfileFindings(store *common.DataStore) map[string]*profileFindings
 				lines = append(lines, "Because SQC does not support 3rd party plugins, the following 3rd party rules will be removed from the quality profile: "+strings.Join(order, ", "))
 				continue
 			}
+			if kind == "prioritized" {
+				lines = append(lines, "Since SQC does not support prioritized rules, the following rules will be migrated in the profile as regular rules: "+strings.Join(order, ", "))
+				continue
+			}
+			if kind == "template-instance" {
+				lines = append(lines, "Because rule templates and instantiated rules are not supported in SQC, the following rules will not be migrated: "+strings.Join(order, ", "))
+				continue
+			}
+			if kind == "custom-params" {
+				lines = append(lines, "The following rules custom parameters could not be migrated due to an unexpected error: "+strings.Join(order, ", "))
+				continue
+			}
+			if kind == "disabled-inherited" {
+				lines = append(lines, "Since SQC does not support parent profile rules disabled in child profiles, the following rules will be enabled in the profile: "+strings.Join(order, ", "))
+				continue
+			}
 			var ruleLines []string
 			for _, k := range order {
 				if details := byRule[k]; len(details) > 0 {
@@ -118,7 +141,11 @@ func collectProfileFindings(store *common.DataStore) map[string]*profileFindings
 		if len(lines) == 0 {
 			continue
 		}
-		out[cloudKey] = &profileFindings{Issues: lines}
+		_, hasOrange := kinds["third-party"]
+		out[cloudKey] = &profileFindings{
+			Issues:             lines,
+			HasOrangeCriterion: hasOrange,
+		}
 	}
 	return out
 }
@@ -157,7 +184,15 @@ func applyProfileFindings(succeeded, nearPerfect, partial []EntityItem, findings
 			Detail:       item.Detail,
 			Issues:       append([]string(nil), f.Issues...),
 		}
-		nearPerfect = append(nearPerfect, moved)
+		// 3rd-party rules (and any other future orange criteria) are
+		// a real loss of coverage on SQC — route the QP into Partial
+		// rather than NearPerfect. All other yellow criteria stay
+		// NearPerfect.
+		if f.HasOrangeCriterion {
+			partial = append(partial, moved)
+		} else {
+			nearPerfect = append(nearPerfect, moved)
+		}
 	}
 
 	// Extend Partial entries with the yellow findings (orange dominates).

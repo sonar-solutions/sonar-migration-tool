@@ -64,12 +64,21 @@ type ProfileAnalysisInput struct {
 // profile's data and returns all findings. Order: by Kind then by
 // RuleKey, so the JSONL sidecar is deterministic and tests stay
 // stable.
+//
+// Note on criterion #4 (custom params): #226 specifies this is
+// error-driven, not value-driven — the analyzer should only flag a
+// custom-params finding when an API error occurred trying to migrate
+// the value. Proactive detection (value-differs-from-default) was
+// removed because everything migrates fine via /qualityprofiles/restore
+// in the common case; the analyzer was producing misleading
+// "customised" warnings for params that work end-to-end. A future
+// migrate-time error handler can emit FindingKindCustomParams rows
+// when a per-rule param API call actually fails.
 func AnalyzeProfile(in ProfileAnalysisInput) []ProfileFinding {
 	var out []ProfileFinding
 	out = append(out, detectCustomSeverities(in)...)
 	out = append(out, detectPrioritized(in)...)
 	out = append(out, detectThirdParty(in)...)
-	out = append(out, detectCustomParams(in)...)
 	out = append(out, detectTemplateInstances(in)...)
 	out = append(out, detectDisabledInherited(in)...)
 	return out
@@ -140,46 +149,6 @@ func detectThirdParty(in ProfileAnalysisInput) []ProfileFinding {
 		}
 		out = append(out, profileFinding(in, FindingKindThirdParty, ruleKey,
 			"repository "+repo))
-	}
-	return out
-}
-
-// detectCustomParams — criterion #4: per-activation params carry
-// values that differ from the rule's default. The SQS-side custom
-// values are dropped during SQC restore (the SQC rule uses the
-// language pack's default). Each (rule, param) pair yields one
-// finding.
-//
-// Reads from in.Activations: SonarQube's "actives" map only includes
-// params the operator has actually customised, with the chosen
-// value. Empty / missing entries imply "uses default" — a defensive
-// `val == ""` guard remains so we never flag a param that simply
-// echoes the default.
-func detectCustomParams(in ProfileAnalysisInput) []ProfileFinding {
-	var out []ProfileFinding
-	for _, act := range in.Activations {
-		ruleKey := extractField(act, "key")
-		if ruleKey == "" {
-			continue
-		}
-		base := in.BaseRulesByKey[ruleKey]
-		baseDefaults := ruleParamDefaults(base)
-		for _, p := range ruleParams(act) {
-			name := p["key"]
-			val := p["value"]
-			if name == "" || val == "" {
-				continue
-			}
-			def := baseDefaults[name]
-			if val == def {
-				continue
-			}
-			detail := name + "=" + val
-			if def != "" {
-				detail += " (default " + def + ")"
-			}
-			out = append(out, profileFinding(in, FindingKindCustomParams, ruleKey, detail))
-		}
 	}
 	return out
 }

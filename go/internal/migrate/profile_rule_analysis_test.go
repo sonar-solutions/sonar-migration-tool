@@ -104,47 +104,12 @@ func TestAnalyzeProfile_ThirdParty(t *testing.T) {
 	}
 }
 
-func TestAnalyzeProfile_CustomParams(t *testing.T) {
-	// Per-activation params with values come from getProfileRules'
-	// actives map (decorated with the synthetic rule "key" field).
-	in := ProfileAnalysisInput{
-		CloudProfileKey: "cp1", ProfileName: "x", Language: "java",
-		Activations: []json.RawMessage{
-			rawJSON(t, map[string]any{
-				"key":      "java:S1",
-				"qProfile": "qp1",
-				"params": []map[string]string{
-					{"key": "maxLines", "value": "50"},        // custom
-					{"key": "exemptFromMain", "value": "true"}, // matches default
-					{"key": "noValueGiven", "value": ""},       // empty → ignored
-				},
-			}),
-		},
-		BaseRulesByKey: map[string]json.RawMessage{
-			"java:S1": rawJSON(t, map[string]any{
-				"key": "java:S1",
-				"params": []map[string]any{
-					{"key": "maxLines", "defaultValue": "100"},
-					{"key": "exemptFromMain", "defaultValue": "true"},
-					{"key": "noValueGiven", "defaultValue": "X"},
-				},
-			}),
-		},
-	}
-	out := AnalyzeProfile(in)
-	var custom []ProfileFinding
-	for _, f := range out {
-		if f.Kind == FindingKindCustomParams {
-			custom = append(custom, f)
-		}
-	}
-	if len(custom) != 1 {
-		t.Fatalf("expected exactly 1 custom-params finding (only maxLines differs; exemptFromMain matches default; noValueGiven is empty), got %d (%+v)", len(custom), custom)
-	}
-	if custom[0].RuleKey != "java:S1" || custom[0].Detail != "maxLines=50 (default 100)" {
-		t.Errorf("unexpected Detail: got %+v", custom[0])
-	}
-}
+// Criterion #4 (custom params) is now error-driven (#226 follow-up) —
+// the analyzer no longer emits findings proactively. A migrate-time
+// error handler will populate FindingKindCustomParams when a per-rule
+// param API call actually fails. The previous proactive-detection
+// test was removed accordingly; once the error-driven emitter lands,
+// its dedicated test will cover the flow.
 
 func TestAnalyzeProfile_TemplateInstance(t *testing.T) {
 	in := ProfileAnalysisInput{
