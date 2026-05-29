@@ -55,7 +55,7 @@ var skipReasonOrder = []struct {
 
 // Outcome labels used in the unified per-section table.
 const (
-	outcomeSuccess     = "Success"
+	outcomeSuccess     = "Perfect"
 	outcomeNearPerfect = "Near Perfect"
 	outcomePartial     = "Partial"
 	outcomeFailed      = "Failed"
@@ -333,14 +333,37 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section, predictive bool) {
 	hideOrg := predictive || sectionsWithoutOrganization[section.Name]
 
 	nameHeader := "Name"
-	if section.Name == "Global Settings" {
+	isGlobalSettings := section.Name == "Global Settings"
+	if isGlobalSettings {
 		nameHeader = "Setting Key"
 	}
+	// Predictive-only column re-proportioning: when the Organization
+	// column is dropped (predict mode) the freed width was going to
+	// the Name column, leaving huge whitespace next to short names
+	// and crowding the Details column. Narrow Name to ~30mm and
+	// spend the rest on Details so long Issues blocks wrap less
+	// aggressively. Global Settings keeps its wider Name column for
+	// long setting keys, and the actual-migrate layout is unchanged.
 	headers := []string{nameHeader, "Organization", "Outcome", "Details"}
-	widths := []float64{55, 35, 25, 81}
+	var widths []float64
+	switch {
+	case isGlobalSettings && hideOrg:
+		// Predictive Global Settings: narrower Setting Key, wider Details.
+		widths = []float64{72, 25, 99}
+	case isGlobalSettings:
+		widths = []float64{55, 35, 25, 81}
+	case predictive:
+		// Predict always drops the Organization column.
+		widths = []float64{60, 25, 111}
+	case hideOrg:
+		// Real-migrate Portfolios — narrower Name, wider Details.
+		widths = []float64{63, 25, 108}
+	default:
+		// Real-migrate standard 4-column layout.
+		widths = []float64{55, 35, 25, 81}
+	}
 	if hideOrg {
 		headers = []string{nameHeader, "Outcome", "Details"}
-		widths = []float64{90, 25, 81}
 	}
 
 	renderTableHeader(pdf, headers, widths)
@@ -377,12 +400,11 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section, predictive bool) {
 		multiLineFontSize = 6.0
 	)
 	pdf.SetFont(pdfFontFamily, "", bodyFontSize)
-	// Sections where the Name column may carry long setting keys
-	// (e.g. sonar.qualityProfiles.allowDisableInheritedRules) and
-	// must word-wrap instead of truncating. Other sections keep the
-	// truncate behaviour to avoid disturbing layouts that depend on
-	// single-line names.
-	wrapName := section.Name == "Global Settings"
+	// All sections word-wrap the Name column now (#226 follow-up).
+	// Long object names / QP names / setting keys overflow the
+	// narrowed Name column otherwise; wrapping keeps the value fully
+	// visible at the cost of taller rows.
+	wrapName := true
 	for i, row := range rows {
 		// Compute wrapped line count for the Details column so the whole row
 		// (Name, Organization, Outcome) can match that height. SplitLines
@@ -404,7 +426,11 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section, predictive bool) {
 		}
 		// If the Name column word-wraps, compute its line count too
 		// and take the max so the row is tall enough for either side.
-		nameText := row.displayName()
+		// Sanitize astral-plane runes (emoji, etc.) BEFORE measuring
+		// or rendering — the wrap path uses pdf.SplitLines / MultiCell
+		// directly without going through truncate(), which was the
+		// previous sanitizer entry point for the Name column.
+		nameText := sanitizeForPDF(row.displayName())
 		nameLineCount := 1
 		if wrapName {
 			nameLineCount = len(pdf.SplitLines([]byte(nameText), widths[0]))
@@ -541,22 +567,21 @@ type fpdfCell interface {
 // reason order). Order mirrors the green → yellow → orange → red → grey
 // taxonomy from issues #224 and #227.
 //
-// When predictive is true (#240), the success-bucket outcome label is
-// rendered as "Perfect" instead of "Success" and the Details column
-// drops the synthetic predict:<task>:<org>:<name> cloud-id placeholder
-// (those carry no useful information for prediction).
+// When predictive is true (#240), the Details column drops the
+// synthetic predict:<task>:<org>:<name> cloud-id placeholder (those
+// carry no useful information for prediction).
 func buildUnifiedRows(section Section, predictive bool) []unifiedRow {
 	var rows []unifiedRow
 
 	successLabel := outcomeSuccess
-	if predictive {
-		successLabel = "Perfect"
-	}
 
 	// Quality profile cloud ids (cloud_profile_key) are opaque SQC
 	// identifiers, not user-facing — strip them from the Details
 	// column for the Quality Profiles section regardless of mode.
-	hideCloudKey := section.Name == "Quality Profiles"
+	// Cloud-side internal ids carry no user value in the report:
+	// suppress them in the Details column for sections where they
+	// dominate the cell (QP cloud key, Portfolio cloud id).
+	hideCloudKey := section.Name == "Quality Profiles" || section.Name == "Portfolios"
 
 	for _, item := range section.Succeeded {
 		rows = append(rows, unifiedRow{

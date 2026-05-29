@@ -19,8 +19,7 @@ import "time"
 // Predictive toggles a small set of presentation tweaks that only
 // apply to the predict pipeline (#240): the title is "SonarQube
 // Migration Prediction" (with "Prediction" underlined), the
-// Organization column is hidden from per-object tables, the success
-// label reads "Perfect" instead of "Success", and synthetic
+// Organization column is hidden from per-object tables, and synthetic
 // cloud-side IDs are stripped from the Details column.
 type MigrationSummary struct {
 	RunID        string
