@@ -136,6 +136,22 @@ func strFieldFromMap(m map[string]any, k string) string {
 	return s
 }
 
+// portfolioProjectCounts decides whether a getPortfolioProjects entry
+// represents a real project in the portfolio. Entries with no refKey
+// or with status="ERROR" are orphaned references (deleted projects
+// the portfolio still mentions) and do NOT make the portfolio
+// non-empty — without this filter, every portfolio that contained a
+// since-deleted project would dodge the empty-portfolio classification.
+func portfolioProjectCounts(data json.RawMessage) bool {
+	if jsonStr(data, "refKey") == "" {
+		return false
+	}
+	if strings.EqualFold(jsonStr(data, "status"), "ERROR") {
+		return false
+	}
+	return true
+}
+
 // emptyPortfolioInfo carries the per-portfolio data needed to emit a
 // Skipped row: the entity name (so it shows up correctly in the report)
 // and the composite key (so we can match against entries already
@@ -166,9 +182,11 @@ func detectEmptyPortfolios(store *common.DataStore, exportDir string,
 	items, err := structure.ReadExtractData(exportDir, mapping, "getPortfolioProjects")
 	if err == nil {
 		for _, it := range items {
+			if !portfolioProjectCounts(it.Data) {
+				continue
+			}
 			pk := jsonStr(it.Data, "portfolioKey")
-			rk := jsonStr(it.Data, "refKey")
-			if pk == "" || rk == "" {
+			if pk == "" {
 				continue
 			}
 			nonEmpty[it.ServerURL+"|"+pk] = true

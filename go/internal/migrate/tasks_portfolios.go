@@ -383,7 +383,10 @@ func buildEmptyPortfolioSet(e *Executor) map[string]bool {
 	for _, it := range items {
 		pk := extractField(it.Data, "portfolioKey")
 		rk := extractField(it.Data, "refKey")
-		if pk == "" || rk == "" {
+		// ERROR-status entries are orphaned references to deleted
+		// projects — they do not count as real portfolio membership
+		// and must not save a portfolio from the empty classification.
+		if pk == "" || rk == "" || strings.EqualFold(extractField(it.Data, "status"), "ERROR") {
 			continue
 		}
 		nonEmpty[it.ServerURL+"|"+pk] = true
