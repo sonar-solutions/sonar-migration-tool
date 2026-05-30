@@ -50,6 +50,7 @@ type Client struct {
 	DOP             *DOPClient
 	Issues          *IssuesClient
 	Hotspots        *HotspotsClient
+	Webhooks        *WebhooksClient
 }
 
 // New wraps a base sqapi.Client with typed Cloud write-path endpoint methods.
@@ -70,6 +71,7 @@ func New(c *sqapi.Client) *Client {
 		DOP:             &DOPClient{b},
 		Issues:          &IssuesClient{b},
 		Hotspots:        &HotspotsClient{b},
+		Webhooks:        &WebhooksClient{b},
 	}
 }
 

@@ -57,6 +57,11 @@ func associateTasks() []TaskDef {
 			Run:          runSetProjectLinks,
 		},
 		{
+			Name:         "setProjectWebhooks",
+			Dependencies: []string{"createProjects", "grantMigrationUserProjectPermissions"},
+			Run:          runSetProjectWebhooks,
+		},
+		{
 			Name:         "setNewCodePeriods",
 			Dependencies: []string{"createProjects", "grantMigrationUserProjectPermissions"},
 			Run:          runSetNewCodePeriods,
@@ -963,6 +968,63 @@ func runSetProjectLinks(ctx context.Context, e *Executor) error {
 				counter.Fail()
 				logAPIWarn(e.Logger, "setProjectLinks failed", err,
 					"project", pm.CloudKey, "name", name, "url", linkURL)
+			} else {
+				counter.Success()
+			}
+			_ = w.WriteOne(common.EnrichRaw(item.Data, map[string]any{
+				"cloud_project_key": pm.CloudKey,
+			}))
+			return nil
+		})
+	counter.LogSummary(e.Logger)
+	return err
+}
+
+// runSetProjectWebhooks migrates per-project webhooks recorded in
+// getProjectWebhooks to SonarQube Cloud via /api/webhooks/create. One
+// POST per webhook; failures surface as an orange "Webhook not
+// migrated" Issue on the project in the migration report (#228).
+//
+// Webhook secrets on SonarQube Server are stored only as a flag on the
+// extracted record ({hasSecret: true}) — the value itself is not
+// exposed by the source API. We don't forward a secret, so the
+// migrated webhook on SonarQube Cloud is unsecured by default and the
+// operator must rotate the secret manually post-migration.
+func runSetProjectWebhooks(ctx context.Context, e *Executor) error {
+	projects, _ := e.Store.ReadAll("createProjects")
+	projectKeyMap := make(map[string]projectMapping)
+	for _, p := range projects {
+		serverURL := extractField(p, "server_url")
+		key := extractField(p, "key")
+		projectKeyMap[serverURL+key] = projectMapping{
+			CloudKey: extractField(p, "cloud_project_key"),
+			OrgKey:   extractField(p, "sonarcloud_org_key"),
+		}
+	}
+
+	counter := NewTaskCounter("setProjectWebhooks")
+	err := forEachExtractItem(ctx, e, "setProjectWebhooks", "getProjectWebhooks",
+		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
+			projectKey := extractField(item.Data, "projectKey")
+			pm, ok := projectKeyMap[item.ServerURL+projectKey]
+			if !ok || pm.CloudKey == "" || pm.OrgKey == "" {
+				return nil
+			}
+			name := extractField(item.Data, "name")
+			urlStr := extractField(item.Data, "url")
+			if name == "" || urlStr == "" {
+				return nil
+			}
+			params := cloud.CreateWebhookParams{
+				Organization: pm.OrgKey,
+				Project:      pm.CloudKey,
+				Name:         name,
+				URL:          urlStr,
+			}
+			if err := e.Cloud.Webhooks.Create(ctx, params); err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "setProjectWebhooks failed", err,
+					"project", pm.CloudKey, "name", name, "url", urlStr)
 			} else {
 				counter.Success()
 			}
