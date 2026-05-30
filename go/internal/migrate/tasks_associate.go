@@ -944,6 +944,11 @@ var builtinLinkNames = map[string]string{
 // getProjectLinks to SonarQube Cloud via /api/project_links/create.
 // One POST per link; failures are surfaced in the migration report
 // (#228) as a yellow "Project link not migrated" Issue on the project.
+//
+// Idempotency: before each create call, the task lists existing
+// links on the target project and skips when one with the same
+// (name, url) is already present. Re-runs are therefore cheap and
+// do not produce duplicates on SonarQube Cloud.
 func runSetProjectLinks(ctx context.Context, e *Executor) error {
 	projects, _ := e.Store.ReadAll("createProjects")
 	projectKeyMap := make(map[string]projectMapping)
@@ -951,6 +956,32 @@ func runSetProjectLinks(ctx context.Context, e *Executor) error {
 		serverURL := extractField(p, "server_url")
 		key := extractField(p, "key")
 		projectKeyMap[serverURL+key] = projectMapping{CloudKey: extractField(p, "cloud_project_key")}
+	}
+
+	// Cache existing links per cloud project key so a project with N
+	// SQS links only hits /api/project_links/search once. Guarded by
+	// a mutex because forEachExtractItem fans out concurrently.
+	existing := make(map[string]map[string]bool)
+	var existingMu sync.Mutex
+	hasExisting := func(ctx context.Context, cloudKey, name, urlStr string) bool {
+		existingMu.Lock()
+		defer existingMu.Unlock()
+		known, ok := existing[cloudKey]
+		if !ok {
+			links, err := e.Cloud.Projects.ListLinks(ctx, cloudKey)
+			if err != nil {
+				logAPIWarn(e.Logger, "setProjectLinks: list existing failed (will attempt create)", err,
+					"project", cloudKey)
+				existing[cloudKey] = nil
+				return false
+			}
+			known = make(map[string]bool, len(links))
+			for _, l := range links {
+				known[l.Name+"\x00"+l.URL] = true
+			}
+			existing[cloudKey] = known
+		}
+		return known[name+"\x00"+urlStr]
 	}
 
 	counter := NewTaskCounter("setProjectLinks")
@@ -980,6 +1011,16 @@ func runSetProjectLinks(ctx context.Context, e *Executor) error {
 				} else {
 					name = "Link"
 				}
+			}
+			if hasExisting(ctx, pm.CloudKey, name, linkURL) {
+				e.Logger.Info("setProjectLinks: link already exists, skipping",
+					"project", pm.CloudKey, "name", name)
+				counter.Success()
+				_ = w.WriteOne(common.EnrichRaw(item.Data, map[string]any{
+					"cloud_project_key": pm.CloudKey,
+					"was_preexisting":   true,
+				}))
+				return nil
 			}
 			// `type` is not a POST parameter for /api/project_links/
 			// create — SonarQube derives it from `name` for the four

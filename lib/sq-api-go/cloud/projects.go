@@ -86,6 +86,35 @@ func (p *ProjectsClient) CreateLink(ctx context.Context, params CreateLinkParams
 	return p.postForm(ctx, "api/project_links/create", form, nil)
 }
 
+// ProjectLink is a single link record returned by
+// /api/project_links/search. The `type` field is the canonical kind
+// derived by SonarQube (homepage / ci / issue / scm / <slug>) and is
+// not user-controllable.
+type ProjectLink struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+// listLinksResponse is the wire shape returned by /api/project_links/search.
+type listLinksResponse struct {
+	Links []ProjectLink `json:"links"`
+}
+
+// ListLinks returns the links visible on the given SonarQube Cloud
+// project. Used by the migration to skip create calls when an
+// equivalent link already exists.
+func (p *ProjectsClient) ListLinks(ctx context.Context, projectKey string) ([]ProjectLink, error) {
+	q := url.Values{}
+	q.Set("projectKey", projectKey)
+	var resp listLinksResponse
+	if err := p.getJSON(ctx, "api/project_links/search?"+q.Encode(), &resp); err != nil {
+		return nil, err
+	}
+	return resp.Links, nil
+}
+
 // ExistsInOrg reports whether a project with the given key is
 // accessible in the given SonarQube Cloud organization. Used to
 // disambiguate /api/projects/create's "key already exists" response
