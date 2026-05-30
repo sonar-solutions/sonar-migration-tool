@@ -52,6 +52,11 @@ func associateTasks() []TaskDef {
 			Run:          runSetProjectTags,
 		},
 		{
+			Name:         "setProjectLinks",
+			Dependencies: []string{"createProjects", "grantMigrationUserProjectPermissions"},
+			Run:          runSetProjectLinks,
+		},
+		{
 			Name:         "setNewCodePeriods",
 			Dependencies: []string{"createProjects", "grantMigrationUserProjectPermissions"},
 			Run:          runSetNewCodePeriods,
@@ -910,6 +915,60 @@ func runSetProjectTags(ctx context.Context, e *Executor) error {
 				counter.Success()
 			}
 			_ = w.WriteOne(item.Data)
+			return nil
+		})
+	counter.LogSummary(e.Logger)
+	return err
+}
+
+// runSetProjectLinks migrates per-project links recorded in
+// getProjectLinks to SonarQube Cloud via /api/project_links/create.
+// One POST per link; failures are surfaced in the migration report
+// (#228) as a yellow "Project link not migrated" Issue on the project.
+func runSetProjectLinks(ctx context.Context, e *Executor) error {
+	projects, _ := e.Store.ReadAll("createProjects")
+	projectKeyMap := make(map[string]projectMapping)
+	for _, p := range projects {
+		serverURL := extractField(p, "server_url")
+		key := extractField(p, "key")
+		projectKeyMap[serverURL+key] = projectMapping{CloudKey: extractField(p, "cloud_project_key")}
+	}
+
+	counter := NewTaskCounter("setProjectLinks")
+	err := forEachExtractItem(ctx, e, "setProjectLinks", "getProjectLinks",
+		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
+			projectKey := extractField(item.Data, "projectKey")
+			pm, ok := projectKeyMap[item.ServerURL+projectKey]
+			if !ok || pm.CloudKey == "" {
+				return nil
+			}
+			name := extractField(item.Data, "name")
+			linkURL := extractField(item.Data, "url")
+			if name == "" || linkURL == "" {
+				return nil
+			}
+			// SonarQube Cloud rejects POSTs with an empty `type` and
+			// derives the built-in link kind from `name` for the four
+			// well-known types (homepage, ci, issue, scm). Custom
+			// links keep an empty type, exactly as SonarQube Server
+			// stores them. Forwarding the SQS-side type as-is
+			// preserves the original classification when present.
+			params := cloud.CreateLinkParams{
+				ProjectKey: pm.CloudKey,
+				Name:       name,
+				URL:        linkURL,
+				Type:       extractField(item.Data, "type"),
+			}
+			if err := e.Cloud.Projects.CreateLink(ctx, params); err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "setProjectLinks failed", err,
+					"project", pm.CloudKey, "name", name, "url", linkURL)
+			} else {
+				counter.Success()
+			}
+			_ = w.WriteOne(common.EnrichRaw(item.Data, map[string]any{
+				"cloud_project_key": pm.CloudKey,
+			}))
 			return nil
 		})
 	counter.LogSummary(e.Logger)

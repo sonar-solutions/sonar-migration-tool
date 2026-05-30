@@ -67,6 +67,30 @@ func (p *ProjectsClient) SetTags(ctx context.Context, projectKey, tags string) e
 	return p.postForm(ctx, "api/project_tags/set", form, nil)
 }
 
+// CreateLinkParams carries the per-link payload for /api/project_links/create.
+// Type is optional — SQS exports a non-empty `type` for the built-in
+// link kinds (homepage, ci, issue, scm) and an empty string for
+// user-defined links. SonarQube Cloud rejects an empty `type`, so the
+// caller should leave the field unset for custom links.
+type CreateLinkParams struct {
+	ProjectKey string
+	Name       string
+	URL        string
+	Type       string
+}
+
+// CreateLink registers a project link on a SonarQube Cloud project.
+func (p *ProjectsClient) CreateLink(ctx context.Context, params CreateLinkParams) error {
+	form := url.Values{}
+	form.Set("projectKey", params.ProjectKey)
+	form.Set("name", params.Name)
+	form.Set("url", params.URL)
+	if params.Type != "" {
+		form.Set("type", params.Type)
+	}
+	return p.postForm(ctx, "api/project_links/create", form, nil)
+}
+
 // ExistsInOrg reports whether a project with the given key is
 // accessible in the given SonarQube Cloud organization. Used to
 // disambiguate /api/projects/create's "key already exists" response
