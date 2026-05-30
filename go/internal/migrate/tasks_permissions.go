@@ -3,6 +3,7 @@ package migrate
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	sqapi "github.com/sonar-solutions/sq-api-go"
 	"github.com/sonar-solutions/sq-api-go/cloud"
@@ -34,6 +35,15 @@ func permissionTasks() []TaskDef {
 			Name:         "addMigrationGroupToTemplates",
 			Dependencies: []string{"createPermissionTemplates", "createMigrationGroups"},
 			Run:          runAddMigrationGroupToTemplates,
+		},
+		{
+			// Issue #230 O3: migrate every SQS template group permission
+			// (not just the migration-tool's own groups). Reads the
+			// extracted getTemplateGroups* JSONL and replays the rows
+			// against SQC via /api/permissions/add_group_to_template.
+			Name:         "setTemplateGroupPermissions",
+			Dependencies: []string{"createPermissionTemplates", "createGroups"},
+			Run:          runSetTemplateGroupPermissions,
 		},
 		{
 			Name:         "setOrgGroupPermissions",
@@ -301,4 +311,120 @@ type profileRef struct {
 	OrgKey   string
 	Name     string
 	Language string
+}
+
+// runSetTemplateGroupPermissions migrates every SQS permission-template
+// group permission to its SonarQube Cloud counterpart. Reads the two
+// extract feeds — getTemplateGroupsScanners (groups with scan permission)
+// and getTemplateGroupsViewers (groups with user/browse permission) —
+// and deduplicates by (templateId, group) since each feed returns the
+// full permissions[] array for every matching row. Issue #230 O3.
+//
+// Built-in / migration-tool groups are skipped:
+//   - sonar-users / sonar-administrators have no SQC equivalent
+//     accessible via API.
+//   - migration-scanners / migration-viewers are wired up by
+//     addMigrationGroupToTemplates and don't need a second pass.
+//
+// Groups that didn't make it into createGroups (e.g. failed creation,
+// org-skipped) are silently passed over — the missing group is
+// already surfaced in the Groups section.
+func runSetTemplateGroupPermissions(ctx context.Context, e *Executor) error {
+	// SQS templateId → (SQC templateId, sonarcloud_org_key) lookup.
+	// createPermissionTemplates writes the SQS-side id under
+	// "source_template_key" (Template.SourceTemplateKey).
+	templates, _ := e.Store.ReadAll("createPermissionTemplates")
+	templateMap := make(map[string]struct{ cloudID, org string }, len(templates))
+	for _, t := range templates {
+		srvURL := extractField(t, "server_url")
+		srcID := extractField(t, "source_template_key")
+		if srvURL == "" || srcID == "" {
+			continue
+		}
+		templateMap[srvURL+"\x00"+srcID] = struct{ cloudID, org string }{
+			cloudID: extractField(t, "cloud_template_id"),
+			org:     extractField(t, "sonarcloud_org_key"),
+		}
+	}
+	if len(templateMap) == 0 {
+		e.Logger.Info("setTemplateGroupPermissions: no permission templates in scope, nothing to migrate")
+		return nil
+	}
+
+	// Set of migrated SQS group names per cloud org so we know which
+	// (org, group) pairs are safe to reference.
+	createdGroups, _ := e.Store.ReadAll("createGroups")
+	groupExists := make(map[string]bool, len(createdGroups))
+	for _, g := range createdGroups {
+		name := extractField(g, "name")
+		org := extractField(g, "sonarcloud_org_key")
+		if name != "" && org != "" {
+			groupExists[org+"\x00"+name] = true
+		}
+	}
+
+	skipGroups := map[string]bool{
+		"sonar-users":          true,
+		"sonar-administrators": true,
+		migrationScanners:      true,
+		migrationViewers:       true,
+	}
+
+	// Dedup applied (templateId, group, permission) triples — each
+	// extract feed surfaces the same row in both "scanners" and
+	// "viewers" responses when the group has both permissions.
+	type triple struct{ cloudTemplate, group, perm string }
+	applied := make(map[triple]bool)
+	var appliedMu sync.Mutex
+
+	counter := NewTaskCounter("setTemplateGroupPermissions")
+
+	apply := func(ctx context.Context, srvURL string, data json.RawMessage) {
+		srcTemplateID := extractField(data, "templateId")
+		groupName := extractField(data, "name")
+		if srcTemplateID == "" || groupName == "" || skipGroups[groupName] {
+			return
+		}
+		tmpl, ok := templateMap[srvURL+"\x00"+srcTemplateID]
+		if !ok || tmpl.cloudID == "" || tmpl.org == "" {
+			return
+		}
+		if !groupExists[tmpl.org+"\x00"+groupName] {
+			return
+		}
+		perms := extractStringArray(data, "permissions")
+		for _, perm := range perms {
+			if perm == "" {
+				continue
+			}
+			k := triple{tmpl.cloudID, groupName, perm}
+			appliedMu.Lock()
+			if applied[k] {
+				appliedMu.Unlock()
+				continue
+			}
+			applied[k] = true
+			appliedMu.Unlock()
+			if err := e.Cloud.Permissions.AddGroupToTemplate(ctx, tmpl.cloudID, groupName, perm, tmpl.org); err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "setTemplateGroupPermissions failed", err,
+					"template", tmpl.cloudID, "group", groupName, "perm", perm)
+			} else {
+				counter.Success()
+			}
+		}
+	}
+
+	for _, feed := range []string{"getTemplateGroupsScanners", "getTemplateGroupsViewers"} {
+		if err := forEachExtractItem(ctx, e, feed+":apply", feed,
+			func(ctx context.Context, item structure.ExtractItem, _ *common.ChunkWriter) error {
+				apply(ctx, item.ServerURL, item.Data)
+				return nil
+			}); err != nil {
+			counter.LogSummary(e.Logger)
+			return err
+		}
+	}
+	counter.LogSummary(e.Logger)
+	return nil
 }
