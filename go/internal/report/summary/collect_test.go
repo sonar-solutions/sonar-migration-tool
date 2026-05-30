@@ -459,6 +459,14 @@ func TestCollectSummaryPortfolioHierarchyPartial(t *testing.T) {
 		},
 		{"key": "soloKey", "name": "Solo"},
 	})
+	// Empty-portfolio detection requires non-empty getPortfolioProjects
+	// entries for portfolios we want to keep out of the Skipped bucket.
+	writeTaskJSONL(t, extractDir, "getPortfolioProjects", []map[string]any{
+		{"portfolioKey": "topKey", "refKey": "proj-a"},
+		{"portfolioKey": "midKey", "refKey": "proj-a"},
+		{"portfolioKey": "leafKey", "refKey": "proj-a"},
+		{"portfolioKey": "soloKey", "refKey": "proj-a"},
+	})
 
 	// createPortfolios JSONL — all four portfolios were created successfully.
 	writeTaskJSONL(t, runDir, "createPortfolios", []map[string]any{
@@ -560,6 +568,11 @@ func TestCollectSummaryPortfolioApplicationsClassification(t *testing.T) {
 			},
 		},
 		{"key": "plainKey", "name": "PlainPortfolio"},
+	})
+	writeTaskJSONL(t, extractDir, "getPortfolioProjects", []map[string]any{
+		{"portfolioKey": "appsKey", "refKey": "proj-a"},
+		{"portfolioKey": "mixedKey", "refKey": "proj-a"},
+		{"portfolioKey": "plainKey", "refKey": "proj-a"},
 	})
 
 	writeTaskJSONL(t, runDir, "createPortfolios", []map[string]any{

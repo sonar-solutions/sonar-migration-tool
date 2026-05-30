@@ -136,22 +136,6 @@ func strFieldFromMap(m map[string]any, k string) string {
 	return s
 }
 
-// portfolioProjectCounts decides whether a getPortfolioProjects entry
-// represents a real project in the portfolio. Entries with no refKey
-// or with status="ERROR" are orphaned references (deleted projects
-// the portfolio still mentions) and do NOT make the portfolio
-// non-empty — without this filter, every portfolio that contained a
-// since-deleted project would dodge the empty-portfolio classification.
-func portfolioProjectCounts(data json.RawMessage) bool {
-	if jsonStr(data, "refKey") == "" {
-		return false
-	}
-	if strings.EqualFold(jsonStr(data, "status"), "ERROR") {
-		return false
-	}
-	return true
-}
-
 // emptyPortfolioInfo carries the per-portfolio data needed to emit a
 // Skipped row: the entity name (so it shows up correctly in the report)
 // and the composite key (so we can match against entries already
@@ -161,53 +145,87 @@ type emptyPortfolioInfo struct {
 	Name      string
 }
 
-// detectEmptyPortfolios reads generatePortfolioMappings (every portfolio
-// from portfolios.csv, regardless of whether migrate actually created
-// it) and getPortfolioProjects (the resolved project membership) and
-// returns one info entry per portfolio whose resolved project list is
-// empty.
+// detectEmptyPortfolios walks getPortfolioDetails (every portfolio in
+// the source, including subportfolios that structure's MapPortfolios
+// deduplicates out of portfolios.csv) and returns one info entry per
+// portfolio whose resolved project list is empty.
 //
 // The resolved list reflects how SonarQube Server evaluated the
 // portfolio's selection criteria, so an empty list means the portfolio
 // has no projects regardless of selection mode (MANUAL with no picks,
-// REGEXP/TAGS with no matches, REST that caught nothing).
+// REGEXP/TAGS with no matches, REST that caught nothing). Walking
+// getPortfolioDetails — rather than generatePortfolioMappings — is
+// what lets empty subportfolios surface in the report: MapPortfolios
+// drops them because their project-composition hash is the empty hash
+// and all empties collapse into one row.
 func detectEmptyPortfolios(store *common.DataStore, exportDir string,
 	mapping structure.ExtractMapping) []emptyPortfolioInfo {
 
-	mappings, err := store.ReadAll("generatePortfolioMappings")
-	if err != nil || len(mappings) == 0 {
-		return nil
-	}
 	nonEmpty := make(map[string]bool)
 	items, err := structure.ReadExtractData(exportDir, mapping, "getPortfolioProjects")
 	if err == nil {
 		for _, it := range items {
-			if !portfolioProjectCounts(it.Data) {
-				continue
-			}
 			pk := jsonStr(it.Data, "portfolioKey")
-			if pk == "" {
+			rk := jsonStr(it.Data, "refKey")
+			if pk == "" || rk == "" {
 				continue
 			}
 			nonEmpty[it.ServerURL+"|"+pk] = true
 		}
 	}
 
+	detailItems, err := structure.ReadExtractData(exportDir, mapping, "getPortfolioDetails")
+	if err != nil || len(detailItems) == 0 {
+		return nil
+	}
 	var out []emptyPortfolioInfo
 	seen := make(map[string]bool)
-	for _, m := range mappings {
-		serverURL := jsonStr(m, "server_url")
-		sourceKey := jsonStr(m, "source_portfolio_key")
-		name := jsonStr(m, "name")
-		if serverURL == "" || sourceKey == "" || name == "" {
-			continue
+	classify := func(serverURL, key, name string) {
+		if key == "" || name == "" {
+			return
 		}
-		composite := serverURL + "|" + sourceKey
+		composite := serverURL + "|" + key
 		if seen[composite] || nonEmpty[composite] {
-			continue
+			return
 		}
 		seen[composite] = true
 		out = append(out, emptyPortfolioInfo{Composite: composite, Name: name})
+	}
+	// walkSVW recurses through SVW subviews of `node`. SVW (standard
+	// view) subportfolios are defined inline under their parent — they
+	// have no top-level api/views/show entry and use their bare key.
+	// They may themselves contain nested SVW children. VW subviews are
+	// skipped: those are by-reference and the same portfolio already
+	// appears as a top-level entry under its bare key (the subview's
+	// "key" field is compound like "Banking:Private_Banking" and would
+	// not match getPortfolioProjects' bare keys). APP subviews are
+	// applications, not portfolios.
+	var walkSVW func(serverURL string, node map[string]any)
+	walkSVW = func(serverURL string, node map[string]any) {
+		subs, _ := node["subViews"].([]any)
+		for _, s := range subs {
+			m, ok := s.(map[string]any)
+			if !ok {
+				continue
+			}
+			if q, _ := m["qualifier"].(string); q != "SVW" {
+				continue
+			}
+			sk, _ := m["key"].(string)
+			sn, _ := m["name"].(string)
+			classify(serverURL, sk, sn)
+			walkSVW(serverURL, m)
+		}
+	}
+	for _, it := range detailItems {
+		var d map[string]any
+		if err := json.Unmarshal(it.Data, &d); err != nil {
+			continue
+		}
+		key, _ := d["key"].(string)
+		name, _ := d["name"].(string)
+		classify(it.ServerURL, key, name)
+		walkSVW(it.ServerURL, d)
 	}
 	return out
 }
