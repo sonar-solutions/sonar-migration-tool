@@ -926,6 +926,20 @@ func runSetProjectTags(ctx context.Context, e *Executor) error {
 	return err
 }
 
+// builtinLinkNames maps the SonarQube Server built-in link `type`
+// values to the display name SonarQube Cloud uses when creating the
+// equivalent link. SQS returns an empty `name` for the four built-in
+// kinds (the UI hardcodes the label), so on the migration side we
+// have to synthesize one — otherwise /api/project_links/create
+// rejects the POST with "Missing parameter: name" and the link
+// silently vanishes (#228).
+var builtinLinkNames = map[string]string{
+	"homepage": "Home",
+	"ci":       "Continuous integration",
+	"issue":    "Issues",
+	"scm":      "Sources",
+}
+
 // runSetProjectLinks migrates per-project links recorded in
 // getProjectLinks to SonarQube Cloud via /api/project_links/create.
 // One POST per link; failures are surfaced in the migration report
@@ -948,21 +962,34 @@ func runSetProjectLinks(ctx context.Context, e *Executor) error {
 				return nil
 			}
 			name := extractField(item.Data, "name")
+			linkType := extractField(item.Data, "type")
 			linkURL := extractField(item.Data, "url")
-			if name == "" || linkURL == "" {
+			if linkURL == "" {
 				return nil
 			}
-			// SonarQube Cloud rejects POSTs with an empty `type` and
-			// derives the built-in link kind from `name` for the four
-			// well-known types (homepage, ci, issue, scm). Custom
-			// links keep an empty type, exactly as SonarQube Server
-			// stores them. Forwarding the SQS-side type as-is
-			// preserves the original classification when present.
+			// SQS stores built-in links (homepage/ci/issue/scm) with
+			// an empty `name`; SQC requires `name` on every create
+			// call. Map the built-in type to its canonical display
+			// name; for custom links (any other type) fall back to
+			// the type slug, then to "Link" as a last resort.
+			if name == "" {
+				if v, ok := builtinLinkNames[linkType]; ok {
+					name = v
+				} else if linkType != "" {
+					name = linkType
+				} else {
+					name = "Link"
+				}
+			}
+			// `type` is not a POST parameter for /api/project_links/
+			// create — SonarQube derives it from `name` for the four
+			// built-in kinds and assigns a custom slug otherwise.
+			// Forwarding our SQS-side `type` would either be ignored
+			// (best case) or cause a validation error.
 			params := cloud.CreateLinkParams{
 				ProjectKey: pm.CloudKey,
 				Name:       name,
 				URL:        linkURL,
-				Type:       extractField(item.Data, "type"),
 			}
 			if err := e.Cloud.Projects.CreateLink(ctx, params); err != nil {
 				counter.Fail()
