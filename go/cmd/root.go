@@ -38,6 +38,7 @@ func init() {
 
 func addCommands() {
 	rootCmd.AddCommand(
+		transferCmd,
 		wizardCmd,
 		guiCmd,
 		extractCmd,

@@ -24,7 +24,8 @@ sonar-migration-tool/
 │   │   ├── report.go            # Maturity/migration reports
 │   │   ├── analysis_report.go   # API call outcome summary
 │   │   ├── gui.go               # Browser-based GUI server
-│   │   └── predictive_report.go # Pre-migration PDF summary
+│   │   ├── predictive_report.go # Pre-migration PDF summary
+│   │   └── transfer.go          # Single-command project transfer
 │   └── internal/
 │       ├── common/              # Shared utilities
 │       │   ├── rawclient.go     # HTTP client with auth + retry
@@ -199,6 +200,46 @@ All four pipelines implement the `Pipeline` interface; compile-time checks (`var
 **URL construction:** All helpers use `client.BaseURL() + "api/..."` (no leading `/`). `BaseURL()` always returns a URL ending with `/` (enforced by `normalizeBaseURL` in sq-api-go), so prepending a `/` would produce double-slash paths (`//api/...`) that Go's `httptest` server does not normalize.
 
 **V2 groups note:** The `/api/v2/authorizations/groups` response omits `membersCount`. The `id` field is a UUID string (incompatible with `Group.ID int`, left zero); `managed` has no `Group` field and is discarded; `default` IS captured and propagated to `Group.Default`. The standard-API fallback is triggered by any V2 error (not just 404), intentionally ensuring callers get groups even when the V2 endpoint is temporarily unavailable.
+
+## Transfer Command (Single-Project Migration)
+<!-- updated: 2026-05-30_10:00:00 -->
+
+`go/cmd/transfer.go` provides a CloudVoyager-compatible single-command migration path. It
+chains the four manual phases automatically so users never touch a CSV file.
+
+```bash
+# Flags
+sonar-migration-tool transfer \
+  --sq-url https://sonarqube.example.com --sq-token sqp_xxx \
+  --project-key my-project \
+  --sc-token squ_xxx --sc-org my-org
+
+# Config file
+sonar-migration-tool transfer -c config.json
+```
+
+**config.json** (CloudVoyager-compatible shape):
+```json
+{
+  "sonarqube": { "url": "...", "token": "...", "projectKey": "..." },
+  "sonarcloud": { "token": "...", "organization": "...", "enterpriseKey": "..." }
+}
+```
+
+`--project-key` is optional. When provided, the `/api/projects/search` call is filtered
+server-side via the `projects=` param, so only the target project and its data are
+extracted. When omitted, all projects on the server are migrated.
+
+**Execution sequence:**
+1. `extract.RunExtract` — sets `ExtractConfig.ProjectKeys` when `--project-key` is given
+2. `structure.RunStructure(dir, scOrg)` — pre-populates `sonarcloud_org_key` in organizations.csv
+3. `structure.RunMappings(dir)` — generates gates/profiles/groups/templates CSVs
+4. `migrate.RunMigrate` — pushes everything to SonarQube Cloud
+5. `summary.GeneratePDFReport` — writes a PDF summary to the run directory
+
+`--sc-enterprise-key` is optional and defaults to `--sc-org`. Set it explicitly only when
+the SonarCloud enterprise key differs from the organization key (typically only needed for
+portfolio migration in large Enterprise deployments).
 
 ## Version Detection
 <!-- updated: 2026-05-29_02:30:00 -->
