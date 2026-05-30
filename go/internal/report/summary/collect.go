@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -89,7 +90,87 @@ func collectLimitations(runDir, exportDir string, mapping structure.ExtractMappi
 				appCount))
 	}
 	out = append(out, collectNCDLimitations(runDir, exportDir, mapping)...)
+	out = append(out, collectSASTCustomizationLimitation(exportDir, mapping)...)
 	return out
+}
+
+// sastCustomizationKeys are SonarQube settings whose presence on the
+// source indicates the customer used the SAST-engine customization
+// feature (custom security rules / JSON config). SonarQube Cloud
+// doesn't expose this feature, so any such configuration is dropped
+// silently during migration — surface a single limitation note (#228
+// orange) listing the impacted projects.
+//
+// Keys cover both the global-scope and project-scope variants. The
+// list is deliberately small and explicit so a setting that merely
+// happens to start with "sonar.security" doesn't trip the heuristic.
+var sastCustomizationKeys = map[string]bool{
+	"sonar.security.config.javasecurity":       true,
+	"sonar.security.config.phpsecurity":        true,
+	"sonar.security.config.pythonsecurity":     true,
+	"sonar.security.config.roslyn.sonaranalyzer.security.cs": true,
+	"sonar.security.config.jssecurity":         true,
+	"sonar.security.config.tssecurity":         true,
+	"sonar.security.sources.javasecurity":      true,
+	"sonar.security.sources.phpsecurity":       true,
+	"sonar.security.sources.pythonsecurity":    true,
+	"sonar.security.sources.jssecurity":        true,
+	"sonar.security.sources.tssecurity":        true,
+}
+
+// collectSASTCustomizationLimitation scans server-level and project-
+// level settings for SAST-engine customization keys (#228 orange) and
+// returns one bullet if any are present. The bullet lists up to a
+// handful of impacted project keys so the operator knows where to
+// look — global SAST customization is rendered as "(global)".
+func collectSASTCustomizationLimitation(exportDir string, mapping structure.ExtractMapping) []string {
+	if mapping == nil {
+		return nil
+	}
+	// Global-scope.
+	hits := map[string]bool{}
+	serverItems, _ := structure.ReadExtractData(exportDir, mapping, "getServerSettings")
+	for _, it := range serverItems {
+		if sastCustomizationKeys[jsonStr(it.Data, "key")] {
+			hits["(global)"] = true
+		}
+	}
+	// Project-scope. getProjectSettings emits one record per project
+	// with a nested settings[] array.
+	projItems, _ := structure.ReadExtractData(exportDir, mapping, "getProjectSettings")
+	for _, it := range projItems {
+		var obj struct {
+			ProjectKey string `json:"projectKey"`
+			Settings   []struct {
+				Key string `json:"key"`
+			} `json:"settings"`
+		}
+		if err := json.Unmarshal(it.Data, &obj); err != nil {
+			continue
+		}
+		for _, s := range obj.Settings {
+			if sastCustomizationKeys[s.Key] {
+				key := obj.ProjectKey
+				if key == "" {
+					key = "(unknown project)"
+				}
+				hits[key] = true
+				break
+			}
+		}
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(hits))
+	for k := range hits {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return []string{
+		fmt.Sprintf("SonarQube SAST engine customization (custom security rules / JSON config) is not supported on SonarQube Cloud. Affected: %s.",
+			strings.Join(keys, ", ")),
+	}
 }
 
 // collectNCDLimitations scans the getNewCodePeriods extract and
