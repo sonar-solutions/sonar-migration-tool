@@ -38,6 +38,41 @@ func TestExtractGroupsV2Success(t *testing.T) {
 	}
 }
 
+// TestExtractGroupsV2CapturesDefaultField verifies that the `default` boolean
+// in the V2 groups response is decoded and propagated to Group.Default.
+// This is a regression test for commit b6c4f26 — the field was added to the
+// decode struct but the existing test didn't assert it was actually captured.
+func TestExtractGroupsV2CapturesDefaultField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"groups": []map[string]any{
+				{"name": "sonar-users", "description": "Default group", "default": true},
+				{"name": "admins", "description": "Administrators", "default": false},
+			},
+			"page": map[string]any{"pageIndex": 1, "pageSize": 500, "total": 2},
+		})
+	}))
+	defer srv.Close()
+
+	p := newSQ2025(newTestClient(t, srv.URL))
+	groups, err := p.ExtractGroups(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 2 {
+		t.Fatalf("got %d groups, want 2", len(groups))
+	}
+	// Verify Default=true is captured from the V2 payload.
+	if !groups[0].Default {
+		t.Errorf("groups[0].Default = false, want true (sonar-users is the default group)")
+	}
+	// Verify Default=false is preserved (not defaulted to true).
+	if groups[1].Default {
+		t.Errorf("groups[1].Default = true, want false (admins is not the default group)")
+	}
+}
+
 func TestExtractGroupsV2FallbackOn404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v2/authorizations/groups") {
