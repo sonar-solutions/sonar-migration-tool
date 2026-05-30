@@ -482,6 +482,18 @@ func collectSection(store *common.DataStore, def sectionDef,
 	// curated note so the operator knows why the group did not migrate.
 	if def.Name == "Groups" {
 		skipped = appendBuiltInGroupSkips(store, skipped)
+		// #230 O4: org-level (no projectKey) /api/permissions/add_group
+		// failures route the corresponding Groups row to Partial.
+		runDir := store.BaseDir()
+		succeeded, partial = applyGlobalGroupPermFailures(runDir, succeeded, partial)
+	}
+
+	// #230 Y5: a permission template that couldn't be set as default
+	// on SonarQube Cloud routes to NearPerfect (yellow) on the
+	// Permission Templates section — the template itself was created.
+	if def.Name == "Permission Templates" {
+		runDir := store.BaseDir()
+		succeeded, nearPerfect = applyTemplateDefaultFailures(runDir, store, succeeded, nearPerfect)
 	}
 
 	return Section{
@@ -907,9 +919,15 @@ func collectGlobalSettings(store *common.DataStore, def sectionDef) Section {
 		return Section{Name: def.Name}
 	}
 
-	var succeeded, partial, skipped, failed []EntityItem
+	var succeeded, nearPerfect, partial, skipped, failed []EntityItem
 	for _, raw := range items {
 		key := jsonStr(raw, def.NameField)
+		// #230 Y1: the synthetic newCodePeriod record is emitted by
+		// setGlobalNewCodePeriod, one outcome per org. A failed org
+		// means the global new-code-period couldn't be set on that
+		// SQC org — the source is migrated, just not the value, so
+		// the row routes to NearPerfect (yellow) rather than Failed.
+		ncdRecord := key == "newCodePeriod"
 		for _, oc := range parseOutcomes(raw) {
 			item := EntityItem{
 				Name:         key,
@@ -928,16 +946,21 @@ func collectGlobalSettings(store *common.DataStore, def sectionDef) Section {
 				skipped = append(skipped, item)
 			case "failed":
 				item.ErrorMessage = oc.Reason
-				failed = append(failed, item)
+				if ncdRecord {
+					nearPerfect = append(nearPerfect, item)
+				} else {
+					failed = append(failed, item)
+				}
 			}
 		}
 	}
 	return Section{
-		Name:      def.Name,
-		Succeeded: succeeded,
-		Partial:   partial,
-		Skipped:   skipped,
-		Failed:    failed,
+		Name:        def.Name,
+		Succeeded:   succeeded,
+		NearPerfect: nearPerfect,
+		Partial:     partial,
+		Skipped:     skipped,
+		Failed:      failed,
 	}
 }
 
