@@ -91,7 +91,112 @@ func collectLimitations(runDir, exportDir string, mapping structure.ExtractMappi
 	}
 	out = append(out, collectNCDLimitations(runDir, exportDir, mapping)...)
 	out = append(out, collectSASTCustomizationLimitation(exportDir, mapping)...)
+	out = append(out, collectUserPermissionLimitations(exportDir, mapping)...)
+	out = append(out, collectGlobalSettingMappingLimitations(exportDir, mapping)...)
 	return out
+}
+
+// collectUserPermissionLimitations covers #230 Y3 and Y4. SonarQube
+// Cloud does not expose a way to grant permissions to individual
+// users via API — only to groups — so any SQS user permission on a
+// permission template or at the global scope is dropped during
+// migration. Surface a single limitation note per scope listing
+// the affected logins so the operator can re-grant them via the
+// SQC UI or via group membership.
+func collectUserPermissionLimitations(exportDir string, mapping structure.ExtractMapping) []string {
+	if mapping == nil {
+		return nil
+	}
+	collect := func(taskKey string) []string {
+		items, _ := structure.ReadExtractData(exportDir, mapping, taskKey)
+		if len(items) == 0 {
+			return nil
+		}
+		seen := map[string]bool{}
+		var logins []string
+		for _, it := range items {
+			login := jsonStr(it.Data, "login")
+			if login == "" || seen[login] {
+				continue
+			}
+			seen[login] = true
+			logins = append(logins, login)
+		}
+		sort.Strings(logins)
+		return logins
+	}
+	var notes []string
+	if tplLogins := collect("getTemplateUsersScanners"); len(tplLogins) > 0 ||
+		len(collect("getTemplateUsersViewers")) > 0 {
+		// Combine both feeds without losing logins that appear only
+		// in one of them.
+		seen := map[string]bool{}
+		var combined []string
+		for _, feed := range []string{"getTemplateUsersScanners", "getTemplateUsersViewers"} {
+			for _, l := range collect(feed) {
+				if !seen[l] {
+					seen[l] = true
+					combined = append(combined, l)
+				}
+			}
+		}
+		sort.Strings(combined)
+		notes = append(notes, fmt.Sprintf(
+			"SonarQube Cloud does not support user permissions via API. The following %d user(s) had permissions on SonarQube Server permission templates and were not migrated: %s.",
+			len(combined), strings.Join(combined, ", ")))
+	}
+	if globalLogins := collect("getUserPermissions"); len(globalLogins) > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"SonarQube Cloud does not support user permissions via API. The following %d user(s) had global SonarQube Server permissions and were not migrated: %s.",
+			len(globalLogins), strings.Join(globalLogins, ", ")))
+	}
+	return notes
+}
+
+// sqsToSQCSettingMap captures known SQS → SQC setting key equivalences
+// where SonarQube Cloud uses a different key (or the feature was moved
+// to an org-level config). When the SQS extract carries one of these
+// keys and the migration didn't successfully map it (the catch-all
+// path treats it as "not on SQC" because the literal key is absent
+// from list_definitions on the cloud side), we surface a single
+// limitation note so the operator can re-create the configuration
+// manually on SonarQube Cloud.
+var sqsToSQCSettingMap = map[string]string{
+	"sonar.qualitygate.ignoreSmallChanges":       "Ignore duplication and coverage on small changes (org-level)",
+	"sonar.ai.suggestions.enabled":               "AI Code Fix (org-level, requires manual enablement on SQC)",
+	"sonar.ai.codeFix.enabled":                   "AI Code Fix (org-level, requires manual enablement on SQC)",
+	"sonar.projects.defaultVisibility":           "Allow only private projects (org-level)",
+}
+
+// collectGlobalSettingMappingLimitations covers #230 Y7, Y8 and O7
+// — three SQS configurations whose SQC equivalents live elsewhere
+// (org-level UI settings, not under the same list_definitions key).
+// If the SQS extract carries any of these settings as non-empty, emit
+// one limitation bullet per affected setting describing the manual
+// follow-up required on the SonarQube Cloud side.
+func collectGlobalSettingMappingLimitations(exportDir string, mapping structure.ExtractMapping) []string {
+	if mapping == nil {
+		return nil
+	}
+	items, _ := structure.ReadExtractData(exportDir, mapping, "getServerSettings")
+	if len(items) == 0 {
+		return nil
+	}
+	var notes []string
+	seen := map[string]bool{}
+	for _, it := range items {
+		key := jsonStr(it.Data, "key")
+		target, ok := sqsToSQCSettingMap[key]
+		if !ok || seen[key] {
+			continue
+		}
+		seen[key] = true
+		notes = append(notes, fmt.Sprintf(
+			"%s is set on SonarQube Server but has no /api/settings/set equivalent on SonarQube Cloud. Configure %q manually after migration.",
+			key, target))
+	}
+	sort.Strings(notes)
+	return notes
 }
 
 // sastCustomizationKeys are SonarQube settings whose presence on the
