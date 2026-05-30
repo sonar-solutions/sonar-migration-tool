@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 )
 
 // Project-level outcome routing (#228): some post-create operations on a
@@ -275,4 +277,83 @@ func applyProjectFailures(succeeded, nearPerfect, partial []EntityItem,
 		}
 	}
 	return keep, nearPerfect, partial
+}
+
+// collectProjectSyncSkips reads the per-project status JSONL produced
+// by the data-migration tasks and returns a synthetic []projectFailure
+// covering #228's orange criteria:
+//
+//   - importScanHistory rows with status != "success" → "Project data
+//     migration was skipped" (one per affected branch is collapsed
+//     into a single row per project, listing the failed branches).
+//   - syncHotspotMetadata rows with skipped>0 / failed>0 / error!=""
+//     → "Hotspot status sync was skipped".
+//
+// The returned failures plug straight into applyProjectFailures.
+func collectProjectSyncSkips(store *common.DataStore) []projectFailure {
+	var out []projectFailure
+
+	// importScanHistory — one row per branch per project.
+	historyItems, _ := store.ReadAll("importScanHistory")
+	byProject := make(map[string][]string)
+	for _, raw := range historyItems {
+		key := jsonStr(raw, "cloud_project_key")
+		status := jsonStr(raw, "status")
+		if key == "" || status == "success" {
+			continue
+		}
+		branch := jsonStr(raw, "branch")
+		var detail string
+		switch {
+		case branch != "" && status != "":
+			detail = branch + " (" + status + ")"
+		case branch != "":
+			detail = branch
+		default:
+			detail = status
+		}
+		byProject[key] = append(byProject[key], detail)
+	}
+	for key, branches := range byProject {
+		out = append(out, projectFailure{
+			CloudProjectKey: key,
+			Bucket:          projectBucketPartial,
+			Operation:       "Project data migration was skipped",
+			Detail:          strings.Join(branches, ", "),
+		})
+	}
+
+	// syncHotspotMetadata — one row per project.
+	hotspotItems, _ := store.ReadAll("syncHotspotMetadata")
+	for _, raw := range hotspotItems {
+		key := jsonStr(raw, "cloud_project_key")
+		if key == "" {
+			continue
+		}
+		skipped := jsonInt(raw, "skipped")
+		failed := jsonInt(raw, "failed")
+		errMsg := jsonStr(raw, "error")
+		if skipped == 0 && failed == 0 && errMsg == "" {
+			continue
+		}
+		parts := []string{}
+		if skipped > 0 {
+			parts = append(parts, fmt.Sprintf("%d skipped", skipped))
+		}
+		if failed > 0 {
+			parts = append(parts, fmt.Sprintf("%d failed", failed))
+		}
+		pf := projectFailure{
+			CloudProjectKey: key,
+			Bucket:          projectBucketPartial,
+			Operation:       "Hotspot status sync was skipped",
+			Detail:          strings.Join(parts, ", "),
+		}
+		if errMsg != "" {
+			pf.Error = errMsg
+		}
+		out = append(out, pf)
+	}
+
+	return out
 }

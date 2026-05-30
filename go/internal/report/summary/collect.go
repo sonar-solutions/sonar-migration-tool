@@ -49,8 +49,11 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 			// group permissions, links, webhooks) that failed for an
 			// otherwise-successfully-created project route the project
 			// to NearPerfect (yellow) or Partial (orange) with one
-			// Issues line per failing operation.
+			// Issues line per failing operation. Also fold in the
+			// project-data / hotspot-sync skip records (orange) read
+			// from the data-migration tasks' JSONL output.
 			projectFailures := collectProjectFailures(runDir)
+			projectFailures = append(projectFailures, collectProjectSyncSkips(store)...)
 			section.Succeeded, section.NearPerfect, section.Partial = applyProjectFailures(
 				section.Succeeded, section.NearPerfect, section.Partial, projectFailures)
 		}
@@ -642,6 +645,26 @@ func projectCloudKey(detail string) string {
 
 // jsonBool extracts a bool value for a key from a JSONL record.
 // Falls back to false on missing key, non-bool value, or parse error.
+// jsonInt extracts an integer field from a json.RawMessage. Returns 0
+// when the field is missing or not a number; missing fields are
+// indistinguishable from explicit zeros, which matches the callers'
+// "non-zero means something happened" gates.
+func jsonInt(raw json.RawMessage, key string) int {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return 0
+	}
+	v, ok := obj[key]
+	if !ok {
+		return 0
+	}
+	var n float64
+	if err := json.Unmarshal(v, &n); err != nil {
+		return 0
+	}
+	return int(n)
+}
+
 func jsonBool(raw json.RawMessage, key string) bool {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err != nil {
