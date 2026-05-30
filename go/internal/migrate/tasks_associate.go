@@ -52,6 +52,16 @@ func associateTasks() []TaskDef {
 			Run:          runSetProjectTags,
 		},
 		{
+			Name:         "setProjectLinks",
+			Dependencies: []string{"createProjects", "grantMigrationUserProjectPermissions"},
+			Run:          runSetProjectLinks,
+		},
+		{
+			Name:         "setProjectWebhooks",
+			Dependencies: []string{"createProjects", "grantMigrationUserProjectPermissions"},
+			Run:          runSetProjectWebhooks,
+		},
+		{
 			Name:         "setNewCodePeriods",
 			Dependencies: []string{"createProjects", "grantMigrationUserProjectPermissions"},
 			Run:          runSetNewCodePeriods,
@@ -910,6 +920,231 @@ func runSetProjectTags(ctx context.Context, e *Executor) error {
 				counter.Success()
 			}
 			_ = w.WriteOne(item.Data)
+			return nil
+		})
+	counter.LogSummary(e.Logger)
+	return err
+}
+
+// builtinLinkNames maps the SonarQube Server built-in link `type`
+// values to the display name SonarQube Cloud uses when creating the
+// equivalent link. SQS returns an empty `name` for the four built-in
+// kinds (the UI hardcodes the label), so on the migration side we
+// have to synthesize one — otherwise /api/project_links/create
+// rejects the POST with "Missing parameter: name" and the link
+// silently vanishes (#228).
+var builtinLinkNames = map[string]string{
+	"homepage": "Home",
+	"ci":       "Continuous integration",
+	"issue":    "Issues",
+	"scm":      "Sources",
+}
+
+// runSetProjectLinks migrates per-project links recorded in
+// getProjectLinks to SonarQube Cloud via /api/project_links/create.
+// One POST per link; failures are surfaced in the migration report
+// (#228) as a yellow "Project link not migrated" Issue on the project.
+//
+// Idempotency: before each create call, the task lists existing
+// links on the target project and skips when one with the same
+// (name, url) is already present. Re-runs are therefore cheap and
+// do not produce duplicates on SonarQube Cloud.
+func runSetProjectLinks(ctx context.Context, e *Executor) error {
+	projects, _ := e.Store.ReadAll("createProjects")
+	projectKeyMap := make(map[string]projectMapping)
+	for _, p := range projects {
+		serverURL := extractField(p, "server_url")
+		key := extractField(p, "key")
+		projectKeyMap[serverURL+key] = projectMapping{CloudKey: extractField(p, "cloud_project_key")}
+	}
+
+	// Cache existing links per cloud project key so a project with N
+	// SQS links only hits /api/project_links/search once. Guarded by
+	// a mutex because forEachExtractItem fans out concurrently.
+	existing := make(map[string]map[string]bool)
+	var existingMu sync.Mutex
+	hasExisting := func(ctx context.Context, cloudKey, name, urlStr string) bool {
+		existingMu.Lock()
+		defer existingMu.Unlock()
+		known, ok := existing[cloudKey]
+		if !ok {
+			links, err := e.Cloud.Projects.ListLinks(ctx, cloudKey)
+			if err != nil {
+				logAPIWarn(e.Logger, "setProjectLinks: list existing failed (will attempt create)", err,
+					"project", cloudKey)
+				existing[cloudKey] = nil
+				return false
+			}
+			known = make(map[string]bool, len(links))
+			for _, l := range links {
+				known[l.Name+"\x00"+l.URL] = true
+			}
+			existing[cloudKey] = known
+		}
+		return known[name+"\x00"+urlStr]
+	}
+
+	counter := NewTaskCounter("setProjectLinks")
+	err := forEachExtractItem(ctx, e, "setProjectLinks", "getProjectLinks",
+		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
+			projectKey := extractField(item.Data, "projectKey")
+			pm, ok := projectKeyMap[item.ServerURL+projectKey]
+			if !ok || pm.CloudKey == "" {
+				return nil
+			}
+			name := extractField(item.Data, "name")
+			linkType := extractField(item.Data, "type")
+			linkURL := extractField(item.Data, "url")
+			if linkURL == "" {
+				return nil
+			}
+			// SQS stores built-in links (homepage/ci/issue/scm) with
+			// an empty `name`; SQC requires `name` on every create
+			// call. Map the built-in type to its canonical display
+			// name; for custom links (any other type) fall back to
+			// the type slug, then to "Link" as a last resort.
+			if name == "" {
+				if v, ok := builtinLinkNames[linkType]; ok {
+					name = v
+				} else if linkType != "" {
+					name = linkType
+				} else {
+					name = "Link"
+				}
+			}
+			if hasExisting(ctx, pm.CloudKey, name, linkURL) {
+				e.Logger.Info("setProjectLinks: link already exists, skipping",
+					"project", pm.CloudKey, "name", name)
+				counter.Success()
+				_ = w.WriteOne(common.EnrichRaw(item.Data, map[string]any{
+					"cloud_project_key": pm.CloudKey,
+					"was_preexisting":   true,
+				}))
+				return nil
+			}
+			// `type` is not a POST parameter for /api/project_links/
+			// create — SonarQube derives it from `name` for the four
+			// built-in kinds and assigns a custom slug otherwise.
+			// Forwarding our SQS-side `type` would either be ignored
+			// (best case) or cause a validation error.
+			params := cloud.CreateLinkParams{
+				ProjectKey: pm.CloudKey,
+				Name:       name,
+				URL:        linkURL,
+			}
+			if err := e.Cloud.Projects.CreateLink(ctx, params); err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "setProjectLinks failed", err,
+					"project", pm.CloudKey, "name", name, "url", linkURL)
+			} else {
+				counter.Success()
+			}
+			_ = w.WriteOne(common.EnrichRaw(item.Data, map[string]any{
+				"cloud_project_key": pm.CloudKey,
+			}))
+			return nil
+		})
+	counter.LogSummary(e.Logger)
+	return err
+}
+
+// runSetProjectWebhooks migrates per-project webhooks recorded in
+// getProjectWebhooks to SonarQube Cloud via /api/webhooks/create. One
+// POST per webhook; failures surface as an orange "Webhook not
+// migrated" Issue on the project in the migration report (#228).
+//
+// Idempotency: before creating, the task lists existing webhooks at
+// the (org, project) scope and skips the create when one with the
+// same (name, url) already exists. This makes re-runs cheap and
+// avoids duplicate webhooks on SonarQube Cloud when migrate is
+// resumed.
+//
+// Webhook secrets on SonarQube Server are stored only as a flag on the
+// extracted record ({hasSecret: true}) — the value itself is not
+// exposed by the source API. We don't forward a secret, so the
+// migrated webhook on SonarQube Cloud is unsecured by default and the
+// operator must rotate the secret manually post-migration.
+func runSetProjectWebhooks(ctx context.Context, e *Executor) error {
+	projects, _ := e.Store.ReadAll("createProjects")
+	projectKeyMap := make(map[string]projectMapping)
+	for _, p := range projects {
+		serverURL := extractField(p, "server_url")
+		key := extractField(p, "key")
+		projectKeyMap[serverURL+key] = projectMapping{
+			CloudKey: extractField(p, "cloud_project_key"),
+			OrgKey:   extractField(p, "sonarcloud_org_key"),
+		}
+	}
+
+	// Cache existing webhooks per (org, project) to avoid an extra
+	// list call per webhook record when a project has many webhooks.
+	// Cleared between projects since the cache holds raw webhook data.
+	type webhookScope struct{ org, project string }
+	existing := make(map[webhookScope]map[string]bool)
+	var existingMu sync.Mutex
+	hasExisting := func(ctx context.Context, org, project, name, urlStr string) bool {
+		existingMu.Lock()
+		defer existingMu.Unlock()
+		scope := webhookScope{org: org, project: project}
+		known, ok := existing[scope]
+		if !ok {
+			webhooks, err := e.Cloud.Webhooks.List(ctx, cloud.ListWebhooksParams{
+				Organization: org, Project: project,
+			})
+			if err != nil {
+				logAPIWarn(e.Logger, "setProjectWebhooks: list existing failed (will attempt create)", err,
+					"org", org, "project", project)
+				existing[scope] = nil
+				return false
+			}
+			known = make(map[string]bool, len(webhooks))
+			for _, wh := range webhooks {
+				known[wh.Name+"\x00"+wh.URL] = true
+			}
+			existing[scope] = known
+		}
+		return known[name+"\x00"+urlStr]
+	}
+
+	counter := NewTaskCounter("setProjectWebhooks")
+	err := forEachExtractItem(ctx, e, "setProjectWebhooks", "getProjectWebhooks",
+		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
+			projectKey := extractField(item.Data, "projectKey")
+			pm, ok := projectKeyMap[item.ServerURL+projectKey]
+			if !ok || pm.CloudKey == "" || pm.OrgKey == "" {
+				return nil
+			}
+			name := extractField(item.Data, "name")
+			urlStr := extractField(item.Data, "url")
+			if name == "" || urlStr == "" {
+				return nil
+			}
+			if hasExisting(ctx, pm.OrgKey, pm.CloudKey, name, urlStr) {
+				e.Logger.Info("setProjectWebhooks: webhook already exists, skipping",
+					"project", pm.CloudKey, "name", name)
+				counter.Success()
+				_ = w.WriteOne(common.EnrichRaw(item.Data, map[string]any{
+					"cloud_project_key": pm.CloudKey,
+					"was_preexisting":   true,
+				}))
+				return nil
+			}
+			params := cloud.CreateWebhookParams{
+				Organization: pm.OrgKey,
+				Project:      pm.CloudKey,
+				Name:         name,
+				URL:          urlStr,
+			}
+			if err := e.Cloud.Webhooks.Create(ctx, params); err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "setProjectWebhooks failed", err,
+					"project", pm.CloudKey, "name", name, "url", urlStr)
+			} else {
+				counter.Success()
+			}
+			_ = w.WriteOne(common.EnrichRaw(item.Data, map[string]any{
+				"cloud_project_key": pm.CloudKey,
+			}))
 			return nil
 		})
 	counter.LogSummary(e.Logger)

@@ -67,6 +67,54 @@ func (p *ProjectsClient) SetTags(ctx context.Context, projectKey, tags string) e
 	return p.postForm(ctx, "api/project_tags/set", form, nil)
 }
 
+// CreateLinkParams carries the per-link payload for /api/project_links/create.
+// SonarQube derives the `type` from the link's name (well-known
+// types match by name; everything else is a custom link), so callers
+// only supply name + url + project.
+type CreateLinkParams struct {
+	ProjectKey string
+	Name       string
+	URL        string
+}
+
+// CreateLink registers a project link on a SonarQube Cloud project.
+func (p *ProjectsClient) CreateLink(ctx context.Context, params CreateLinkParams) error {
+	form := url.Values{}
+	form.Set("projectKey", params.ProjectKey)
+	form.Set("name", params.Name)
+	form.Set("url", params.URL)
+	return p.postForm(ctx, "api/project_links/create", form, nil)
+}
+
+// ProjectLink is a single link record returned by
+// /api/project_links/search. The `type` field is the canonical kind
+// derived by SonarQube (homepage / ci / issue / scm / <slug>) and is
+// not user-controllable.
+type ProjectLink struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+// listLinksResponse is the wire shape returned by /api/project_links/search.
+type listLinksResponse struct {
+	Links []ProjectLink `json:"links"`
+}
+
+// ListLinks returns the links visible on the given SonarQube Cloud
+// project. Used by the migration to skip create calls when an
+// equivalent link already exists.
+func (p *ProjectsClient) ListLinks(ctx context.Context, projectKey string) ([]ProjectLink, error) {
+	q := url.Values{}
+	q.Set("projectKey", projectKey)
+	var resp listLinksResponse
+	if err := p.getJSON(ctx, "api/project_links/search?"+q.Encode(), &resp); err != nil {
+		return nil, err
+	}
+	return resp.Links, nil
+}
+
 // ExistsInOrg reports whether a project with the given key is
 // accessible in the given SonarQube Cloud organization. Used to
 // disambiguate /api/projects/create's "key already exists" response
