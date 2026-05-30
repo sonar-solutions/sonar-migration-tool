@@ -62,6 +62,15 @@ func associateTasks() []TaskDef {
 			Run:          runSetProjectWebhooks,
 		},
 		{
+			// Issue #230 O5: migrate SQS server-scoped (global)
+			// webhooks. SonarQube Cloud has no enterprise scope but
+			// supports org-scoped webhooks, so the migration fans out
+			// each global SQS webhook to every migrated SQC org.
+			Name:         "setGlobalWebhooks",
+			Dependencies: []string{"generateOrganizationMappings"},
+			Run:          runSetGlobalWebhooks,
+		},
+		{
 			Name:         "setNewCodePeriods",
 			Dependencies: []string{"createProjects", "grantMigrationUserProjectPermissions"},
 			Run:          runSetNewCodePeriods,
@@ -1209,4 +1218,105 @@ func extractStringArray(raw json.RawMessage, key string) []string {
 	var arr []string
 	json.Unmarshal(arrRaw, &arr)
 	return arr
+}
+
+// runSetGlobalWebhooks migrates each SonarQube Server server-scoped
+// webhook (the "global" webhooks in #230) by fanning the (name, url)
+// pair out to every migrated SonarQube Cloud organization via
+// /api/webhooks/create with no project parameter. Issue #230 O5.
+//
+// Idempotency: lists existing webhooks at each (org) scope before
+// creating, skipping when one with the same (name, url) is already
+// there. Same shape as runSetProjectWebhooks but with project=""
+// so the webhook ends up org-scoped.
+//
+// Webhook secrets on SonarQube Server are stored only as a flag on
+// the extracted record ({hasSecret: true}) — the value itself is
+// not exposed by the source API — so migrated webhooks land
+// unsecured and the operator has to rotate the secret manually.
+func runSetGlobalWebhooks(ctx context.Context, e *Executor) error {
+	webhooks, _ := readExtractItems(e, "getWebhooks")
+	if len(webhooks) == 0 {
+		e.Logger.Info("setGlobalWebhooks: no global webhooks extracted, nothing to migrate")
+		return nil
+	}
+	// Build target org set from the org mapping JSONL, skipping orgs
+	// the operator marked SKIPPED in the wizard.
+	orgItems, _ := e.Store.ReadAll("generateOrganizationMappings")
+	orgs := make(map[string]bool)
+	for _, item := range orgItems {
+		org := extractField(item, "sonarcloud_org_key")
+		if !shouldSkipOrg(org) {
+			orgs[org] = true
+		}
+	}
+	if len(orgs) == 0 {
+		e.Logger.Info("setGlobalWebhooks: no in-scope SQC organizations, nothing to migrate")
+		return nil
+	}
+
+	existing := make(map[string]map[string]bool)
+	var existingMu sync.Mutex
+	hasExisting := func(ctx context.Context, org, name, urlStr string) bool {
+		existingMu.Lock()
+		defer existingMu.Unlock()
+		known, ok := existing[org]
+		if !ok {
+			items, err := e.Cloud.Webhooks.List(ctx, cloud.ListWebhooksParams{Organization: org})
+			if err != nil {
+				logAPIWarn(e.Logger, "setGlobalWebhooks: list existing failed (will attempt create)", err, "org", org)
+				existing[org] = nil
+				return false
+			}
+			known = make(map[string]bool, len(items))
+			for _, wh := range items {
+				known[wh.Name+"\x00"+wh.URL] = true
+			}
+			existing[org] = known
+		}
+		return known[name+"\x00"+urlStr]
+	}
+
+	counter := NewTaskCounter("setGlobalWebhooks")
+	w, _ := e.Store.Writer("setGlobalWebhooks")
+	for _, hook := range webhooks {
+		name := extractField(hook.Data, "name")
+		urlStr := extractField(hook.Data, "url")
+		if name == "" || urlStr == "" {
+			continue
+		}
+		for org := range orgs {
+			if hasExisting(ctx, org, name, urlStr) {
+				e.Logger.Info("setGlobalWebhooks: webhook already exists, skipping",
+					"org", org, "name", name)
+				counter.Success()
+				if w != nil {
+					_ = w.WriteOne(common.EnrichRaw(hook.Data, map[string]any{
+						"sonarcloud_org_key": org,
+						"was_preexisting":    true,
+					}))
+				}
+				continue
+			}
+			err := e.Cloud.Webhooks.Create(ctx, cloud.CreateWebhookParams{
+				Organization: org,
+				Name:         name,
+				URL:          urlStr,
+			})
+			if err != nil {
+				counter.Fail()
+				logAPIWarn(e.Logger, "setGlobalWebhooks failed", err,
+					"org", org, "name", name, "url", urlStr)
+			} else {
+				counter.Success()
+			}
+			if w != nil {
+				_ = w.WriteOne(common.EnrichRaw(hook.Data, map[string]any{
+					"sonarcloud_org_key": org,
+				}))
+			}
+		}
+	}
+	counter.LogSummary(e.Logger)
+	return nil
 }
