@@ -34,8 +34,8 @@ func GeneratePluginMarkdown(dir string, mapping structure.ExtractMapping, idMap 
 	}
 	md := report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Plugin Name", "name"}, {"Description", "description"},
-			{"Version", "version"}, {"Home Page URL", "homepage_url"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Plugin Name", Key: "name"}, {Header: "Description", Key: "description"},
+			{Header: "Version", Key: "version"}, {Header: "Home Page URL", Key: "homepage_url"},
 		},
 		rows,
 		report.WithTitle("Installed Plugins", 2),

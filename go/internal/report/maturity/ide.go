@@ -16,7 +16,7 @@ func GenerateIDEMarkdown(users map[string][]map[string]any) string {
 		}
 	}
 	return report.GenerateSection(
-		[]report.Column{{"Total SonarLint Users", "total"}, {"Active SonarLint Users (30d)", "active"}},
+		[]report.Column{{Header: "Total SonarLint Users", Key: "total"}, {Header: "Active SonarLint Users (30d)", Key: "active"}},
 		[]map[string]any{{"total": total, "active": active}},
 		report.WithTitle("IDE Integration", 3),
 	)

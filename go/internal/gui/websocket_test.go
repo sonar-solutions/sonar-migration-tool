@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -102,8 +103,20 @@ func TestHubDispatchCancelWizard(t *testing.T) {
 
 func TestHubDispatchPromptResponse(t *testing.T) {
 	ctx := context.Background()
+	var mu sync.Mutex
 	var sentMsgs []ServerMessage
-	sendFn := func(msg ServerMessage) { sentMsgs = append(sentMsgs, msg) }
+	sendFn := func(msg ServerMessage) {
+		mu.Lock()
+		sentMsgs = append(sentMsgs, msg)
+		mu.Unlock()
+	}
+	snapshot := func() []ServerMessage {
+		mu.Lock()
+		defer mu.Unlock()
+		cp := make([]ServerMessage, len(sentMsgs))
+		copy(cp, sentMsgs)
+		return cp
+	}
 	wp := NewWebPrompter(ctx, sendFn)
 	hub := NewHub(wp)
 
@@ -121,10 +134,11 @@ func TestHubDispatchPromptResponse(t *testing.T) {
 
 	// Wait for prompt to be sent, get the ID.
 	time.Sleep(30 * time.Millisecond)
-	if len(sentMsgs) == 0 {
+	msgs := snapshot()
+	if len(msgs) == 0 {
 		t.Fatal("no prompt sent")
 	}
-	promptID := sentMsgs[0].ID
+	promptID := msgs[0].ID
 
 	// Respond via WebSocket.
 	resp, _ := json.Marshal(ClientMessage{

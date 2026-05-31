@@ -73,9 +73,9 @@ func GenerateServerMarkdown(dir string, mapping structure.ExtractMapping) (strin
 
 	md := report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Url", "url"}, {"Version", "version"},
-			{"Projects", "project_count"}, {"Lines of Code", "lines_of_code"},
-			{"Users", "users"}, {"SAST Configured", "sast_configured"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Url", Key: "url"}, {Header: "Version", Key: "version"},
+			{Header: "Projects", Key: "project_count"}, {Header: "Lines of Code", Key: "lines_of_code"},
+			{Header: "Users", Key: "users"}, {Header: "SAST Configured", Key: "sast_configured"},
 		},
 		details,
 		report.WithTitle("Server Details", 2),

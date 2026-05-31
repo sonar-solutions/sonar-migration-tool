@@ -3,6 +3,7 @@ package extract
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -56,7 +57,7 @@ func TestLoadExtractConfigFileShapes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LoadExtractConfigFile(%s): %v", tc.file, err)
 			}
-			if got != tc.want {
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("ExtractConfig mismatch\n got=%+v\nwant=%+v", got, tc.want)
 			}
 		})
@@ -109,7 +110,7 @@ func TestLoadExtractConfigFileSnakeCaseFields(t *testing.T) {
 		TargetTask:         "getRules",
 		IncludeScanHistory: true,
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("snake_case round-trip mismatch\n got=%+v\nwant=%+v", got, want)
 	}
 }

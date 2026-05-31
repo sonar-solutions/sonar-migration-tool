@@ -120,10 +120,10 @@ func GenerateProfileMarkdown(dir string, mapping structure.ExtractMapping, idMap
 
 	active := report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Language", "language"}, {"Quality Profile Name", "name"},
-			{"Parent Profile", "parent"}, {"Default Profile", "is_default"}, {"Total Rules", "rule_count"},
-			{"Template Rules", "template_rules"}, {"Rules from 3rd party plugins", "plugin_rules"},
-			{"# of Projects using", "project_count"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Language", Key: "language"}, {Header: "Quality Profile Name", Key: "name"},
+			{Header: "Parent Profile", Key: "parent"}, {Header: "Default Profile", Key: "is_default"}, {Header: "Total Rules", Key: "rule_count"},
+			{Header: "Template Rules", Key: "template_rules"}, {Header: "Rules from 3rd party plugins", Key: "plugin_rules"},
+			{Header: "# of Projects using", Key: "project_count"},
 		},
 		profiles,
 		report.WithTitle("Quality Profiles", 2),
@@ -138,9 +138,9 @@ func GenerateProfileMarkdown(dir string, mapping structure.ExtractMapping, idMap
 
 	inactive := report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Language", "language"}, {"Quality Profile Name", "name"},
-			{"Parent Profile", "parent"}, {"Total Rules", "rule_count"},
-			{"Template Rules", "template_rules"}, {"Rules from 3rd party plugins", "plugin_rules"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Language", Key: "language"}, {Header: "Quality Profile Name", Key: "name"},
+			{Header: "Parent Profile", Key: "parent"}, {Header: "Total Rules", Key: "rule_count"},
+			{Header: "Template Rules", Key: "template_rules"}, {Header: "Rules from 3rd party plugins", Key: "plugin_rules"},
 		},
 		profiles,
 		report.WithTitle("Quality Profiles", 2),

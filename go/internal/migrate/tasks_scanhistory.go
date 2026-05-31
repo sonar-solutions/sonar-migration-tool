@@ -152,6 +152,16 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 		return &importResult{Status: "skipped"}, nil
 	}
 
+	// Fix component line counts: use actual source line count instead of ncloc.
+	// The extract provides ncloc (code lines only), but the CE expects total
+	// source lines (including comments/blanks) for changeset consistency.
+	sourceLinesByKey := buildSourceLineCountMap(sources)
+	for i := range components {
+		if sl, ok := sourceLinesByKey[components[i].Key]; ok && sl > 0 {
+			components[i].Lines = int32(sl)
+		}
+	}
+
 	// Fetch SC quality profiles (CloudVoyager uses SC profile keys, not SQ keys).
 	// The CE validates that qprofile keys in the metadata exist in the SC instance.
 	scProfileByLang := buildSCProfileMap(ctx, e, input.OrgKey)
@@ -177,7 +187,7 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 	}
 
 	now := time.Now()
-	changesets := buildChangesetMap(cr, components, now)
+	changesets := buildChangesetMap(cr, components, pbSources, now)
 
 	// Backdate changesets so each issue gets its original SonarQube creation date.
 	// Build a component-key-keyed alias map (same pointers) for BackdateChangesets.
@@ -556,16 +566,20 @@ func loadExtractedComponents(e *Executor, serverURL, serverKey, branch string) [
 // Rules from external/third-party repos are excluded from the report to
 // prevent CE processing errors.
 var sonarCloudRuleRepos = map[string]bool{
-	"common-java": true, "java": true, "squid": true,
+	"common-java": true, "java": true, "squid": true, "javabugs": true,
+	"javasecurity": true, "javaarchitecture": true,
 	"common-js": true, "javascript": true, "typescript": true,
-	"common-ts": true, "css": true, "web": true,
+	"common-ts": true, "css": true, "web": true, "Web": true,
+	"jssecurity": true, "tssecurity": true,
+	"jsarchitecture": true, "tsarchitecture": true,
 	"common-py": true, "python": true, "pythonbugs": true,
+	"pythonenterprise": true, "pythonsecurity": true,
 	"common-cs": true, "csharpsquid": true, "roslyn.sonaranalyzer.security.cs": true,
-	"common-vbnet": true, "vbnet": true,
-	"common-kotlin": true, "kotlin": true,
-	"common-ruby": true, "ruby": true,
+	"common-vbnet": true, "vbnet": true, "vbnetsecurity": true, "vb": true,
+	"common-kotlin": true, "kotlin": true, "kotlinsecurity": true,
+	"common-ruby": true, "ruby": true, "rubydre": true,
 	"common-scala": true, "scala": true,
-	"common-go": true, "go": true,
+	"common-go": true, "go": true, "godre": true, "gosecurity": true,
 	"common-php": true, "php": true, "phpsecurity": true,
 	"common-swift": true, "swift": true,
 	"common-c": true, "c": true, "cpp": true, "common-cpp": true,
@@ -574,10 +588,15 @@ var sonarCloudRuleRepos = map[string]bool{
 	"common-html": true, "html": true,
 	"common-text": true, "text": true, "secrets": true,
 	"plsql": true, "tsql": true, "abap": true, "cobol": true, "rpg": true,
-	"flex": true, "pli": true, "apex": true, "cloudformation": true,
-	"terraform": true, "docker": true, "kubernetes": true,
-	"azureresourcemanager": true, "ipython": true,
-	"jssecurity": true, "tssecurity": true, "javasecurity": true,
+	"flex": true, "pli": true, "apex": true, "apexdre": true,
+	"cloudformation": true, "terraform": true, "docker": true, "kubernetes": true,
+	"azureresourcemanager": true, "ipython": true, "ipythonenterprise": true,
+	"shell": true, "shelldre": true,
+	"dart": true, "rust": true,
+	"ansible": true, "githubactions": true,
+	"groovydre": true,
+	"json": true, "yaml": true,
+	"jcl": true,
 }
 
 func loadExtractedActiveRules(e *Executor, serverURL, serverKey string) []scanreport.ActiveRuleInput {
@@ -680,11 +699,22 @@ func remapActiveRuleProfiles(rules []scanreport.ActiveRuleInput, scProfileByLang
 	}
 }
 
-func buildChangesetMap(cr *scanreport.ComponentRef, components []scanreport.ComponentInput, date time.Time) map[int32]*pb.Changesets {
+func buildChangesetMap(cr *scanreport.ComponentRef, components []scanreport.ComponentInput, pbSources map[int32]string, date time.Time) map[int32]*pb.Changesets {
 	changesets := make(map[int32]*pb.Changesets)
 	for _, comp := range components {
-		if ref, ok := cr.Refs()[comp.Key]; ok && comp.Lines > 0 {
-			changesets[ref] = scanreport.BuildDefaultChangesets(ref, int(comp.Lines), date)
+		ref, ok := cr.Refs()[comp.Key]
+		if !ok {
+			continue
+		}
+		lineCount := 0
+		if src, hasSrc := pbSources[ref]; hasSrc && src != "" {
+			lineCount = strings.Count(src, "\n") + 1
+		}
+		if lineCount == 0 {
+			lineCount = int(comp.Lines)
+		}
+		if lineCount > 0 {
+			changesets[ref] = scanreport.BuildDefaultChangesets(ref, lineCount, date)
 		}
 	}
 	return changesets
@@ -702,6 +732,16 @@ func toExtractedIssues(issues []scanreport.IssueInput) []scanreport.ExtractedIss
 		})
 	}
 	return result
+}
+
+func buildSourceLineCountMap(sources []sourceRecord) map[string]int {
+	m := make(map[string]int, len(sources))
+	for _, s := range sources {
+		if s.Source != "" {
+			m[s.Component] = strings.Count(s.Source, "\n") + 1
+		}
+	}
+	return m
 }
 
 // buildSourceKeySet returns a set of component keys that have extracted source code.
