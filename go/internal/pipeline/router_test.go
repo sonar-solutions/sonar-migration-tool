@@ -1,6 +1,12 @@
 package pipeline
 
-import "testing"
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 func TestParseVersion(t *testing.T) {
 	tests := []struct {
@@ -146,4 +152,85 @@ func TestSQ2025StatusValues(t *testing.T) {
 			t.Error("SQ2025 IssueStatusValues must NOT include IN_SANDBOX (it is detected in results, not queried)")
 		}
 	}
+}
+
+// TestDetectVersionString covers the three execution paths of the HTTP entry
+// point for version detection: happy path, non-200 response, and network failure.
+func TestDetectVersionString(t *testing.T) {
+	t.Run("happy path strips trailing whitespace", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("10.4.1.87632\n"))
+		}))
+		defer srv.Close()
+		got, err := detectVersionString(context.Background(), newTestClient(t, srv.URL))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "10.4.1.87632" {
+			t.Errorf("got %q, want %q", got, "10.4.1.87632")
+		}
+	})
+
+	t.Run("non-200 status returns error containing status code", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		}))
+		defer srv.Close()
+		_, err := detectVersionString(context.Background(), newTestClient(t, srv.URL))
+		if err == nil {
+			t.Fatal("expected error for 401 response, got nil")
+		}
+		if !strings.Contains(err.Error(), "HTTP 401") {
+			t.Errorf("error should mention 'HTTP 401', got: %v", err)
+		}
+	})
+
+	t.Run("network failure returns wrapped error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		srv.Close() // closed before the request is made
+		_, err := detectVersionString(context.Background(), newTestClient(t, srv.URL))
+		if err == nil {
+			t.Fatal("expected error from closed server, got nil")
+		}
+	})
+}
+
+// TestDetectPipeline exercises the full DetectPipeline path including the HTTP
+// call, version parsing, pipeline selection, and the slog.Info call on success.
+func TestDetectPipeline(t *testing.T) {
+	t.Run("returns correct pipeline for version string", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("10.4.1.87632"))
+		}))
+		defer srv.Close()
+		p, err := DetectPipeline(context.Background(), newTestClient(t, srv.URL))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if p.Version() != "sq-10.4" {
+			t.Errorf("got pipeline %q, want %q", p.Version(), "sq-10.4")
+		}
+	})
+
+	t.Run("propagates version fetch error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+		}))
+		defer srv.Close()
+		_, err := DetectPipeline(context.Background(), newTestClient(t, srv.URL))
+		if err == nil {
+			t.Fatal("expected error for non-200 version response, got nil")
+		}
+	})
+
+	t.Run("propagates unsupported version error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("9.8.0"))
+		}))
+		defer srv.Close()
+		_, err := DetectPipeline(context.Background(), newTestClient(t, srv.URL))
+		if err == nil {
+			t.Fatal("expected error for unsupported version 9.8, got nil")
+		}
+	})
 }

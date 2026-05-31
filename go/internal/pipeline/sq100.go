@@ -11,11 +11,16 @@ import (
 //     FALSE_POSITIVE and ACCEPTED are resolutions, not statuses)
 //   - Batches metricKeys at 15 per request
 //   - Native Clean Code attributes in API responses (no Cloud enrichment needed)
+//
+// ExtractHotspots, ExtractGroups, and EnrichCleanCode are promoted from
+// standardPipeline (shared across all pipeline versions).
 type SQ100Pipeline struct {
-	client *sqapi.Client
+	standardPipeline
 }
 
-func newSQ100(client *sqapi.Client) *SQ100Pipeline { return &SQ100Pipeline{client: client} }
+func newSQ100(client *sqapi.Client) *SQ100Pipeline {
+	return &SQ100Pipeline{standardPipeline: standardPipeline{client: client}}
+}
 
 var _ Pipeline = (*SQ100Pipeline)(nil)
 
@@ -33,21 +38,7 @@ func (p *SQ100Pipeline) ExtractIssues(ctx context.Context, projectKey string) ([
 	return fetchAllIssues(ctx, p.client, projectKey, p.IssueSearchParam(), p.IssueStatusValues())
 }
 
-func (p *SQ100Pipeline) ExtractHotspots(ctx context.Context, projectKey string) ([]Hotspot, error) {
-	return fetchAllHotspots(ctx, p.client, projectKey)
-}
-
 func (p *SQ100Pipeline) ExtractMetrics(ctx context.Context, projectKey string, metricKeys []string) ([]ComponentMetrics, error) {
 	_, batchSize := p.SupportsMetricBatching()
 	return fetchAllMetrics(ctx, p.client, projectKey, metricKeys, batchSize)
-}
-
-func (p *SQ100Pipeline) ExtractGroups(ctx context.Context) ([]Group, error) {
-	return fetchAllGroups(ctx, p.client)
-}
-
-// EnrichCleanCode is a no-op for SQ 10.0+: Clean Code attributes are natively
-// present in API responses and do not require Cloud-side enrichment.
-func (p *SQ100Pipeline) EnrichCleanCode(_ context.Context, issues []Issue, _ *sqapi.Client) ([]Issue, error) {
-	return issues, nil
 }

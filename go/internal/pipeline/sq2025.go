@@ -17,11 +17,16 @@ import (
 //   - No metric-key batching (all keys sent in a single request)
 //   - Uses /api/v2/authorizations/groups with fallback to standard API
 //   - IN_SANDBOX issues are detected in results, logged as warnings, and skipped
+//
+// ExtractHotspots and EnrichCleanCode are promoted from standardPipeline.
+// ExtractGroups overrides standardPipeline with the V2 API implementation.
 type SQ2025Pipeline struct {
-	client *sqapi.Client
+	standardPipeline
 }
 
-func newSQ2025(client *sqapi.Client) *SQ2025Pipeline { return &SQ2025Pipeline{client: client} }
+func newSQ2025(client *sqapi.Client) *SQ2025Pipeline {
+	return &SQ2025Pipeline{standardPipeline: standardPipeline{client: client}}
+}
 
 var _ Pipeline = (*SQ2025Pipeline)(nil)
 
@@ -56,10 +61,6 @@ func (p *SQ2025Pipeline) ExtractIssues(ctx context.Context, projectKey string) (
 		filtered = append(filtered, iss)
 	}
 	return filtered, nil
-}
-
-func (p *SQ2025Pipeline) ExtractHotspots(ctx context.Context, projectKey string) ([]Hotspot, error) {
-	return fetchAllHotspots(ctx, p.client, projectKey)
 }
 
 // ExtractMetrics sends all metricKeys in a single request (no batching for
@@ -132,6 +133,3 @@ func (p *SQ2025Pipeline) fetchGroupsV2Page(ctx context.Context, page, pageSize i
 	return groups, result.Page.Total, nil
 }
 
-func (p *SQ2025Pipeline) EnrichCleanCode(_ context.Context, issues []Issue, _ *sqapi.Client) ([]Issue, error) {
-	return issues, nil
-}

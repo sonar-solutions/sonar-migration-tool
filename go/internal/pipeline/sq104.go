@@ -14,11 +14,16 @@ import (
 // Note: "issueStatuses" was introduced in SQ 10.2 but became the recommended
 // parameter in 10.4. For simplicity, the SQ 10.0-10.3 pipeline uses the legacy
 // "statuses" parameter throughout that range.
+//
+// ExtractHotspots, ExtractGroups, and EnrichCleanCode are promoted from
+// standardPipeline (shared across all pipeline versions).
 type SQ104Pipeline struct {
-	client *sqapi.Client
+	standardPipeline
 }
 
-func newSQ104(client *sqapi.Client) *SQ104Pipeline { return &SQ104Pipeline{client: client} }
+func newSQ104(client *sqapi.Client) *SQ104Pipeline {
+	return &SQ104Pipeline{standardPipeline: standardPipeline{client: client}}
+}
 
 var _ Pipeline = (*SQ104Pipeline)(nil)
 
@@ -36,19 +41,7 @@ func (p *SQ104Pipeline) ExtractIssues(ctx context.Context, projectKey string) ([
 	return fetchAllIssues(ctx, p.client, projectKey, p.IssueSearchParam(), p.IssueStatusValues())
 }
 
-func (p *SQ104Pipeline) ExtractHotspots(ctx context.Context, projectKey string) ([]Hotspot, error) {
-	return fetchAllHotspots(ctx, p.client, projectKey)
-}
-
 func (p *SQ104Pipeline) ExtractMetrics(ctx context.Context, projectKey string, metricKeys []string) ([]ComponentMetrics, error) {
 	_, batchSize := p.SupportsMetricBatching()
 	return fetchAllMetrics(ctx, p.client, projectKey, metricKeys, batchSize)
-}
-
-func (p *SQ104Pipeline) ExtractGroups(ctx context.Context) ([]Group, error) {
-	return fetchAllGroups(ctx, p.client)
-}
-
-func (p *SQ104Pipeline) EnrichCleanCode(_ context.Context, issues []Issue, _ *sqapi.Client) ([]Issue, error) {
-	return issues, nil
 }
