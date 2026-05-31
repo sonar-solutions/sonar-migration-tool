@@ -6,14 +6,16 @@ import (
 	"os"
 )
 
-// configFileShape is the union of the three documented config-file formats
+// configFileShape is the union of the four documented config-file formats
 // (see examples/config-migrate.example.json, examples/config.example.json,
-// and examples/migration-config.example.json). Issue #176.
+// examples/migration-config.example.json, and examples/config.unified.example.json).
+// Issues #176, #266.
 //
 // Detection at parse time:
-//   - sonarcloud present -> shape 3 (side-sectioned)
-//   - migrate present    -> shape 2 (command-sectioned)
-//   - else               -> shape 1 (flat)
+//   - source or target present -> shape 4 (unified)
+//   - sonarcloud present       -> shape 3 (side-sectioned)
+//   - migrate present          -> shape 2 (command-sectioned)
+//   - else                     -> shape 1 (flat)
 type configFileShape struct {
 	// Shape 1 (flat) fields. Also reused inside Shape 2's "migrate" object.
 	Token              string `json:"token"`
@@ -22,6 +24,7 @@ type configFileShape struct {
 	Edition            string `json:"edition"`
 	ExportDirectory    string `json:"export_directory"`
 	Concurrency        int    `json:"concurrency"`
+	Timeout            int    `json:"timeout"`
 	RunID              string `json:"run_id"`
 	TargetTask         string `json:"target_task"`
 	SkipProfiles       bool   `json:"skip_profiles"`
@@ -35,6 +38,46 @@ type configFileShape struct {
 	// migrate/reset only consume SonarCloud-side values.
 	SonarCloud *sonarCloudBlock `json:"sonarcloud"`
 	Settings   *settingsBlock   `json:"settings"`
+
+	// Shape 4 (unified, #266). Migrate / reset pull from the "target"
+	// block with top-level concurrency / timeout / export_directory
+	// as defaults. The "source" block is ignored.
+	Source *unifiedSourceBlock `json:"source"`
+	Target *unifiedTargetBlock `json:"target"`
+}
+
+// unifiedSourceBlock is here only so the unified shape parses
+// without dropping fields. Migrate ignores everything in it.
+type unifiedSourceBlock struct {
+	URL             string `json:"url"`
+	Token           string `json:"token"`
+	ExtractType     string `json:"extract_type"`
+	Concurrency     int    `json:"concurrency"`
+	Timeout         int    `json:"timeout"`
+	PEMFilePath     string `json:"pem_file_path"`
+	KeyFilePath     string `json:"key_file_path"`
+	CertPassword    string `json:"cert_password"`
+	TargetTask      string `json:"target_task"`
+	ExtractID       string `json:"extract_id"`
+	EnterpriseKey   string `json:"enterprise_key"`
+	OrganizationKey string `json:"organization_key"`
+	Edition         string `json:"edition"`
+	RunID           string `json:"run_id"`
+}
+
+// unifiedTargetBlock carries the SonarQube Cloud-side credentials for
+// the unified config shape (#266). organization_key is provisional
+// for future SQC-org-to-SQC-org migration and is ignored for now.
+type unifiedTargetBlock struct {
+	URL             string `json:"url"`
+	Token           string `json:"token"`
+	EnterpriseKey   string `json:"enterprise_key"`
+	Edition         string `json:"edition"`
+	Concurrency     int    `json:"concurrency"`
+	Timeout         int    `json:"timeout"`
+	RunID           string `json:"run_id"`
+	TargetTask      string `json:"target_task"`
+	OrganizationKey string `json:"organization_key"` // provisional, ignored
 }
 
 type sonarCloudBlock struct {
@@ -83,6 +126,26 @@ func parseConfigFile(path string) (configFileShape, error) {
 
 func (s configFileShape) toMigrateConfig() MigrateConfig {
 	switch {
+	case s.Source != nil || s.Target != nil:
+		// #266 unified shape. Migrate pulls from the "target"
+		// sub-object; top-level concurrency / timeout /
+		// export_directory supply defaults. The "source" block is
+		// ignored. organization_key is provisional and ignored.
+		var cfg MigrateConfig
+		if s.Target != nil {
+			cfg.URL = s.Target.URL
+			cfg.Token = s.Target.Token
+			cfg.EnterpriseKey = s.Target.EnterpriseKey
+			cfg.Edition = s.Target.Edition
+			cfg.RunID = s.Target.RunID
+			cfg.TargetTask = s.Target.TargetTask
+			cfg.Concurrency = s.Target.Concurrency
+		}
+		if cfg.Concurrency == 0 {
+			cfg.Concurrency = s.Concurrency
+		}
+		cfg.ExportDirectory = s.ExportDirectory
+		return cfg
 	case s.SonarCloud != nil:
 		return s.SonarCloud.toMigrateConfig(s.Settings)
 	case s.Migrate != nil:

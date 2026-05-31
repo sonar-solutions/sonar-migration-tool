@@ -153,3 +153,88 @@ func TestLoadConfigFileErrors(t *testing.T) {
 		}
 	})
 }
+
+// #266 unified shape: migrate pulls from "target", with top-level
+// concurrency / export_directory as defaults. "source" is ignored.
+func TestLoadMigrateConfigFileUnifiedShape(t *testing.T) {
+	body := `{
+  "concurrency": 15,
+  "timeout": 90,
+  "export_directory": "./out",
+  "source": {
+    "url": "ignored-by-migrate",
+    "token": "ignored"
+  },
+  "target": {
+    "url": "https://sonarcloud.io/",
+    "token": "sqc_token",
+    "enterprise_key": "ent-key",
+    "edition": "enterprise",
+    "run_id": "2026-05-31-01",
+    "target_task": "createProjects"
+  }
+}`
+	dir := t.TempDir()
+	path := dir + "/unified.json"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadMigrateConfigFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.URL != "https://sonarcloud.io/" || cfg.Token != "sqc_token" {
+		t.Errorf("URL/Token: %+v", cfg)
+	}
+	if cfg.EnterpriseKey != "ent-key" || cfg.Edition != "enterprise" {
+		t.Errorf("ent/edition: %+v", cfg)
+	}
+	if cfg.ExportDirectory != "./out" || cfg.Concurrency != 15 {
+		t.Errorf("globals: %+v", cfg)
+	}
+	if cfg.RunID != "2026-05-31-01" || cfg.TargetTask != "createProjects" {
+		t.Errorf("target fields: %+v", cfg)
+	}
+}
+
+// Target block overrides top-level concurrency when set.
+func TestLoadMigrateConfigFileUnifiedShape_TargetOverridesGlobals(t *testing.T) {
+	body := `{
+  "concurrency": 10,
+  "target": {
+    "url": "u", "token": "t",
+    "concurrency": 25
+  }
+}`
+	dir := t.TempDir()
+	path := dir + "/unified.json"
+	os.WriteFile(path, []byte(body), 0o644)
+	cfg, _ := LoadMigrateConfigFile(path)
+	if cfg.Concurrency != 25 {
+		t.Errorf("override: concurrency=%d", cfg.Concurrency)
+	}
+}
+
+// LoadResetConfigFile must also recognise the unified shape and pull
+// from "target".
+func TestLoadResetConfigFileUnifiedShape(t *testing.T) {
+	body := `{
+  "export_directory": "./out",
+  "target": {
+    "url": "https://sonarcloud.io/",
+    "token": "sqc_token",
+    "enterprise_key": "ent-key"
+  }
+}`
+	dir := t.TempDir()
+	path := dir + "/unified.json"
+	os.WriteFile(path, []byte(body), 0o644)
+	cfg, err := LoadResetConfigFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.URL != "https://sonarcloud.io/" || cfg.Token != "sqc_token" ||
+		cfg.EnterpriseKey != "ent-key" || cfg.ExportDirectory != "./out" {
+		t.Errorf("reset cfg: %+v", cfg)
+	}
+}
