@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sonar-solutions/sonar-migration-tool/schemas/config.schema.json",
+  "title": "sonar-migration-tool unified configuration",
+  "description": "Unified config file shape consumed by every sonar-migration-tool command (extract, migrate, reset, predictive-report). Issue #266.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "concurrency": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 10,
+      "description": "Default max parallel HTTP calls. Overridden per command by source.concurrency / target.concurrency."
+    },
+    "timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "default": 60,
+      "description": "Default HTTP request timeout in seconds. Overridden per command by source.timeout / target.timeout."
+    },
+    "export_directory": {
+      "type": "string",
+      "default": "./migration-files",
+      "description": "Root directory for extract / migrate output."
+    },
+    "source": {
+      "$ref": "#/$defs/sourceBlock",
+      "description": "SonarQube Server connection + extract-time options. Consumed by `extract` (and ignored by `migrate` / `reset`)."
+    },
+    "target": {
+      "$ref": "#/$defs/targetBlock",
+      "description": "SonarQube Cloud connection + migrate/reset-time options. Consumed by `migrate` and `reset` (and ignored by `extract`)."
+    }
+  },
+  "anyOf": [
+    { "required": ["source"] },
+    { "required": ["target"] }
+  ],
+  "$defs": {
+    "edition": {
+      "type": "string",
+      "enum": ["enterprise", "team", "foss"],
+      "default": "enterprise"
+    },
+    "sourceBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "token"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "SonarQube Server base URL. Mandatory."
+        },
+        "token": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SonarQube Server user token. Mandatory."
+        },
+        "extract_type": {
+          "type": "string",
+          "default": "all",
+          "description": "Extract scope. \"all\" extracts every available task; otherwise the name of a specific extract task."
+        },
+        "concurrency": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Override the top-level concurrency for extract calls."
+        },
+        "timeout": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Override the top-level timeout for extract HTTP calls."
+        },
+        "pem_file_path": {
+          "type": ["string", "null"],
+          "description": "Path to a client-side certificate PEM file for mTLS to SonarQube Server."
+        },
+        "key_file_path": {
+          "type": ["string", "null"],
+          "description": "Path to the private key matching pem_file_path."
+        },
+        "cert_password": {
+          "type": ["string", "null"],
+          "description": "Password for the client certificate, if any."
+        },
+        "target_task": {
+          "type": ["string", "null"],
+          "description": "Stop extract at a specific task (all its dependencies are still run)."
+        },
+        "extract_id": {
+          "type": ["string", "null"],
+          "description": "Reuse an existing extract directory ID instead of generating a new one."
+        },
+        "enterprise_key": {
+          "type": ["string", "null"],
+          "description": "PROVISIONAL — ignored today; reserved for future SQC-to-SQC migration source side."
+        },
+        "organization_key": {
+          "type": ["string", "null"],
+          "description": "PROVISIONAL — ignored today; reserved for future SQC-to-SQC migration source side."
+        },
+        "edition": {
+          "$ref": "#/$defs/edition",
+          "description": "PROVISIONAL — ignored today; the SQS edition is read live from /api/navigation/global."
+        },
+        "run_id": {
+          "type": ["string", "null"],
+          "description": "Ignored by extract (kept here for shape symmetry with target)."
+        }
+      }
+    },
+    "targetBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "token"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "SonarQube Cloud base URL (e.g. https://sonarcloud.io/). Mandatory."
+        },
+        "token": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SonarQube Cloud user token. Mandatory."
+        },
+        "enterprise_key": {
+          "type": ["string", "null"],
+          "description": "SonarQube Cloud enterprise key used to scope create/list/delete enterprise endpoints."
+        },
+        "edition": {
+          "$ref": "#/$defs/edition",
+          "description": "SonarQube Cloud edition used to gate edition-specific tasks."
+        },
+        "concurrency": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Override the top-level concurrency for migrate/reset calls."
+        },
+        "timeout": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Override the top-level timeout for migrate/reset HTTP calls."
+        },
+        "run_id": {
+          "type": ["string", "null"],
+          "description": "Resume an in-progress migrate run by ID. Null starts a fresh run."
+        },
+        "target_task": {
+          "type": ["string", "null"],
+          "description": "Stop migrate at a specific task (all its dependencies are still run)."
+        },
+        "organization_key": {
+          "type": ["string", "null"],
+          "description": "PROVISIONAL — ignored today; reserved for future SQC-org-to-SQC-org migration target side."
+        }
+      }
+    }
+  }
+}
