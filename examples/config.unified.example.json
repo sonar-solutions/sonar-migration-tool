@@ -1,0 +1,31 @@
+{
+  "concurrency": 10,
+  "timeout": 60,
+  "export_directory": "./migration-files",
+  "source": {
+    "url": "https://sonarqube.example.com",
+    "token": "squ_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "extract_type": "all",
+    "concurrency": 10,
+    "timeout": 60,
+    "pem_file_path": null,
+    "key_file_path": null,
+    "cert_password": null,
+    "target_task": null,
+    "extract_id": null,
+    "enterprise_key": null,
+    "organization_key": null,
+    "edition": "enterprise"
+  },
+  "target": {
+    "url": "https://sonarcloud.io/",
+    "token": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "enterprise_key": null,
+    "edition": "enterprise",
+    "concurrency": 10,
+    "timeout": 60,
+    "run_id": null,
+    "target_task": null,
+    "organization_key": null
+  }
+}

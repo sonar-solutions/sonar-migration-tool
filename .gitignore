@@ -39,8 +39,10 @@ sonarqube-export/
 *migration-files*
 files/
 
-# Config files with secrets (keep example files in examples/)
+# Config files with secrets (keep example files in examples/ and
+# JSON Schemas under schemas/)
 !examples/*.example.json
+!schemas/*.json
 config.json
 *-config.json
 my-*.json

@@ -147,3 +147,67 @@ func TestLoadExtractConfigFileErrors(t *testing.T) {
 		}
 	})
 }
+
+// #266 unified shape: extract pulls from "source", with top-level
+// concurrency / timeout / export_directory as defaults.
+func TestLoadExtractConfigFileUnifiedShape(t *testing.T) {
+	body := `{
+  "concurrency": 12,
+  "timeout": 90,
+  "export_directory": "./out",
+  "source": {
+    "url": "https://sq.example.com",
+    "token": "squ_token",
+    "extract_type": "all",
+    "pem_file_path": "/pem",
+    "extract_id": "extract-7",
+    "target_task": "getProjects"
+  },
+  "target": {
+    "url": "ignored-by-extract",
+    "token": "ignored"
+  }
+}`
+	dir := t.TempDir()
+	path := dir + "/unified.json"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadExtractConfigFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.URL != "https://sq.example.com" || cfg.Token != "squ_token" {
+		t.Errorf("URL/Token: %+v", cfg)
+	}
+	if cfg.ExportDirectory != "./out" {
+		t.Errorf("ExportDirectory: %q", cfg.ExportDirectory)
+	}
+	if cfg.Concurrency != 12 || cfg.Timeout != 90 {
+		t.Errorf("top-level defaults: concurrency=%d timeout=%d", cfg.Concurrency, cfg.Timeout)
+	}
+	if cfg.ExtractType != "all" || cfg.PEMFilePath != "/pem" ||
+		cfg.ExtractID != "extract-7" || cfg.TargetTask != "getProjects" {
+		t.Errorf("source-block fields: %+v", cfg)
+	}
+}
+
+// Source block overrides top-level concurrency / timeout when set.
+func TestLoadExtractConfigFileUnifiedShape_SourceOverridesGlobals(t *testing.T) {
+	body := `{
+  "concurrency": 10,
+  "timeout": 60,
+  "source": {
+    "url": "u", "token": "t",
+    "concurrency": 25,
+    "timeout": 120
+  }
+}`
+	dir := t.TempDir()
+	path := dir + "/unified.json"
+	os.WriteFile(path, []byte(body), 0o644)
+	cfg, _ := LoadExtractConfigFile(path)
+	if cfg.Concurrency != 25 || cfg.Timeout != 120 {
+		t.Errorf("override: concurrency=%d timeout=%d", cfg.Concurrency, cfg.Timeout)
+	}
+}
