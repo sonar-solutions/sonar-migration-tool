@@ -401,30 +401,72 @@ curl -s -H "Authorization: Bearer ${SC_TOKEN}" "${SC_URL}/api/projects/search?or
   | jq '.components | length'
 ```
 
-### 2.5 — Record Baseline
+### 2.5 — Record Baseline (ALL Entity Types — Exhaustive)
 
-> **[PARALLEL AGENT SWARM — N agents]** Spawn one agent per row in the table below. All are independent API calls and run concurrently.
-> - **Agent — Project Count**: queries SQS total project count
-> - **Agent — Issue Count**: queries SQS issue count for test project
-> - **Agent — Hotspot Count**: queries SQS hotspot count for test project
-> - **Agent — Profile Count**: queries quality profile count
-> - **Agent — Gate Count**: queries quality gate count
-> - **Agent — Group Count**: queries user group count
-> - **Agent — User Count**: queries user count
-> - **(Add one agent per entity type relevant to your change)**
+> **[PARALLEL AGENT SWARM — 40+ agents]** Spawn one agent per row in the table below. ALL rows are mandatory — not a subset. All are independent API calls and run concurrently.
 
-Before running, record the source state so you have numbers to compare against:
+Before running, record the COMPLETE source state. **Every cell must have a number. No blank cells.** This baseline is your ground truth for Phase 4 verification.
 
-| Metric | SQS Value |
-|--------|-----------|
-| Total projects | ___ |
-| Total issues (for test project) | ___ |
-| Total hotspots (for test project) | ___ |
-| Quality profiles | ___ |
-| Quality gates | ___ |
-| Groups | ___ |
-| Users | ___ |
-| (entity types relevant to your change) | ___ |
+| # | Entity Type | SQS Baseline | API Query |
+|---|---|---|---|
+| 1 | Projects (total) | ___ | `/api/projects/search` → `.paging.total` |
+| 2 | Issues — Total (per project) | ___ | `/api/issues/search?projectKeys=X` → `.total` |
+| 3 | Issues — OPEN | ___ | `&statuses=OPEN` |
+| 4 | Issues — CONFIRMED | ___ | `&statuses=CONFIRMED` |
+| 5 | Issues — REOPENED | ___ | `&statuses=REOPENED` |
+| 6 | Issues — RESOLVED | ___ | `&statuses=RESOLVED` |
+| 7 | Issues — CLOSED | ___ | `&statuses=CLOSED` |
+| 8 | Issues — BLOCKER | ___ | `&severities=BLOCKER` |
+| 9 | Issues — CRITICAL | ___ | `&severities=CRITICAL` |
+| 10 | Issues — MAJOR | ___ | `&severities=MAJOR` |
+| 11 | Issues — MINOR | ___ | `&severities=MINOR` |
+| 12 | Issues — INFO | ___ | `&severities=INFO` |
+| 13 | Issues — BUG | ___ | `&types=BUG` |
+| 14 | Issues — VULNERABILITY | ___ | `&types=VULNERABILITY` |
+| 15 | Issues — CODE_SMELL | ___ | `&types=CODE_SMELL` |
+| 16 | Issues — FALSE-POSITIVE | ___ | `&resolutions=FALSE-POSITIVE` |
+| 17 | Issues — WONTFIX | ___ | `&resolutions=WONTFIX` |
+| 18 | Issues — FIXED | ___ | `&resolutions=FIXED` |
+| 19 | Issues with comments | ___ | Count issues where `.comments | length > 0` |
+| 20 | Issues with tags | ___ | Count issues where `.tags | length > 0` |
+| 21 | Issues with assignees | ___ | Count issues where `.assignee != null` |
+| 22 | Hotspots — Total (per project) | ___ | `/api/hotspots/search` → `.paging.total` |
+| 23 | Hotspots — TO_REVIEW | ___ | `&status=TO_REVIEW` |
+| 24 | Hotspots — REVIEWED | ___ | `&status=REVIEWED` |
+| 25 | Quality Profiles | ___ | `/api/qualityprofiles/search` → `.profiles | length` |
+| 26 | Profile Active Rules (per profile) | ___ | Per-profile `.activeRuleCount` |
+| 27 | Profile Defaults (per language) | ___ | `.isDefault == true` |
+| 28 | Profile Inheritance Chains | ___ | Count profiles with `.parentKey != null` |
+| 29 | Quality Gates | ___ | `/api/qualitygates/list` → `.qualitygates | length` |
+| 30 | Gate Conditions (per gate) | ___ | Per-gate `.conditions | length` |
+| 31 | Gate Default | ___ | `.isDefault == true` gate name |
+| 32 | Groups (non-built-in) | ___ | `/api/user_groups/search` → `.groups | length` |
+| 33 | Group Membership (per group) | ___ | `/api/user_groups/users` per group |
+| 34 | Permission Templates | ___ | `/api/permissions/search_templates` → count |
+| 35 | Template Permissions (per template × perm) | ___ | Per-template group count per permission |
+| 36 | Default Permission Template | ___ | Default template name |
+| 37 | Users | ___ | `/api/users/search` → `.users | length` |
+| 38 | Global Settings | ___ | `/api/settings/values` → `.settings | length` |
+| 39 | Project Settings (per project) | ___ | Per-project settings count |
+| 40 | New Code Periods — Global | ___ | Type + value |
+| 41 | New Code Periods — Per Project | ___ | Per-project type + value |
+| 42 | Custom Rules | ___ | `/api/rules/search` filtered for custom |
+| 43 | Project Permissions (per project × 6 perms) | ___ | Groups per permission per project |
+| 44 | ALM Bindings (per project) | ___ | `/api/alm_settings/get_binding` per project |
+| 45 | Portfolios | ___ | `/api/views/search` → count (Enterprise) |
+| 46 | Measures — ncloc (per project) | ___ | `/api/measures/component` |
+| 47 | Measures — coverage (per project) | ___ | `/api/measures/component` |
+| 48 | Measures — bugs (per project) | ___ | `/api/measures/component` |
+| 49 | Measures — vulnerabilities (per project) | ___ | `/api/measures/component` |
+| 50 | Measures — code_smells (per project) | ___ | `/api/measures/component` |
+| 51 | Measures — sqale_rating (per project) | ___ | `/api/measures/component` |
+| 52 | Measures — reliability_rating (per project) | ___ | `/api/measures/component` |
+| 53 | Measures — security_rating (per project) | ___ | `/api/measures/component` |
+| 54 | Webhooks (per project) | ___ | `/api/webhooks/list` |
+| 55 | Project Links (per project) | ___ | `/api/project_links/search` |
+| 56 | Main Branch Name (per project) | ___ | `/api/project_branches/list` |
+
+> **This baseline is your contract.** After migration, Phase 4 will compare every row against SC. Any mismatch that isn't a documented known limitation is a failure.
 
 ---
 
