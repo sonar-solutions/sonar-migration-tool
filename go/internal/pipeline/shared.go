@@ -7,11 +7,30 @@ import (
 )
 
 // standardPipeline is an embeddable struct that provides shared method
-// implementations for pipeline versions that use the standard groups API
-// and have no-op Clean Code enrichment (SQ 9.9, 10.0, 10.4, 2025).
-// SQ 2025 overrides ExtractGroups with the V2 API.
+// implementations for all pipeline versions. Query parameters and batching
+// configuration are set per-version in the constructor; extraction methods
+// are promoted and can be overridden (SQ 2025 overrides ExtractIssues and
+// ExtractGroups).
 type standardPipeline struct {
-	client *sqapi.Client
+	client            *sqapi.Client
+	issueSearchParam  string
+	issueStatusValues []string
+	metricBatchSize   int
+}
+
+func (s standardPipeline) IssueSearchParam() string   { return s.issueSearchParam }
+func (s standardPipeline) IssueStatusValues() []string { return s.issueStatusValues }
+
+func (s standardPipeline) SupportsMetricBatching() (bool, int) {
+	return s.metricBatchSize > 0, s.metricBatchSize
+}
+
+func (s standardPipeline) ExtractIssues(ctx context.Context, projectKey string) ([]Issue, error) {
+	return fetchAllIssues(ctx, s.client, projectKey, s.issueSearchParam, s.issueStatusValues)
+}
+
+func (s standardPipeline) ExtractMetrics(ctx context.Context, projectKey string, metricKeys []string) ([]ComponentMetrics, error) {
+	return fetchAllMetrics(ctx, s.client, projectKey, metricKeys, s.metricBatchSize)
 }
 
 // ExtractHotspots paginates /api/hotspots/search and is identical across all

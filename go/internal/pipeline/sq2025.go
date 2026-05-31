@@ -18,39 +18,30 @@ import (
 //   - Uses /api/v2/authorizations/groups with fallback to standard API
 //   - IN_SANDBOX issues are detected in results, logged as warnings, and skipped
 //
-// ExtractHotspots and EnrichCleanCode are promoted from standardPipeline.
-// ExtractGroups overrides standardPipeline with the V2 API implementation.
+// ExtractHotspots, ExtractMetrics, and EnrichCleanCode are promoted from
+// standardPipeline. ExtractIssues and ExtractGroups are overridden.
 type SQ2025Pipeline struct {
 	standardPipeline
 }
 
 func newSQ2025(client *sqapi.Client) *SQ2025Pipeline {
-	return &SQ2025Pipeline{standardPipeline: standardPipeline{client: client}}
+	return &SQ2025Pipeline{standardPipeline: standardPipeline{
+		client:            client,
+		issueSearchParam:  "issueStatuses",
+		issueStatusValues: []string{"OPEN", "CONFIRMED", "FALSE_POSITIVE", "ACCEPTED", "FIXED"},
+		metricBatchSize:   0,
+	}}
 }
 
 var _ Pipeline = (*SQ2025Pipeline)(nil)
 
 func (p *SQ2025Pipeline) Version() string { return "sq-2025" }
 
-func (p *SQ2025Pipeline) IssueSearchParam() string { return "issueStatuses" }
-
-// IssueStatusValues returns the queryable issue statuses. IN_SANDBOX is NOT
-// included because it may not be a valid search value; issues with that status
-// are detected in results and handled by ExtractIssues.
-func (p *SQ2025Pipeline) IssueStatusValues() []string {
-	return []string{"OPEN", "CONFIRMED", "FALSE_POSITIVE", "ACCEPTED", "FIXED"}
-}
-
-// SupportsMetricBatching reports that SQ 2025.1+ requires no metric batching:
-// all keys are sent in a single request.
-func (p *SQ2025Pipeline) SupportsMetricBatching() (bool, int) { return false, 0 }
-
 func (p *SQ2025Pipeline) ExtractIssues(ctx context.Context, projectKey string) ([]Issue, error) {
 	issues, err := fetchAllIssues(ctx, p.client, projectKey, p.IssueSearchParam(), p.IssueStatusValues())
 	if err != nil {
 		return nil, err
 	}
-	// IN_SANDBOX has no SonarQube Cloud equivalent: log and skip.
 	filtered := issues[:0]
 	for _, iss := range issues {
 		if iss.Status == "IN_SANDBOX" {
@@ -61,12 +52,6 @@ func (p *SQ2025Pipeline) ExtractIssues(ctx context.Context, projectKey string) (
 		filtered = append(filtered, iss)
 	}
 	return filtered, nil
-}
-
-// ExtractMetrics sends all metricKeys in a single request (no batching for
-// SQ 2025.1+).
-func (p *SQ2025Pipeline) ExtractMetrics(ctx context.Context, projectKey string, metricKeys []string) ([]ComponentMetrics, error) {
-	return fetchAllMetrics(ctx, p.client, projectKey, metricKeys, 0)
 }
 
 // ExtractGroups attempts the V2 authorizations groups API first, falling back
@@ -132,4 +117,3 @@ func (p *SQ2025Pipeline) fetchGroupsV2Page(ctx context.Context, page, pageSize i
 	}
 	return groups, result.Page.Total, nil
 }
-

@@ -13,6 +13,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	flagConfig             = "config"
+	flagSQURL              = "sq-url"
+	flagSQToken            = "sq-token"
+	flagProjectKey         = "project-key"
+	flagSCToken            = "sc-token"
+	flagSCOrg              = "sc-org"
+	flagSCEnterpriseKey    = "sc-enterprise-key"
+	flagExportDir          = "export-dir"
+	flagIncludeScanHistory = "include-scan-history"
+	flagConcurrency        = "concurrency"
+	flagDebug              = "debug"
+)
+
 var transferCmd = &cobra.Command{
 	Use:   "transfer",
 	Short: "Transfer a single project from SonarQube Server to SonarQube Cloud",
@@ -45,17 +59,31 @@ it can be omitted and defaults to the organization key.`,
 
 func init() {
 	f := transferCmd.Flags()
-	f.StringP("config", "c", "", "Path to transfer config file")
-	f.String("sq-url", "", "SonarQube Server URL")
-	f.String("sq-token", "", "SonarQube Server token")
-	f.String("project-key", "", "Project key to transfer (omit to transfer all projects)")
-	f.String("sc-token", "", "SonarQube Cloud token")
-	f.String("sc-org", "", "SonarQube Cloud organization key")
-	f.String("sc-enterprise-key", "", "SonarQube Cloud enterprise key (defaults to --sc-org)")
-	f.String("export-dir", "./migration-files/", "Working directory for intermediate files")
-	f.Bool("include-scan-history", false, "Extract and import full issue/hotspot scan history")
-	f.Int("concurrency", 0, "Max concurrent requests (default: 25)")
-	f.Bool("debug", false, "Enable debug-level logging")
+	f.StringP(flagConfig, "c", "", "Path to transfer config file")
+	f.String(flagSQURL, "", "SonarQube Server URL")
+	f.String(flagSQToken, "", "SonarQube Server token")
+	f.String(flagProjectKey, "", "Project key to transfer (omit to transfer all projects)")
+	f.String(flagSCToken, "", "SonarQube Cloud token")
+	f.String(flagSCOrg, "", "SonarQube Cloud organization key")
+	f.String(flagSCEnterpriseKey, "", "SonarQube Cloud enterprise key (defaults to --sc-org)")
+	f.String(flagExportDir, "./migration-files/", "Working directory for intermediate files")
+	f.Bool(flagIncludeScanHistory, false, "Extract and import full issue/hotspot scan history")
+	f.Int(flagConcurrency, 0, "Max concurrent requests (default: 25)")
+	f.Bool(flagDebug, false, "Enable debug-level logging")
+}
+
+// transferConfig holds the resolved configuration after merging file and flag values.
+type transferConfig struct {
+	sqURL              string
+	sqToken            string
+	projectKey         string
+	scToken            string
+	scOrg              string
+	scEnterpriseKey    string
+	exportDir          string
+	concurrency        int
+	includeScanHistory bool
+	debug              bool
 }
 
 // transferFileConfig is the transfer-specific config file shape (CloudVoyager-compatible).
@@ -92,77 +120,87 @@ func loadTransferConfigFile(path string) (transferFileConfig, error) {
 	return cfg, nil
 }
 
-func runTransfer(cmd *cobra.Command, _ []string) error {
-	// Start from a zero-valued file config (all fields overridable by flags).
+func applyFlagString(cmd *cobra.Command, name string, target *string) {
+	if cmd.Flags().Changed(name) {
+		*target, _ = cmd.Flags().GetString(name)
+	}
+}
+
+func applyFlagInt(cmd *cobra.Command, name string, target *int) {
+	if cmd.Flags().Changed(name) {
+		*target, _ = cmd.Flags().GetInt(name)
+	}
+}
+
+func applyFlagBool(cmd *cobra.Command, name string, target *bool) {
+	if cmd.Flags().Changed(name) {
+		*target, _ = cmd.Flags().GetBool(name)
+	}
+}
+
+func resolveTransferConfig(cmd *cobra.Command) (transferConfig, error) {
 	var fileCfg transferFileConfig
 
-	configFile, _ := cmd.Flags().GetString("config")
+	configFile, _ := cmd.Flags().GetString(flagConfig)
 	if configFile != "" {
 		loaded, err := loadTransferConfigFile(configFile)
 		if err != nil {
-			return err
+			return transferConfig{}, err
 		}
 		fileCfg = loaded
 	}
 
-	// Flags override config file values.
-	sqURL := fileCfg.SonarQube.URL
-	sqToken := fileCfg.SonarQube.Token
-	projectKey := fileCfg.SonarQube.ProjectKey
-	scToken := fileCfg.SonarCloud.Token
-	scOrg := fileCfg.SonarCloud.Organization
-	scEnterpriseKey := fileCfg.SonarCloud.EnterpriseKey
-	exportDir := fileCfg.Settings.ExportDirectory
-	concurrency := fileCfg.Settings.Concurrency
-	includeScanHistory := fileCfg.Settings.IncludeScanHistory
-	debug := fileCfg.Settings.Debug
-
-	if cmd.Flags().Changed("sq-url") {
-		sqURL, _ = cmd.Flags().GetString("sq-url")
-	}
-	if cmd.Flags().Changed("sq-token") {
-		sqToken, _ = cmd.Flags().GetString("sq-token")
-	}
-	if cmd.Flags().Changed("project-key") {
-		projectKey, _ = cmd.Flags().GetString("project-key")
-	}
-	if cmd.Flags().Changed("sc-token") {
-		scToken, _ = cmd.Flags().GetString("sc-token")
-	}
-	if cmd.Flags().Changed("sc-org") {
-		scOrg, _ = cmd.Flags().GetString("sc-org")
-	}
-	if cmd.Flags().Changed("sc-enterprise-key") {
-		scEnterpriseKey, _ = cmd.Flags().GetString("sc-enterprise-key")
-	}
-	if cmd.Flags().Changed("export-dir") {
-		exportDir, _ = cmd.Flags().GetString("export-dir")
-	}
-	if cmd.Flags().Changed("concurrency") {
-		concurrency, _ = cmd.Flags().GetInt("concurrency")
-	}
-	if cmd.Flags().Changed("include-scan-history") {
-		includeScanHistory, _ = cmd.Flags().GetBool("include-scan-history")
-	}
-	if cmd.Flags().Changed("debug") {
-		debug, _ = cmd.Flags().GetBool("debug")
+	cfg := transferConfig{
+		sqURL:              fileCfg.SonarQube.URL,
+		sqToken:            fileCfg.SonarQube.Token,
+		projectKey:         fileCfg.SonarQube.ProjectKey,
+		scToken:            fileCfg.SonarCloud.Token,
+		scOrg:              fileCfg.SonarCloud.Organization,
+		scEnterpriseKey:    fileCfg.SonarCloud.EnterpriseKey,
+		exportDir:          fileCfg.Settings.ExportDirectory,
+		concurrency:        fileCfg.Settings.Concurrency,
+		includeScanHistory: fileCfg.Settings.IncludeScanHistory,
+		debug:              fileCfg.Settings.Debug,
 	}
 
-	// Apply defaults.
-	if exportDir == "" {
-		exportDir = "./migration-files/"
+	applyFlagString(cmd, flagSQURL, &cfg.sqURL)
+	applyFlagString(cmd, flagSQToken, &cfg.sqToken)
+	applyFlagString(cmd, flagProjectKey, &cfg.projectKey)
+	applyFlagString(cmd, flagSCToken, &cfg.scToken)
+	applyFlagString(cmd, flagSCOrg, &cfg.scOrg)
+	applyFlagString(cmd, flagSCEnterpriseKey, &cfg.scEnterpriseKey)
+	applyFlagString(cmd, flagExportDir, &cfg.exportDir)
+	applyFlagInt(cmd, flagConcurrency, &cfg.concurrency)
+	applyFlagBool(cmd, flagIncludeScanHistory, &cfg.includeScanHistory)
+	applyFlagBool(cmd, flagDebug, &cfg.debug)
+
+	if cfg.exportDir == "" {
+		cfg.exportDir = "./migration-files/"
 	}
-	// enterpriseKey defaults to org key — sufficient for all non-portfolio operations.
-	if scEnterpriseKey == "" {
-		scEnterpriseKey = scOrg
+	if cfg.scEnterpriseKey == "" {
+		cfg.scEnterpriseKey = cfg.scOrg
 	}
 
-	// Validation.
-	if sqURL == "" || sqToken == "" {
-		return fmt.Errorf("SonarQube Server URL and token are required (--sq-url / --sq-token or config file)")
+	return cfg, nil
+}
+
+func validateTransferConfig(cfg transferConfig) error {
+	if cfg.sqURL == "" || cfg.sqToken == "" {
+		return fmt.Errorf("SonarQube Server URL and token are required (--%s / --%s or config file)", flagSQURL, flagSQToken)
 	}
-	if scToken == "" || scOrg == "" {
-		return fmt.Errorf("SonarQube Cloud token and organization key are required (--sc-token / --sc-org or config file)")
+	if cfg.scToken == "" || cfg.scOrg == "" {
+		return fmt.Errorf("SonarQube Cloud token and organization key are required (--%s / --%s or config file)", flagSCToken, flagSCOrg)
+	}
+	return nil
+}
+
+func runTransfer(cmd *cobra.Command, _ []string) error {
+	cfg, err := resolveTransferConfig(cmd)
+	if err != nil {
+		return err
+	}
+	if err := validateTransferConfig(cfg); err != nil {
+		return err
 	}
 
 	ctx := cmd.Context()
@@ -170,16 +208,16 @@ func runTransfer(cmd *cobra.Command, _ []string) error {
 	// Phase 1: Extract.
 	fmt.Println("[1/4] Extracting from SonarQube Server...")
 	var projectKeys []string
-	if projectKey != "" {
-		projectKeys = []string{projectKey}
+	if cfg.projectKey != "" {
+		projectKeys = []string{cfg.projectKey}
 	}
 	extractCfg := extract.ExtractConfig{
-		URL:                sqURL,
-		Token:              sqToken,
-		ExportDirectory:    exportDir,
+		URL:                cfg.sqURL,
+		Token:              cfg.sqToken,
+		ExportDirectory:    cfg.exportDir,
 		ProjectKeys:        projectKeys,
-		Concurrency:        concurrency,
-		IncludeScanHistory: includeScanHistory,
+		Concurrency:        cfg.concurrency,
+		IncludeScanHistory: cfg.includeScanHistory,
 	}
 	skipped, err := extract.RunExtract(ctx, extractCfg)
 	if err != nil {
@@ -194,34 +232,34 @@ func runTransfer(cmd *cobra.Command, _ []string) error {
 
 	// Phase 2: Structure.
 	fmt.Println("[2/4] Building organization structure...")
-	if err := structure.RunStructure(exportDir, scOrg); err != nil {
+	if err := structure.RunStructure(cfg.exportDir, cfg.scOrg); err != nil {
 		return fmt.Errorf("structure failed: %w", err)
 	}
 
 	// Phase 3: Mappings.
 	fmt.Println("[3/4] Generating entity mappings...")
-	if err := structure.RunMappings(exportDir); err != nil {
+	if err := structure.RunMappings(cfg.exportDir); err != nil {
 		return fmt.Errorf("mappings failed: %w", err)
 	}
 
 	// Phase 4: Migrate.
 	fmt.Println("[4/4] Migrating to SonarQube Cloud...")
 	migrateCfg := migrate.MigrateConfig{
-		Token:              scToken,
-		EnterpriseKey:      scEnterpriseKey,
-		ExportDirectory:    exportDir,
-		Concurrency:        concurrency,
-		IncludeScanHistory: includeScanHistory,
-		Debug:              debug,
+		Token:              cfg.scToken,
+		EnterpriseKey:      cfg.scEnterpriseKey,
+		ExportDirectory:    cfg.exportDir,
+		Concurrency:        cfg.concurrency,
+		IncludeScanHistory: cfg.includeScanHistory,
+		Debug:              cfg.debug,
 	}
 	runID, err := migrate.RunMigrate(ctx, migrateCfg)
 	if err != nil {
 		return fmt.Errorf("migrate failed: %w", err)
 	}
 
-	// PDF summary report (same as migrate command).
-	runDir := filepath.Join(exportDir, runID)
-	if pdfPath, pdfErr := summary.GeneratePDFReport(runDir, exportDir, exportDir); pdfErr == nil {
+	// PDF summary report.
+	runDir := filepath.Join(cfg.exportDir, runID)
+	if pdfPath, pdfErr := summary.GeneratePDFReport(runDir, cfg.exportDir, cfg.exportDir); pdfErr == nil {
 		fmt.Printf("PDF summary report: %s\n", pdfPath)
 	}
 

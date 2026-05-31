@@ -165,7 +165,7 @@ The `lib/sq-api-go/` module provides typed Go methods for SonarQube Server and C
 - **Cloud API clients** — `IssuesClient` and `HotspotsClient` in `cloud/` provide typed methods for Cloud issue/hotspot search, transitions, comments, and tags
 
 ## Version-Specific Pipeline Architecture (SPEC-011)
-<!-- updated: 2026-05-30_08:00:00 -->
+<!-- updated: 2026-05-31_20:20:00 -->
 
 `go/internal/pipeline/` implements four version-specific extraction pipelines selected once at startup via a version router. No runtime version branching occurs inside the extraction or build phases.
 
@@ -173,15 +173,19 @@ The `lib/sq-api-go/` module provides typed Go methods for SonarQube Server and C
 go/internal/pipeline/
 ├── pipeline.go       # Pipeline interface + normalized types (Issue, Hotspot, Measure, Group)
 ├── helpers.go        # Shared paginated HTTP helpers + paginateAll[T] generic
-├── helpers_test.go   # paginateAll tests + fetchAllMetrics batch accumulator tests
+├── helpers_test.go   # paginateAll tests + fetchAllMetrics batch + fetch error path tests
 ├── router.go         # DetectPipeline(): calls /api/server/version, parses, selects
 ├── router_test.go    # Version parsing, routing, interface compliance, parameter tests
-├── sq99.go           # SQ 9.9 LTS — statuses param, 15-key batching
-├── sq100.go          # SQ 10.0-10.3 — statuses param, 15-key batching
-├── sq104.go          # SQ 10.4-10.8 — issueStatuses param, 15-key batching
-├── sq2025.go         # SQ 2025.1+ — issueStatuses, no batching, V2 groups, IN_SANDBOX filter
+├── shared.go         # standardPipeline: common fields + all shared extraction methods
+├── shared_test.go    # Tests for all standardPipeline extraction methods (issues, hotspots, metrics, groups, EnrichCleanCode)
+├── sq99.go           # SQ 9.9 LTS — config only (Version method)
+├── sq100.go          # SQ 10.0-10.3 — config only (Version method)
+├── sq104.go          # SQ 10.4-10.8 — config only (Version method)
+├── sq2025.go         # SQ 2025.1+ — overrides ExtractIssues (IN_SANDBOX) + ExtractGroups (V2)
 └── sq2025_test.go    # V2 groups fallback tests (200/404/5xx) + IN_SANDBOX filter test
 ```
+
+**Inheritance model:** All four pipelines embed `standardPipeline`, which holds `issueSearchParam`, `issueStatusValues`, and `metricBatchSize` as data fields set per-version in the constructor. `standardPipeline` provides promoted implementations of `IssueSearchParam()`, `IssueStatusValues()`, `SupportsMetricBatching()`, `ExtractIssues()`, `ExtractMetrics()`, `ExtractHotspots()`, `ExtractGroups()`, and `EnrichCleanCode()`. SQ 9.9, 10.0, and 10.4 define only their constructor and `Version()` method — all extraction logic is inherited. SQ 2025 overrides `ExtractIssues` (to filter IN_SANDBOX) and `ExtractGroups` (to use the V2 API with fallback).
 
 **Key behaviors per pipeline:**
 
@@ -195,17 +199,22 @@ go/internal/pipeline/
 
 **Forward compatibility:** An unknown major version ≥ 11 falls back to the SQ 10.4 pipeline with a `WARN` log. An error is returned for versions < 9.9.
 
-All four pipelines implement the `Pipeline` interface; compile-time checks (`var _ Pipeline = (*SQ99Pipeline)(nil)`) enforce this.
+All four pipelines implement the `Pipeline` interface; compile-time checks (`var _ Pipeline = (*SQ99Pipeline)(nil)`) enforce this. Since SQ 9.9, 10.0, and 10.4 inherit all extraction methods from `standardPipeline`, their source files contain only a constructor and `Version()` — all runtime behavior is defined in `shared.go` and `helpers.go`.
 
 **URL construction:** All helpers use `client.BaseURL() + "api/..."` (no leading `/`). `BaseURL()` always returns a URL ending with `/` (enforced by `normalizeBaseURL` in sq-api-go), so prepending a `/` would produce double-slash paths (`//api/...`) that Go's `httptest` server does not normalize.
 
 **V2 groups note:** The `/api/v2/authorizations/groups` response omits `membersCount`. The `id` field is a UUID string (incompatible with `Group.ID int`, left zero); `managed` has no `Group` field and is discarded; `default` IS captured and propagated to `Group.Default`. The standard-API fallback is triggered by any V2 error (not just 404), intentionally ensuring callers get groups even when the V2 endpoint is temporarily unavailable.
 
 ## Transfer Command (Single-Project Migration)
-<!-- updated: 2026-05-30_10:00:00 -->
+<!-- updated: 2026-05-31_20:20:00 -->
 
 `go/cmd/transfer.go` provides a CloudVoyager-compatible single-command migration path. It
-chains the four manual phases automatically so users never touch a CSV file.
+chains the four manual phases automatically so users never touch a CSV file. Flag names
+are defined as package-level constants (e.g. `flagSQURL = "sq-url"`) to avoid duplicated
+string literals. Config resolution is handled by `resolveTransferConfig()` (loads file,
+applies flag overrides via `applyFlagString`/`applyFlagInt`/`applyFlagBool` helpers, applies
+defaults) and validation by `validateTransferConfig()`, keeping `runTransfer` focused on
+the four-phase orchestration.
 
 ```bash
 # Flags

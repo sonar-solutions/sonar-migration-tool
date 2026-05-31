@@ -128,3 +128,109 @@ func TestFetchAllMetricsBatchErrorPropagates(t *testing.T) {
 		t.Errorf("error should mention 'metrics batch', got: %v", err)
 	}
 }
+
+func TestFetchAllIssuesSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"paging": map[string]any{"pageIndex": 1, "pageSize": 500, "total": 1},
+			"issues": []map[string]any{
+				{"key": "iss-1", "status": "OPEN", "rule": "rule:1", "component": "comp", "type": "BUG", "creationDate": "2024-01-01", "updateDate": "2024-01-01"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	issues, err := fetchAllIssues(context.Background(), newTestClient(t, srv.URL), "proj", "statuses", []string{"OPEN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 1 || issues[0].Key != "iss-1" {
+		t.Errorf("got %+v, want [{Key:iss-1}]", issues)
+	}
+}
+
+func TestFetchAllIssuesNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	_, err := fetchAllIssues(context.Background(), newTestClient(t, srv.URL), "proj", "statuses", []string{"OPEN"})
+	if err == nil {
+		t.Fatal("expected error for 403 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 403") {
+		t.Errorf("error should mention 'HTTP 403', got: %v", err)
+	}
+}
+
+func TestFetchAllHotspotsSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"paging": map[string]any{"pageIndex": 1, "pageSize": 500, "total": 1},
+			"hotspots": []map[string]any{
+				{"key": "hs-1", "component": "comp", "project": "proj", "status": "TO_REVIEW", "securityCategory": "xss", "vulnerabilityProbability": "HIGH", "message": "msg", "creationDate": "2024-01-01", "updateDate": "2024-01-01", "ruleKey": "rule:1"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	hotspots, err := fetchAllHotspots(context.Background(), newTestClient(t, srv.URL), "proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hotspots) != 1 || hotspots[0].Key != "hs-1" {
+		t.Errorf("got %+v, want [{Key:hs-1}]", hotspots)
+	}
+}
+
+func TestFetchAllHotspotsNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	_, err := fetchAllHotspots(context.Background(), newTestClient(t, srv.URL), "proj")
+	if err == nil {
+		t.Fatal("expected error for 403 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 403") {
+		t.Errorf("error should mention 'HTTP 403', got: %v", err)
+	}
+}
+
+func TestFetchAllGroupsSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"groups": []map[string]any{{"id": 1, "name": "grp-1", "description": "Group 1"}},
+			"paging": map[string]any{"pageIndex": 1, "pageSize": 500, "total": 1},
+		})
+	}))
+	defer srv.Close()
+
+	groups, err := fetchAllGroups(context.Background(), newTestClient(t, srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 1 || groups[0].Name != "grp-1" {
+		t.Errorf("got %+v, want [{Name:grp-1}]", groups)
+	}
+}
+
+func TestFetchAllGroupsNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	_, err := fetchAllGroups(context.Background(), newTestClient(t, srv.URL))
+	if err == nil {
+		t.Fatal("expected error for 403 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 403") {
+		t.Errorf("error should mention 'HTTP 403', got: %v", err)
+	}
+}
