@@ -25,7 +25,8 @@ sonar-migration-tool/
 │   │   ├── analysis_report.go   # API call outcome summary
 │   │   ├── gui.go               # Browser-based GUI server
 │   │   ├── predictive_report.go # Pre-migration PDF summary
-│   │   └── transfer.go          # Single-command project transfer
+│   │   ├── transfer.go          # Single-command project transfer
+│   │   └── regtest.go           # Exhaustive post-migration regression verification
 │   └── internal/
 │       ├── common/              # Shared utilities
 │       │   ├── rawclient.go     # HTTP client with auth + retry
@@ -54,6 +55,11 @@ sonar-migration-tool/
 │       │   ├── prompter.go      # Prompter interface
 │       │   ├── cli_prompter.go  # Terminal UI (survey library)
 │       │   └── helpers.go       # Phase sequence, validation
+│       ├── regtest/             # Exhaustive post-migration regression verification
+│       │   ├── suite.go         # Test suite orchestrator (parallel check runner)
+│       │   ├── checks.go        # 43 check functions covering all entity types
+│       │   ├── helpers.go       # API query helpers and result constructors
+│       │   └── report.go        # Report formatting (table, JSON, markdown)
 │       ├── pipeline/            # Version-specific extraction pipelines (SPEC-011)
 │       │   ├── pipeline.go      # Pipeline interface + normalized types
 │       │   ├── helpers.go       # Shared paginated HTTP helpers

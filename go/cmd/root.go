@@ -49,6 +49,7 @@ func addCommands() {
 		predictiveReportCmd,
 		resetCmd,
 		analysisReportCmd,
+		regtestCmd,
 	)
 }
 

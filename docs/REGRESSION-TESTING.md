@@ -48,7 +48,7 @@ When running this protocol as a Claude Dynamic Workflow, use the following phase
 | Phase 1 — Review | `Review` | 5 (dimensions) + 1 (synthesis) | Full |
 | Phase 2 — Setup | `Setup` | 2 (health) + 8+ (data checks) + N (baseline) | High |
 | Phase 3 — Execute | `Execute` | 3 (build/test/config) + 4 (log analysis) | Medium |
-| Phase 4 — Verify | `Verify` | 46+ (extract + SC queries + spot-checks + edge cases) | **Maximum** |
+| Phase 4 — Verify | `Verify` | 100+ (extract files + 73-row entity table + spot-checks + edge cases + silent failure scans) | **Maximum** |
 | Phase 5 — Fix | `Fix` | 3 (isolate) + 5 (hypotheses) + 2 (pre-flight) | Medium |
 | Phase 6 — Declare | `Declare` | 5 (checklist categories) + 1 (synthesis) | Full |
 
@@ -1701,6 +1701,7 @@ A full clean pass requires **ALL** of the following. Not a subset. Not "close en
 - [ ] Zero panics in output
 - [ ] Zero `DATA RACE` warnings from race detector
 - [ ] Zero `FATAL` log lines
+- [ ] Zero unexpected `ERROR` log lines
 
 ### Code Quality Gates
 - [x] `go vet ./...` passes
@@ -1713,26 +1714,194 @@ A full clean pass requires **ALL** of the following. Not a subset. Not "close en
 - [ ] Every edge case (empty, single, large, missing fields, idempotency) handled correctly
 - [ ] **The feature's core code path was exercised with real data** — not just the no-op/empty path
 
-### Data Correctness
-- [ ] Entity counts on SC match SQS (within tolerance for entity types that have known filters)
-- [ ] Spot-check of 5+ entities shows field-level correctness
-- [ ] No empty NDJSON files for entity types that have data
-- [ ] No silent data loss (SC count is not suspiciously lower than SQS count)
+### Exhaustive Data Correctness (ALL 73 rows from Phase 4.18)
+
+> **This is the core stop condition. "Clean pass" means EVERY piece of data migrated correctly — not just "the tool ran without errors."**
+
+**Projects & Identity:**
+- [ ] All projects exist on SC with correct name, visibility, tags, links
+- [ ] Main branch name correct per project
+
+**Issues (per project):**
+- [ ] Total issue count: SQS == SC
+- [ ] Status distribution matches (OPEN, CONFIRMED, REOPENED, RESOLVED, CLOSED)
+- [ ] Severity distribution matches (BLOCKER, CRITICAL, MAJOR, MINOR, INFO)
+- [ ] Type distribution matches (BUG, VULNERABILITY, CODE_SMELL)
+- [ ] Resolution distribution matches (FALSE-POSITIVE, WONTFIX, FIXED)
+- [ ] Issue comments preserved (count per issue, content spot-checked)
+- [ ] Issue tags preserved (exact set match)
+- [ ] Issue assignees preserved (where user exists in SC)
+- [ ] Issue effort preserved
+
+**Hotspots (per project):**
+- [ ] Total hotspot count: SQS == SC
+- [ ] Status distribution matches (TO_REVIEW, REVIEWED)
+- [ ] Resolution preserved (SAFE, FIXED, ACKNOWLEDGED)
+- [ ] Hotspot comments preserved (count, content spot-checked)
+- [ ] Hotspot assignees preserved (where user exists in SC)
+
+**Quality Profiles:**
+- [ ] All non-built-in profiles exist on SC
+- [ ] Active rule count matches per profile
+- [ ] Inheritance chains preserved (parent → child)
+- [ ] Default profile per language correct
+- [ ] Profile → project associations correct
+- [ ] Profile group/user permissions correct
+
+**Quality Gates:**
+- [ ] All custom gates exist on SC
+- [ ] Condition count and values match per gate (metric, operator, threshold)
+- [ ] Default gate correct
+- [ ] Gate → project associations correct
+- [ ] Gate group/user permissions correct
+
+**Groups & Membership:**
+- [ ] All non-built-in groups exist on SC
+- [ ] Group descriptions match
+- [ ] Group membership counts match (where users exist in SC)
+- [ ] Built-in group handling correct (`sonar-users` → Members)
+
+**Permission Templates:**
+- [ ] All templates exist on SC
+- [ ] Template descriptions and patterns match
+- [ ] Group permissions per template per permission type match
+- [ ] Default template correct
+
+**Project Permissions (per project × 6 permission types):**
+- [ ] Group permissions match per project per permission type
+- [ ] User permissions match per project per permission type (where user exists in SC)
+
+**Settings:**
+- [ ] SC-compatible global settings migrated with correct values
+- [ ] Per-project settings migrated with correct values
+- [ ] Non-migratable settings documented (not silently dropped)
+
+**New Code Periods:**
+- [ ] Global NCD type and value match
+- [ ] Per-project NCD type and value match
+- [ ] Per-branch NCD match (where explicitly set)
+
+**Rules:**
+- [ ] Custom rules exist on SC with correct parameters, severity, type
+
+**ALM Bindings:**
+- [ ] Per-project ALM binding correct (type, repository)
+
+**Portfolios (Enterprise):**
+- [ ] All portfolios exist on SC (if Enterprise token available)
+- [ ] Portfolio hierarchy preserved
+
+**Measures (per project):**
+- [ ] ncloc matches
+- [ ] coverage matches (±0.1%)
+- [ ] duplicated_lines_density matches (±0.1%)
+- [ ] ratings match (sqale, reliability, security)
+- [ ] counts match (bugs, vulnerabilities, code_smells)
+- [ ] complexity metrics match
+
+**Silent Failure Checks:**
+- [ ] No unexpected ERROR/FATAL in logs
+- [ ] No empty NDJSON files for entity types with source data
+- [ ] No SC count < 50% of SQS count for any entity type
+- [ ] No HTTP 4xx/5xx in migrate logs (excluding documented known limitations)
+- [ ] All "succeeded=N" stats match expected N
 - [ ] **CE tasks succeeded** — if scan history import is part of the feature, the CE task must complete with status SUCCESS, not FAILED
 
 ### Regression Verification
 - [ ] All entity types NOT touched by the change still extract/migrate correctly
-- [ ] Summary stats for unchanged features match prior runs
+- [ ] Phase 4.18 regression table has zero unexpected mismatches
 - [ ] No new errors or warnings in logs for unchanged features
 
 ### Run Metadata
 - [ ] Number of loop iterations to reach clean pass: ___
 - [ ] Total wall-clock time: ___
 - [ ] Final summary stats captured and saved
+- [ ] Phase 4.18 exhaustive regression table fully populated (zero blank cells)
 
-> **Only when every checkbox above is checked can you stop the loop.**
+> **Only when EVERY checkbox above is checked can you stop the loop.**
 >
-> **If you are tempted to declare "clean pass" but a core task (like importScanHistory) failed, STOP. That is not a clean pass. Go back to Phase 5.**
+> **"Clean pass" = every piece of data from SonarQube Server exists and is correct in SonarCloud.** Not "the tool ran." Not "no errors in the log." The DATA is THERE, field-by-field, count-by-count.
+>
+> **If you are tempted to declare "clean pass" but ANY row in Phase 4.18 has a mismatch, STOP. That is not a clean pass. Go back to Phase 5.**
+
+---
+
+## Programmatic Regression Testing Suite (`regtest` command)
+<!-- updated: 2026-05-31_23:00:00 -->
+
+The `regtest` command is the **automated equivalent of Phase 4**. Instead of manually querying APIs and filling in tables, it programmatically connects to both SQS and SC, runs 70+ parallel checks across all entity types, and produces a pass/fail report.
+
+### Usage
+
+```bash
+# After running the full pipeline (extract → structure → mappings → migrate):
+./sonar-migration-tool regtest --config migration-config.json
+
+# Output formats
+./sonar-migration-tool regtest --config migration-config.json --format json
+./sonar-migration-tool regtest --config migration-config.json --format markdown
+
+# Verbose mode (debug-level logging)
+./sonar-migration-tool regtest --config migration-config.json --verbose
+
+# Adjust parallelism
+./sonar-migration-tool regtest --config migration-config.json --concurrency 30
+```
+
+### What It Checks (43 check functions, 70+ individual checks)
+
+| Category | Checks |
+|---|---|
+| Projects | Count, name, visibility per project |
+| Issues | Total, per-status (5), per-severity (5), per-type (3), per-resolution (3) — all per project |
+| Hotspots | Total, TO_REVIEW, REVIEWED — all per project |
+| Quality Profiles | Count, active rules per profile, defaults per language, inheritance chains |
+| Quality Gates | Count, conditions per gate, default, project associations |
+| Groups | Count, membership per group |
+| Permission Templates | Count, group permissions per template per permission type |
+| Settings | Global, per-project |
+| New Code Periods | Per-project NCD type and value |
+| Rules | Custom rule count |
+| Permissions | Project group permissions (6 types per project) |
+| ALM Bindings | Per-project binding type |
+| Portfolios | Count (Enterprise only) |
+| Measures | 12 key metrics per project (ncloc, coverage, bugs, etc.) |
+| Extract Files | NDJSON file existence and non-emptiness |
+
+### Exit Code
+
+- `0` — ALL checks passed (verdict: PASS)
+- `1` — One or more checks failed (verdict: FAIL)
+
+### Integration with the Regression Protocol
+
+Run `regtest` as a replacement for Phase 4.18 (Exhaustive Regression Table). If it returns exit code 1, proceed to Phase 5 (investigate + fix). If it returns exit code 0, proceed to Phase 6 (declare clean pass).
+
+```bash
+# In the recursive loop:
+# Phase 3: run the full pipeline
+./sonar-migration-tool-race extract -c migration-config.json
+./sonar-migration-tool-race structure -c migration-config.json
+./sonar-migration-tool-race mappings -c migration-config.json
+./sonar-migration-tool-race migrate -c migration-config.json
+
+# Phase 4: programmatic verification
+./sonar-migration-tool regtest --config migration-config.json --format markdown > /tmp/regtest-report.md
+if [ $? -ne 0 ]; then
+  echo "FAIL — proceed to Phase 5"
+  cat /tmp/regtest-report.md
+else
+  echo "PASS — proceed to Phase 6"
+fi
+```
+
+### Source Code
+
+- [go/internal/regtest/suite.go](go/internal/regtest/suite.go) — Suite orchestrator, config loading, parallel runner
+- [go/internal/regtest/checks.go](go/internal/regtest/checks.go) — All 43 check function implementations
+- [go/internal/regtest/helpers.go](go/internal/regtest/helpers.go) — API query helpers, result constructors
+- [go/internal/regtest/report.go](go/internal/regtest/report.go) — Report formatting (table, JSON, markdown)
+- [go/cmd/regtest.go](go/cmd/regtest.go) — Cobra CLI command
 
 ---
 
@@ -1893,6 +2062,7 @@ All entity types handled by the tool. Use this as your regression checklist.
 | `wizard` | Interactive wizard | Manual testing only |
 | `gui` | Browser-based GUI | Manual testing only |
 | `analysis_report` | Generate analysis report | When testing reporting |
+| `regtest` | Exhaustive regression verification of completed migration | After every migration run |
 
 ---
 
