@@ -18,6 +18,7 @@ const (
 	flagSQURL              = "sq-url"
 	flagSQToken            = "sq-token"
 	flagProjectKey         = "project-key"
+	flagSCURL              = "sc-url"
 	flagSCToken            = "sc-token"
 	flagSCOrg              = "sc-org"
 	flagSCEnterpriseKey    = "sc-enterprise-key"
@@ -49,8 +50,10 @@ Example (config file):
 config.json format:
   {
     "sonarqube": { "url": "...", "token": "...", "projectKey": "..." },
-    "sonarcloud": { "token": "...", "organization": "...", "enterpriseKey": "..." }
+    "sonarcloud": { "url": "...", "token": "...", "organization": "...", "enterpriseKey": "..." }
   }
+
+The sonarcloud.url defaults to https://sonarcloud.io/ when omitted.
 
 The enterpriseKey is required for portfolio migration; for projects/gates/profiles
 it can be omitted and defaults to the organization key.`,
@@ -63,6 +66,7 @@ func init() {
 	f.String(flagSQURL, "", "SonarQube Server URL")
 	f.String(flagSQToken, "", "SonarQube Server token")
 	f.String(flagProjectKey, "", "Project key to transfer (omit to transfer all projects)")
+	f.String(flagSCURL, "", "SonarQube Cloud URL (default: https://sonarcloud.io/)")
 	f.String(flagSCToken, "", "SonarQube Cloud token")
 	f.String(flagSCOrg, "", "SonarQube Cloud organization key")
 	f.String(flagSCEnterpriseKey, "", "SonarQube Cloud enterprise key (defaults to --sc-org)")
@@ -77,6 +81,7 @@ type transferConfig struct {
 	sqURL              string
 	sqToken            string
 	projectKey         string
+	scURL              string
 	scToken            string
 	scOrg              string
 	scEnterpriseKey    string
@@ -96,6 +101,7 @@ type transferFileConfig struct {
 		ProjectKey string `json:"projectKey"`
 	} `json:"sonarqube"`
 	SonarCloud struct {
+		URL           string `json:"url"`
 		Token         string `json:"token"`
 		Organization  string `json:"organization"`
 		EnterpriseKey string `json:"enterpriseKey"`
@@ -154,6 +160,7 @@ func resolveTransferConfig(cmd *cobra.Command) (transferConfig, error) {
 		sqURL:              fileCfg.SonarQube.URL,
 		sqToken:            fileCfg.SonarQube.Token,
 		projectKey:         fileCfg.SonarQube.ProjectKey,
+		scURL:              fileCfg.SonarCloud.URL,
 		scToken:            fileCfg.SonarCloud.Token,
 		scOrg:              fileCfg.SonarCloud.Organization,
 		scEnterpriseKey:    fileCfg.SonarCloud.EnterpriseKey,
@@ -166,6 +173,7 @@ func resolveTransferConfig(cmd *cobra.Command) (transferConfig, error) {
 	applyFlagString(cmd, flagSQURL, &cfg.sqURL)
 	applyFlagString(cmd, flagSQToken, &cfg.sqToken)
 	applyFlagString(cmd, flagProjectKey, &cfg.projectKey)
+	applyFlagString(cmd, flagSCURL, &cfg.scURL)
 	applyFlagString(cmd, flagSCToken, &cfg.scToken)
 	applyFlagString(cmd, flagSCOrg, &cfg.scOrg)
 	applyFlagString(cmd, flagSCEnterpriseKey, &cfg.scEnterpriseKey)
@@ -245,6 +253,7 @@ func runTransfer(cmd *cobra.Command, _ []string) error {
 	// Phase 4: Migrate.
 	fmt.Println("[4/4] Migrating to SonarQube Cloud...")
 	migrateCfg := migrate.MigrateConfig{
+		URL:                cfg.scURL,
 		Token:              cfg.scToken,
 		EnterpriseKey:      cfg.scEnterpriseKey,
 		ExportDirectory:    cfg.exportDir,
