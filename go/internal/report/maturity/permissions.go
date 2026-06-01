@@ -23,14 +23,14 @@ func GeneratePermissionsMarkdown(dir string, mapping structure.ExtractMapping) (
 
 	md := report.GenerateSection(
 		[]report.Column{
-			{"Global User Profile Admins", "global_user_profile"},
-			{"Global User Gate Admins", "global_user_quality_gate"},
-			{"Global Group Profile Admins", "global_group_profile"},
-			{"Global Group Gate Admins", "global_group_quality_gate"},
-			{"Specific User Profile Perms", "specific_user_profile"},
-			{"Specific User Gate Perms", "specific_user_quality_gate"},
-			{"Specific Group Profile Perms", "specific_group_profile"},
-			{"Specific Group Gate Perms", "specific_group_quality_gate"},
+			{Header: "Global User Profile Admins", Key: "global_user_profile"},
+			{Header: "Global User Gate Admins", Key: "global_user_quality_gate"},
+			{Header: "Global Group Profile Admins", Key: "global_group_profile"},
+			{Header: "Global Group Gate Admins", Key: "global_group_quality_gate"},
+			{Header: "Specific User Profile Perms", Key: "specific_user_profile"},
+			{Header: "Specific User Gate Perms", Key: "specific_user_quality_gate"},
+			{Header: "Specific Group Profile Perms", Key: "specific_group_profile"},
+			{Header: "Specific Group Gate Perms", Key: "specific_group_quality_gate"},
 		},
 		[]map[string]any{row},
 		report.WithTitle("Permissions", 3),

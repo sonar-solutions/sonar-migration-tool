@@ -21,10 +21,10 @@ func GenerateLanguageMarkdown(measures common.Measures, profileMap common.Profil
 
 	md := report.GenerateSection(
 		[]report.Column{
-			{"Language", "language"}, {"Projects", "projects"}, {"Lines of Code", "loc"},
-			{"Profiles", "profiles"}, {"Custom Profiles", "custom_profiles"},
-			{"Base Rules", "base_rules"}, {"Min Rules", "minimum_rules"},
-			{"Max Rules", "maximum_rules"}, {"Avg Rules", "average_rules"},
+			{Header: "Language", Key: "language"}, {Header: "Projects", Key: "projects"}, {Header: "Lines of Code", Key: "loc"},
+			{Header: "Profiles", Key: "profiles"}, {Header: "Custom Profiles", Key: "custom_profiles"},
+			{Header: "Base Rules", Key: "base_rules"}, {Header: "Min Rules", Key: "minimum_rules"},
+			{Header: "Max Rules", Key: "maximum_rules"}, {Header: "Avg Rules", Key: "average_rules"},
 		},
 		rows,
 		report.WithTitle("Languages", 3),

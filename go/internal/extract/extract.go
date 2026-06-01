@@ -32,17 +32,23 @@ type ExtractConfig struct {
 	ExtractID       string
 	TargetTask         string
 	IncludeScanHistory bool
+	// ProjectKeys, when non-empty, limits extraction to these project keys.
+	// The /api/projects/search endpoint filters server-side, so only the
+	// requested projects are fetched and all downstream per-project tasks
+	// naturally scope to the same set.
+	ProjectKeys []string
 }
 
 // Executor is the runtime context passed to every task function.
 type Executor struct {
-	Raw       *RawClient
-	Store     *DataStore
-	ServerURL string
-	Edition   Edition
-	Version   float64
-	Sem       chan struct{}
-	Logger    *slog.Logger
+	Raw         *RawClient
+	Store       *DataStore
+	ServerURL   string
+	Edition     Edition
+	Version     float64
+	Sem         chan struct{}
+	Logger      *slog.Logger
+	ProjectKeys []string // non-empty → limit extraction to these project keys
 
 	mu              sync.Mutex
 	skippedProjects map[string]bool
@@ -109,6 +115,7 @@ func RunExtract(ctx context.Context, cfg ExtractConfig) ([]string, error) {
 	plan = filterCompleted(plan, store)
 
 	executor := newExecutor(raw, store, client.BaseURL(), edition, version, cfg.Concurrency)
+	executor.ProjectKeys = cfg.ProjectKeys
 	if err := executePhases(ctx, executor, plan, registry, store); err != nil {
 		return nil, err
 	}

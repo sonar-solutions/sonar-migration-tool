@@ -22,8 +22,8 @@ func GenerateUsageMarkdown(projects common.Projects, scans common.ProjectScans) 
 
 	return report.GenerateSection(
 		[]report.Column{
-			{"Size", "size"}, {"Projects", "projects"}, {"Active Projects (30d)", "active_projects"},
-			{"Scanned Code (LOC)", "scanned_code"}, {"Scans/Day", "scans_per_day"},
+			{Header: "Size", Key: "size"}, {Header: "Projects", Key: "projects"}, {Header: "Active Projects (30d)", Key: "active_projects"},
+			{Header: "Scanned Code (LOC)", Key: "scanned_code"}, {Header: "Scans/Day", Key: "scans_per_day"},
 		},
 		rows,
 		report.WithTitle("Usage", 3),

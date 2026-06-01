@@ -19,7 +19,7 @@ func GeneratePortfolioSummaryMarkdown(dir string, mapping structure.ExtractMappi
 	}
 	return report.GenerateSection(
 		[]report.Column{
-			{"Portfolios", "portfolios"}, {"Total Projects in Portfolios", "project_count"},
+			{Header: "Portfolios", Key: "portfolios"}, {Header: "Total Projects in Portfolios", Key: "project_count"},
 		},
 		[]map[string]any{{"portfolios": len(portfolios), "project_count": len(allProjects)}},
 		report.WithTitle("Portfolios", 3),

@@ -9,19 +9,29 @@ import (
 	"github.com/sonar-solutions/sonar-migration-tool/internal/wizard"
 )
 
-// collectMessages returns a sendFn that appends messages to a thread-safe slice.
-func collectMessages() (func(ServerMessage), *[]ServerMessage) {
+// collectMessages returns a sendFn and a snapshot function. The snapshot
+// function returns a copy of all received messages under the mutex, so tests
+// can safely read message state from the main goroutine without a DATA RACE.
+func collectMessages() (func(ServerMessage), func() []ServerMessage) {
 	var mu sync.Mutex
 	var msgs []ServerMessage
-	return func(msg ServerMessage) {
+	send := func(msg ServerMessage) {
 		mu.Lock()
 		msgs = append(msgs, msg)
 		mu.Unlock()
-	}, &msgs
+	}
+	snapshot := func() []ServerMessage {
+		mu.Lock()
+		defer mu.Unlock()
+		cp := make([]ServerMessage, len(msgs))
+		copy(cp, msgs)
+		return cp
+	}
+	return send, snapshot
 }
 
 func TestPromptURLBlocksAndReturns(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
@@ -36,10 +46,10 @@ func TestPromptURLBlocksAndReturns(t *testing.T) {
 
 	// Wait for the prompt to be sent.
 	time.Sleep(20 * time.Millisecond)
-	if len(*msgs) != 1 {
-		t.Fatalf("expected 1 message sent, got %d", len(*msgs))
+	if len(snapshot()) != 1 {
+		t.Fatalf("expected 1 message sent, got %d", len(snapshot()))
 	}
-	sent := (*msgs)[0]
+	sent := snapshot()[0]
 	if sent.Type != TypePromptURL {
 		t.Fatalf("expected type %q, got %q", TypePromptURL, sent.Type)
 	}
@@ -69,7 +79,7 @@ func TestPromptURLBlocksAndReturns(t *testing.T) {
 }
 
 func TestPromptTextWithDefault(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
@@ -82,7 +92,7 @@ func TestPromptTextWithDefault(t *testing.T) {
 	}()
 
 	time.Sleep(20 * time.Millisecond)
-	sent := (*msgs)[0]
+	sent := snapshot()[0]
 	if sent.Default != "default-key" {
 		t.Errorf("default: got %v, want %q", sent.Default, "default-key")
 	}
@@ -96,7 +106,7 @@ func TestPromptTextWithDefault(t *testing.T) {
 }
 
 func TestPromptPasswordMasked(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
@@ -109,7 +119,7 @@ func TestPromptPasswordMasked(t *testing.T) {
 	}()
 
 	time.Sleep(20 * time.Millisecond)
-	sent := (*msgs)[0]
+	sent := snapshot()[0]
 	if sent.Type != TypePromptPassword {
 		t.Fatalf("type: got %q", sent.Type)
 	}
@@ -123,7 +133,7 @@ func TestPromptPasswordMasked(t *testing.T) {
 }
 
 func TestConfirmReturnsBool(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
@@ -136,7 +146,7 @@ func TestConfirmReturnsBool(t *testing.T) {
 	}()
 
 	time.Sleep(20 * time.Millisecond)
-	wp.HandleResponse(ClientMessage{ID: (*msgs)[0].ID, Value: true})
+	wp.HandleResponse(ClientMessage{ID: snapshot()[0].ID, Value: true})
 	<-done
 
 	if !result {
@@ -145,7 +155,7 @@ func TestConfirmReturnsBool(t *testing.T) {
 }
 
 func TestConfirmReviewSendsDetails(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
@@ -163,7 +173,7 @@ func TestConfirmReviewSendsDetails(t *testing.T) {
 	}()
 
 	time.Sleep(20 * time.Millisecond)
-	sent := (*msgs)[0]
+	sent := snapshot()[0]
 	if sent.Type != TypePromptConfirmReview {
 		t.Fatalf("type: got %q", sent.Type)
 	}
@@ -235,7 +245,7 @@ func TestContextCancellationCleansPending(t *testing.T) {
 }
 
 func TestDisplayMethodsAreFineAndForget(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
@@ -249,8 +259,8 @@ func TestDisplayMethodsAreFineAndForget(t *testing.T) {
 	wp.DisplayResumeInfo(&wizard.WizardState{Phase: wizard.PhaseExtract})
 	wp.DisplayWizardComplete()
 
-	if len(*msgs) != 9 {
-		t.Errorf("expected 9 display messages, got %d", len(*msgs))
+	if len(snapshot()) != 9 {
+		t.Errorf("expected 9 display messages, got %d", len(snapshot()))
 	}
 
 	expectedTypes := []string{
@@ -258,20 +268,21 @@ func TestDisplayMethodsAreFineAndForget(t *testing.T) {
 		TypeDisplayError, TypeDisplayWarning, TypeDisplaySuccess,
 		TypeDisplaySummary, TypeDisplayResumeInfo, TypeDisplayWizardComplete,
 	}
+	msgs := snapshot()
 	for i, want := range expectedTypes {
-		if (*msgs)[i].Type != want {
-			t.Errorf("msg %d: got %q, want %q", i, (*msgs)[i].Type, want)
+		if msgs[i].Type != want {
+			t.Errorf("msg %d: got %q, want %q", i, msgs[i].Type, want)
 		}
 	}
 }
 
 func TestDisplayPhaseProgressFields(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
 	wp.DisplayPhaseProgress(wizard.PhaseStructure)
-	msg := (*msgs)[0]
+	msg := snapshot()[0]
 
 	if msg.Phase != string(wizard.PhaseStructure) {
 		t.Errorf("phase: got %q", msg.Phase)
@@ -288,13 +299,13 @@ func TestDisplayPhaseProgressFields(t *testing.T) {
 }
 
 func TestDisplayResumeInfoWithNilPointers(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
 	// All pointer fields nil.
 	wp.DisplayResumeInfo(&wizard.WizardState{Phase: wizard.PhaseOrgMapping})
-	msg := (*msgs)[0]
+	msg := snapshot()[0]
 
 	if msg.SourceURL != "" || msg.TargetURL != "" || msg.ExtractID != "" {
 		t.Errorf("nil pointers should produce empty strings: source=%q target=%q extract=%q",
@@ -312,7 +323,7 @@ func TestHandleResponseIgnoresUnknownID(t *testing.T) {
 }
 
 func TestMultiplePromptsSequential(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
@@ -324,7 +335,7 @@ func TestMultiplePromptsSequential(t *testing.T) {
 		}()
 
 		time.Sleep(20 * time.Millisecond)
-		wp.HandleResponse(ClientMessage{ID: (*msgs)[i].ID, Value: "answer"})
+		wp.HandleResponse(ClientMessage{ID: snapshot()[i].ID, Value: "answer"})
 		<-done
 	}
 
@@ -371,7 +382,7 @@ func TestToStringCoercion(t *testing.T) {
 }
 
 func TestPromptChoiceNumericResponse(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
@@ -384,7 +395,7 @@ func TestPromptChoiceNumericResponse(t *testing.T) {
 	}()
 
 	time.Sleep(20 * time.Millisecond)
-	sent := (*msgs)[0]
+	sent := snapshot()[0]
 	if sent.Type != TypePromptChoice {
 		t.Fatalf("type: got %q", sent.Type)
 	}
@@ -402,7 +413,7 @@ func TestPromptChoiceNumericResponse(t *testing.T) {
 }
 
 func TestPromptChoiceStringResponse(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
@@ -415,7 +426,7 @@ func TestPromptChoiceStringResponse(t *testing.T) {
 	}()
 
 	time.Sleep(20 * time.Millisecond)
-	sent := (*msgs)[0]
+	sent := snapshot()[0]
 
 	// Respond with string matching an option.
 	wp.HandleResponse(ClientMessage{ID: sent.ID, Value: "beta"})
@@ -427,7 +438,7 @@ func TestPromptChoiceStringResponse(t *testing.T) {
 }
 
 func TestPromptChoiceUnknownStringResponse(t *testing.T) {
-	sendFn, msgs := collectMessages()
+	sendFn, snapshot := collectMessages()
 	ctx := context.Background()
 	wp := NewWebPrompter(ctx, sendFn)
 
@@ -440,7 +451,7 @@ func TestPromptChoiceUnknownStringResponse(t *testing.T) {
 	}()
 
 	time.Sleep(20 * time.Millisecond)
-	sent := (*msgs)[0]
+	sent := snapshot()[0]
 
 	// Respond with a string that doesn't match any option.
 	wp.HandleResponse(ClientMessage{ID: sent.ID, Value: "unknown"})

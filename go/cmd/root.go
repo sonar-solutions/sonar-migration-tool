@@ -38,6 +38,7 @@ func init() {
 
 func addCommands() {
 	rootCmd.AddCommand(
+		transferCmd,
 		wizardCmd,
 		guiCmd,
 		extractCmd,
@@ -48,6 +49,7 @@ func addCommands() {
 		predictiveReportCmd,
 		resetCmd,
 		analysisReportCmd,
+		regtestCmd,
 	)
 }
 

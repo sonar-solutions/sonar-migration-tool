@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"strings"
 )
 
 // measureMetricKeys is the set of metric keys extracted for each project.
@@ -18,9 +19,12 @@ func projectTasks() []TaskDef {
 			Name:     "getProjects",
 			Editions: AllEditions,
 			Run: func(ctx context.Context, e *Executor) error {
-				return fetchAndWritePaginated(ctx, e, "getProjects", PaginatedOpts{
-					Path: "api/projects/search", ResultKey: "components",
-				}, map[string]any{"serverUrl": e.ServerURL})
+				opts := PaginatedOpts{Path: "api/projects/search", ResultKey: "components"}
+				if len(e.ProjectKeys) > 0 {
+					opts.Params = url.Values{"projects": {strings.Join(e.ProjectKeys, ",")}}
+				}
+				return fetchAndWritePaginated(ctx, e, "getProjects", opts,
+					map[string]any{"serverUrl": e.ServerURL})
 			},
 		},
 		{

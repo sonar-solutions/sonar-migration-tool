@@ -51,6 +51,50 @@ go run . <command> [args]
 
 ---
 
+## Transfer (Simplest — Single Project)
+
+> **Use this when you want to migrate one project in one command.**
+
+```bash
+# From source
+cd go && go run . transfer \
+  --sq-url https://sonarqube.example.com \
+  --sq-token sqp_xxx \
+  --project-key my-project \
+  --sc-token squ_xxx \
+  --sc-org my-org
+
+# Built binary
+sonar-migration-tool transfer --sq-url ... --sq-token ... --project-key ... --sc-token ... --sc-org ...
+
+# Config file
+sonar-migration-tool transfer -c config.json
+```
+
+`config.json` format:
+```json
+{
+  "sonarqube": { "url": "https://...", "token": "sqp_xxx", "projectKey": "my-project" },
+  "sonarcloud": { "token": "squ_xxx", "organization": "my-org" }
+}
+```
+
+| Flag | Description |
+|------|-------------|
+| `-c, --config` | Config file path |
+| `--sq-url` | SonarQube Server URL |
+| `--sq-token` | SonarQube Server token |
+| `--project-key` | Project key to transfer (omit to transfer all projects) |
+| `--sc-token` | SonarQube Cloud token |
+| `--sc-org` | SonarQube Cloud organization key |
+| `--sc-enterprise-key` | SonarQube Cloud enterprise key (defaults to `--sc-org`) |
+| `--export-dir` | Working directory for intermediate files (default: `./migration-files/`) |
+| `--include-scan-history` | Extract and import full issue/hotspot scan history |
+
+Chains extract → structure → mappings → migrate automatically. Generates a PDF summary on completion.
+
+---
+
 ## Interactive Wizard (Recommended)
 
 > **Recommended for most users. No scripting required.**

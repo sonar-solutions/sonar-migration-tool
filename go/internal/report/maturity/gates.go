@@ -30,18 +30,18 @@ func GenerateGateMaturityMarkdown(dir string, mapping structure.ExtractMapping, 
 	}
 
 	summary := report.GenerateSection(
-		[]report.Column{{"Gates", "gates"}, {"Active Gates", "active"}, {"CAYC Compliant", "cayc"}},
+		[]report.Column{{Header: "Gates", Key: "gates"}, {Header: "Active Gates", Key: "active"}, {Header: "CAYC Compliant", Key: "cayc"}},
 		[]map[string]any{{"gates": totalGates, "active": activeGates, "cayc": caycGates}},
 		report.WithTitle("Quality Gates", 3),
 	)
 
 	details := report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Gate Name", "name"}, {"# Projects", "project_count"},
-			{"CAYC", "is_cayc"}, {"New Violations", "new_violations"},
-			{"Hotspots Reviewed", "new_security_hotspots_reviewed"},
-			{"Coverage", "new_coverage"}, {"Duplicated Lines", "new_duplicated_lines_density"},
-			{"Other", "other"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Gate Name", Key: "name"}, {Header: "# Projects", Key: "project_count"},
+			{Header: "CAYC", Key: "is_cayc"}, {Header: "New Violations", Key: "new_violations"},
+			{Header: "Hotspots Reviewed", Key: "new_security_hotspots_reviewed"},
+			{Header: "Coverage", Key: "new_coverage"}, {Header: "Duplicated Lines", Key: "new_duplicated_lines_density"},
+			{Header: "Other", Key: "other"},
 		},
 		detailRows,
 		report.WithTitle("Active Gates", 3),

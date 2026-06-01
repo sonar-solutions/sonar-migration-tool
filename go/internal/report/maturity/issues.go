@@ -187,8 +187,8 @@ func buildOverviewSection(issueRows map[string]map[string]any) string {
 	}
 	return report.GenerateSection(
 		[]report.Column{
-			{"Severity", "severity"}, {"Open Issues", "open"}, {"Affected Projects", "affected_project_count"},
-			{"Open Vulnerabilities", "open_vulnerabilities"}, {"Open Bugs", "open_bugs"}, {"Open Code Smells", "open_code_smells"},
+			{Header: "Severity", Key: "severity"}, {Header: "Open Issues", Key: "open"}, {Header: "Affected Projects", Key: "affected_project_count"},
+			{Header: "Open Vulnerabilities", Key: "open_vulnerabilities"}, {Header: "Open Bugs", Key: "open_bugs"}, {Header: "Open Code Smells", Key: "open_code_smells"},
 		},
 		rows,
 		report.WithTitle("Issues Overview", 3),
@@ -205,8 +205,8 @@ func buildDetailSection(title, issueType string, detailRows map[string]map[strin
 	}
 	return report.GenerateSection(
 		[]report.Column{
-			{"Severity", "severity"}, {"Open", "open"}, {"Recent (30d)", "recent"},
-			{"Affected Projects", "affected_project_count"},
+			{Header: "Severity", Key: "severity"}, {Header: "Open", Key: "open"}, {Header: "Recent (30d)", Key: "recent"},
+			{Header: "Affected Projects", Key: "affected_project_count"},
 		},
 		rows,
 		report.WithTitle(title, 3),

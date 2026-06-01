@@ -24,8 +24,8 @@ func GenerateProfileSummary(profileMap common.ProfileMap, languages map[string]m
 
 	return report.GenerateSection(
 		[]report.Column{
-			{"Profiles", "profiles"}, {"Active Profiles", "active"},
-			{"Inherits Sonar Way", "sonar_way"}, {"Custom Defaults", "custom_defaults"},
+			{Header: "Profiles", Key: "profiles"}, {Header: "Active Profiles", Key: "active"},
+			{Header: "Inherits Sonar Way", Key: "sonar_way"}, {Header: "Custom Defaults", Key: "custom_defaults"},
 		},
 		[]map[string]any{row},
 		report.WithTitle("Quality Profiles", 3),

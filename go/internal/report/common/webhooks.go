@@ -81,10 +81,10 @@ func GenerateWebhookMarkdown(dir string, mapping structure.ExtractMapping, idMap
 	}
 	return report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Webhook Name", "name"}, {"URL", "url"},
-			{"Project", "project"}, {"Deliveries", "deliveries"},
-			{"Successful Deliveries", "successes"}, {"Failed Deliveries", "failures"},
-			{"Last Successful Delivery", "last_success"}, {"Last Failed Delivery", "last_error"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Webhook Name", Key: "name"}, {Header: "URL", Key: "url"},
+			{Header: "Project", Key: "project"}, {Header: "Deliveries", Key: "deliveries"},
+			{Header: "Successful Deliveries", Key: "successes"}, {Header: "Failed Deliveries", Key: "failures"},
+			{Header: "Last Successful Delivery", Key: "last_success"}, {Header: "Last Failed Delivery", Key: "last_error"},
 		},
 		rows,
 		report.WithTitle("Webhooks", 3),

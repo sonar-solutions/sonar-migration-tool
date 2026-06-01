@@ -23,8 +23,8 @@ func GenerateScansMarkdown(projectScans common.ProjectScans) string {
 	}
 	return report.GenerateSection(
 		[]report.Column{
-			{"Scans (30 days)", "scans"}, {"Failed Scans (30 days)", "failed"},
-			{"Projects with Failed Scans", "projects_failed"},
+			{Header: "Scans (30 days)", Key: "scans"}, {Header: "Failed Scans (30 days)", Key: "failed"},
+			{Header: "Projects with Failed Scans", Key: "projects_failed"},
 		},
 		[]map[string]any{{"scans": scans30d, "failed": failed30d, "projects_failed": projectsFailed}},
 		report.WithTitle("Scan Activity", 3),

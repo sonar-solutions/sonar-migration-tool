@@ -33,9 +33,9 @@ func GenerateDevOpsMarkdown(dir string, mapping structure.ExtractMapping, idMap 
 
 	md := report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"DevOps Platform Binding", "binding"}, {"Type", "type"},
-			{"URL", "url"}, {"# Projects", "projects"},
-			{"Multi-branch Projects?", "multi_branch_projects"}, {"PR Projects?", "pr_projects"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "DevOps Platform Binding", Key: "binding"}, {Header: "Type", Key: "type"},
+			{Header: "URL", Key: "url"}, {Header: "# Projects", Key: "projects"},
+			{Header: "Multi-branch Projects?", Key: "multi_branch_projects"}, {Header: "PR Projects?", Key: "pr_projects"},
 		},
 		rows,
 		report.WithTitle("DevOps Integrations", 2),

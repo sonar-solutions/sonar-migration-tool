@@ -71,8 +71,8 @@ func GenerateTokenMarkdown(dir string, mapping structure.ExtractMapping, idMap S
 	}
 	return report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Total Tokens", "total_tokens"}, {"Active Tokens", "active_tokens"},
-			{"Recently Used Tokens", "recent_tokens"}, {"Users", "user_count"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Total Tokens", Key: "total_tokens"}, {Header: "Active Tokens", Key: "active_tokens"},
+			{Header: "Recently Used Tokens", Key: "recent_tokens"}, {Header: "Users", Key: "user_count"},
 		},
 		rows,
 		report.WithTitle("Tokens", 3),

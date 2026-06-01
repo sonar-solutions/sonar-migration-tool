@@ -109,8 +109,8 @@ func buildPipelineOverview(scans ProjectScans) string {
 	}
 	return report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"CI Tool", "name"}, {"# Projects", "project_count"},
-			{"First Run", "first_scan"}, {"Most Recent Run", "last_scan"}, {"Total Scans", "total_scans"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "CI Tool", Key: "name"}, {Header: "# Projects", Key: "project_count"},
+			{Header: "First Run", Key: "first_scan"}, {Header: "Most Recent Run", Key: "last_scan"}, {Header: "Total Scans", Key: "total_scans"},
 		},
 		rows,
 		report.WithTitle("CI Environment Overview", 2),
@@ -158,8 +158,8 @@ func buildScanDetails(scans ProjectScans) string {
 	}
 	return report.GenerateSection(
 		[]report.Column{
-			{"Server ID", "server_id"}, {"Project Name", "project_name"}, {"CI Tool", "ci_tool"},
-			{"# of Scans", "total_scans"}, {"First Scan", "first_scan"}, {"Most Recent Scan", "last_scan"},
+			{Header: "Server ID", Key: "server_id"}, {Header: "Project Name", Key: "project_name"}, {Header: "CI Tool", Key: "ci_tool"},
+			{Header: "# of Scans", Key: "total_scans"}, {Header: "First Scan", Key: "first_scan"}, {Header: "Most Recent Scan", Key: "last_scan"},
 		},
 		rows,
 		report.WithTitle("Project Scan Details", 3),
