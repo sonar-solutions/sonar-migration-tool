@@ -35,6 +35,26 @@ func (o *OrganizationsClient) Search(ctx context.Context, keys ...string) ([]typ
 	return result.Organizations, nil
 }
 
+// GetByRef fetches a single organization by ref (key OR UUID) via
+// GET /organizations/organizations/{ref} on api.sonarcloud.io. This
+// endpoint returns the full Organization record including the UUID,
+// which the standard sonarcloud.io /api/organizations/search does
+// NOT — callers that need the UUID (e.g. /fix-suggestions/
+// organization-configs/{uuid}) should resolve it here first.
+//
+// The owning client must be constructed against api.sonarcloud.io;
+// the regular sonarcloud.io base does not expose this path.
+func (o *OrganizationsClient) GetByRef(ctx context.Context, ref string) (*types.Organization, error) {
+	if ref == "" {
+		return nil, fmt.Errorf("organization reference is required")
+	}
+	var org types.Organization
+	if err := o.getJSON(ctx, "organizations/organizations/"+ref, &org); err != nil {
+		return nil, err
+	}
+	return &org, nil
+}
+
 // LookupID returns the UUID of the organization whose key matches orgKey, or
 // an error if no such organization is visible to the caller.
 func (o *OrganizationsClient) LookupID(ctx context.Context, orgKey string) (string, error) {

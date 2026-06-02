@@ -207,6 +207,16 @@ func newMockServer() *httptest.Server {
 		})
 	})
 
+	mux.HandleFunc("GET /api/v2/fix-suggestions/feature-enablements", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"enablement":         "DISABLED",
+			"enabledProjectKeys": []string{},
+			"providers": []map[string]any{
+				{"type": "OPENAI", "name": "OpenAI", "selfHosted": false, "selected": false, "model": nil},
+			},
+		})
+	})
+
 	mux.HandleFunc("GET /api/project_branches/list", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"branches": []map[string]any{{"name": "main", "isMain": true}},
@@ -396,7 +406,7 @@ func TestRunExtractFull(t *testing.T) {
 		"getProjects", "getUsers", "getGroups", "getProfiles", "getGates",
 		"getTemplates", "getDefaultTemplates", "getRules", "getRepos",
 		"getPlugins", "getServerInfo", "getServerSettings", "getServerSettingsDefinitions", "getUsage",
-		"getBindings", "getWebhooks", "getServerWebhooks", "getUserPermissions",
+		"getBindings", "getAiCodeFixConfig", "getWebhooks", "getServerWebhooks", "getUserPermissions",
 		"getProfileRules", "getTasks",
 		// Per-project tasks
 		"getProjectDetails", "getProjectSettings", "getProjectLinks",

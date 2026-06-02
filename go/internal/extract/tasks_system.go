@@ -54,5 +54,26 @@ func systemTasks() []TaskDef {
 				return fetchAndWriteArray(ctx, e, "getBindings", "api/alm_settings/list", "almSettings", nil, map[string]any{"serverUrl": e.ServerURL})
 			},
 		},
+		{
+			// AI Code Fix configuration (issue #251). Single JSON
+			// object exposing the global enablement state, the list
+			// of enabled project keys, and the configured providers
+			// (each carrying type, selected/selfHosted flags, and the
+			// chosen model). The migrate + predict pipelines combine
+			// this with sonar.ai.codefix.hidden to drive the per-key
+			// migration strategy. The endpoint was added in SQS
+			// 2025.x; older servers may return 404 — non-fatal.
+			Name:     "getAiCodeFixConfig",
+			Editions: AllEditions,
+			Run: func(ctx context.Context, e *Executor) error {
+				err := fetchAndWriteSingle(ctx, e, "getAiCodeFixConfig",
+					"api/v2/fix-suggestions/feature-enablements", nil, "",
+					map[string]any{"serverUrl": e.ServerURL})
+				if err != nil && isNonFatalHTTPErr(err) {
+					return nil
+				}
+				return err
+			},
+		},
 	}
 }
