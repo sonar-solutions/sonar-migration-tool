@@ -630,9 +630,10 @@ func checkProjectSettings(ctx context.Context, s *Suite) []CheckResult {
 		}
 		r := makeResult("Settings", fmt.Sprintf("Settings: %s", proj), sqsCount, scCount, "SC-compatible subset")
 		r.Notes = "SC-compatible subset"
-		if scCount > 0 {
-			r.Match = true
-		}
+		// Same subset-relationship rule as checkGlobalSettings: pass only
+		// when SC has at least one migrated setting AND the count is no
+		// larger than SQS.
+		r.Match = scCount > 0 && scCount <= sqsCount
 		results = append(results, r)
 	}
 	return results

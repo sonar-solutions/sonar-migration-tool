@@ -216,6 +216,89 @@ func TestCheckGlobalSettingsSubsetLogic(t *testing.T) {
 	}
 }
 
+// TestCheckProjectSettingsSubsetLogic is the per-project counterpart to
+// TestCheckGlobalSettingsSubsetLogic. It uses the same subset-relationship
+// rule (scCount > 0 && scCount <= sqsCount) and would also silently PASS on
+// any non-zero SC count under the old, broken implementation.
+func TestCheckProjectSettingsSubsetLogic(t *testing.T) {
+	cases := []struct {
+		name    string
+		sqs     int
+		sc      int
+		wantMat bool
+	}{
+		{"sqs=0, sc=0", 0, 0, false},
+		{"sqs=10, sc=0", 10, 0, false},
+		{"sqs=10, sc=10", 10, 10, true},
+		{"sqs=10, sc=5", 10, 5, true},
+		{"sqs=10, sc=20 (misconfiguration)", 10, 20, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sqs, sc := newProjectSettingsServers(t, tc.sqs, tc.sc)
+			defer sqs.Close()
+			defer sc.Close()
+
+			s := newTestSuite(t, sqs, sc)
+			results := checkProjectSettings(context.Background(), s)
+			if len(results) != 1 {
+				t.Fatalf("expected 1 result, got %d", len(results))
+			}
+			if results[0].Match != tc.wantMat {
+				t.Errorf("sqs=%d sc=%d: got Match=%v, want %v (the unconditional 'scCount > 0' check is too loose)",
+					tc.sqs, tc.sc, results[0].Match, tc.wantMat)
+			}
+		})
+	}
+}
+
+// newProjectSettingsServers wires a minimal SQS/SC pair where SQS reports
+// one project and the requested number of settings, and SC reports the
+// requested number of project settings. Extracted from
+// TestCheckProjectSettingsSubsetLogic to keep that test under the
+// cognitive-complexity threshold.
+func newProjectSettingsServers(t *testing.T, sqsCount, scCount int) (*httptest.Server, *httptest.Server) {
+	t.Helper()
+	settingsSQS := make([]map[string]any, sqsCount)
+	for i := range settingsSQS {
+		settingsSQS[i] = map[string]any{"key": "k"}
+	}
+	settingsSC := make([]map[string]any, scCount)
+	for i := range settingsSC {
+		settingsSC[i] = map[string]any{"key": "k"}
+	}
+	sqs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		writeProjectSettingsResponse(w, r, settingsSQS, true)
+	}))
+	sc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		writeProjectSettingsResponse(w, r, settingsSC, false)
+	}))
+	return sqs, sc
+}
+
+func writeProjectSettingsResponse(w http.ResponseWriter, r *http.Request, settings []map[string]any, withProject bool) {
+	switch r.URL.Path {
+	case "/api/projects/search":
+		if withProject {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"paging":     map[string]int{"pageIndex": 1, "pageSize": 500, "total": 1},
+				"components": []map[string]string{{"key": "proj-a"}},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"paging":     map[string]int{"pageIndex": 1, "pageSize": 500, "total": 0},
+			"components": []map[string]string{},
+		})
+	case "/api/settings/values":
+		_ = json.NewEncoder(w).Encode(map[string]any{"settings": settings})
+	default:
+		_, _ = w.Write([]byte(`{}`))
+	}
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
