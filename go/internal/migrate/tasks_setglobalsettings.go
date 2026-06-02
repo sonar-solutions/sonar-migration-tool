@@ -447,6 +447,13 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 	var dbCleanerRaw json.RawMessage
 	dbCleanerRaw, customized = extractDbCleanerBranches(customized)
 
+	// Peel off the AI Code Fix settings — issue #251. They drive a
+	// dedicated SQC endpoint (PATCH /fix-suggestions/organization-configs)
+	// with strategy-dependent enablement and provider/model values; the
+	// standard /api/settings/set path on SQC has no equivalent key.
+	_, customized = extractAiCodeFixHidden(customized)
+	customized = extractAiCodeFixSuggestions(customized)
+
 	// SQS exposes platform-enforced exclusion patterns via the
 	// sonar.global.* keys (today: sonar.global.exclusions and
 	// sonar.global.test.exclusions). SQC has no global counterparts,
@@ -538,6 +545,23 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 	// path would just mark it Skipped/not-on-sqc.
 	applyDbCleanerBranchesGlobal(ctx, e, dbCleanerRaw, orgList, w, &mu, counter)
 
+	// #251: migrate AI Code Fix configuration to SQC via the dedicated
+	// fix-suggestions org-config PATCH endpoint. Reads two extracts
+	// (getServerSettings for the hidden flag, getAiCodeFixConfig for
+	// enablement + provider + model + projects), evaluates the per-
+	// source strategy, and PATCHes each target SQC org.
+	if sourceSettings, err := readExtractItems(e, "getServerSettings"); err == nil {
+		aiConfigs, _ := readExtractItems(e, "getAiCodeFixConfig")
+		states := LoadAiCodeFixStates(sourceSettings, aiConfigs)
+		if len(states) > 0 {
+			decisions := make([]AiCodeFixDecision, 0, len(states))
+			for _, s := range states {
+				decisions = append(decisions, EvaluateAiCodeFix(s))
+			}
+			applyAiCodeFixDecisions(ctx, e, decisions, orgList, projectKeyMap, w, &mu, counter)
+		}
+	}
+
 	// Section-level notes for SQS-only settings (issue #200).
 	// Written AFTER the parallel loop so they always trail the
 	// regular per-org rows in the report's Skipped bucket — and
@@ -575,6 +599,12 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 			continue
 		}
 		if customizedKeys[key] || partitionHandled[key] {
+			continue
+		}
+		// AI Code Fix keys are owned by applyAiCodeFixDecisions
+		// above — skip the default-value sweep so they don't
+		// double-report (issue #251).
+		if key == AiCodeFixHiddenSetting || key == AiCodeFixSuggestionsSetting {
 			continue
 		}
 		// Already-curated SQS-only keys (sqsOnlySettings map +

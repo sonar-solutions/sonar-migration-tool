@@ -162,10 +162,11 @@ func collectUserPermissionLimitations(exportDir string, mapping structure.Extrac
 // limitation note so the operator can re-create the configuration
 // manually on SonarQube Cloud.
 var sqsToSQCSettingMap = map[string]string{
-	"sonar.qualitygate.ignoreSmallChanges":       "Ignore duplication and coverage on small changes (org-level)",
-	"sonar.ai.suggestions.enabled":               "AI Code Fix (org-level, requires manual enablement on SQC)",
-	"sonar.ai.codeFix.enabled":                   "AI Code Fix (org-level, requires manual enablement on SQC)",
-	"sonar.projects.defaultVisibility":           "Allow only private projects (org-level)",
+	"sonar.qualitygate.ignoreSmallChanges": "Ignore duplication and coverage on small changes (org-level)",
+	"sonar.projects.defaultVisibility":     "Allow only private projects (org-level)",
+	// sonar.ai.suggestions.enabled / sonar.ai.codefix.hidden are now
+	// migrated end-to-end (#251) — their rows live in the Global
+	// Settings section, so they no longer need a limitation note.
 }
 
 // collectGlobalSettingMappingLimitations covers #230 Y7, Y8 and O7
@@ -929,14 +930,28 @@ func collectGlobalSettings(store *common.DataStore, def sectionDef) Section {
 		// the row routes to NearPerfect (yellow) rather than Failed.
 		ncdRecord := key == "newCodePeriod"
 		for _, oc := range parseOutcomes(raw) {
+			// AI Code Fix rows attach a |nearperfect suffix to the
+			// Detail when the row should land in the NearPerfect
+			// bucket rather than Succeeded (#251). Strip the marker
+			// here so it doesn't reach the rendered cell.
+			detail := oc.Detail
+			markedNearPerfect := false
+			if strings.HasSuffix(detail, migrate.AiCodeFixNearPerfectMarker) {
+				detail = strings.TrimSuffix(detail, migrate.AiCodeFixNearPerfectMarker)
+				markedNearPerfect = true
+			}
 			item := EntityItem{
 				Name:         key,
 				Organization: oc.Org,
-				Detail:       oc.Detail,
+				Detail:       detail,
 			}
 			switch oc.Status {
 			case "applied", "applied-to-projects":
-				succeeded = append(succeeded, item)
+				if markedNearPerfect {
+					nearPerfect = append(nearPerfect, item)
+				} else {
+					succeeded = append(succeeded, item)
+				}
 			case "partial":
 				// Per-row Detail already enumerates the
 				// exception projects — keep Issues unset.

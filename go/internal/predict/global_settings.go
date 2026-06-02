@@ -65,6 +65,16 @@ func synthesizeSetGlobalSettings(exportDir, runDir string, extractMapping struct
 	// pulled from multiple source extracts (one per server) still ends
 	// up as a single report row.
 	seenKey := make(map[string]bool, len(rawItems))
+
+	// #251: predict the AI Code Fix migration outcome up front, then
+	// suppress the two driving keys from the rest of the loop so we
+	// don't double-report them.
+	if err := synthesizeAiCodeFixPredictions(exportDir, extractMapping, orgs, w); err != nil {
+		return err
+	}
+	seenKey[migrate.AiCodeFixHiddenSetting] = true
+	seenKey[migrate.AiCodeFixSuggestionsSetting] = true
+
 	for _, it := range rawItems {
 		key := jsonStringField(it.Data, "key")
 		if key == "" || seenKey[key] {
@@ -263,6 +273,86 @@ func collectTargetOrgs(orgLookup map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// synthesizeAiCodeFixPredictions mirrors applyAiCodeFixDecisions on
+// the predict side (#251). For each source SQS state, evaluates the
+// #251 strategy and writes one JSONL record per AI Code Fix setting
+// (sonar.ai.codefix.hidden + sonar.ai.suggestions.enabled). Predict
+// emits a single section-level outcome (Org="") per setting key — the
+// real migrate task fans out per SQC org so individual PATCH failures
+// surface, but predict has no per-org information to predict and
+// would otherwise repeat the same row N times in the report.
+func synthesizeAiCodeFixPredictions(exportDir string, mapping structure.ExtractMapping,
+	orgs []string, w *common.ChunkWriter) error {
+
+	if len(orgs) == 0 {
+		return nil
+	}
+	_ = orgs // org count drives no per-row repetition for AI Code Fix.
+	srvSettings, _ := structure.ReadExtractData(exportDir, mapping, "getServerSettings")
+	aiConfigs, _ := structure.ReadExtractData(exportDir, mapping, "getAiCodeFixConfig")
+	states := migrate.LoadAiCodeFixStates(srvSettings, aiConfigs)
+	if len(states) == 0 {
+		return nil
+	}
+	decisions := make([]migrate.AiCodeFixDecision, 0, len(states))
+	for _, s := range states {
+		decisions = append(decisions, migrate.EvaluateAiCodeFix(s))
+	}
+	primary := pickPredictPrimary(decisions)
+
+	// Emit a SINGLE section-level outcome per setting key (Org="") —
+	// matches the other predict rows, which deliberately collapse the
+	// per-org repetition because the predictive report cannot know
+	// per-org SQC differences anyway. The migrate task still emits
+	// one row per org so failures on a single org surface in the
+	// real report.
+	if primary.Hidden.Status != "" {
+		rec := map[string]any{
+			"key":      migrate.AiCodeFixHiddenSetting,
+			"outcomes": []map[string]string{predictedAiCodeFixOutcome("", primary.Hidden)},
+		}
+		if b, err := json.Marshal(rec); err == nil {
+			if err := w.WriteOne(b); err != nil {
+				return err
+			}
+		}
+	}
+	if primary.Suggestions.Status != "" {
+		rec := map[string]any{
+			"key":      migrate.AiCodeFixSuggestionsSetting,
+			"outcomes": []map[string]string{predictedAiCodeFixOutcome("", primary.Suggestions)},
+		}
+		if b, err := json.Marshal(rec); err == nil {
+			if err := w.WriteOne(b); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func pickPredictPrimary(decisions []migrate.AiCodeFixDecision) migrate.AiCodeFixDecision {
+	for _, d := range decisions {
+		if d.PatchPayload != nil || d.Hidden.Status != "" || d.Suggestions.Status != "" {
+			return d
+		}
+	}
+	return decisions[0]
+}
+
+func predictedAiCodeFixOutcome(org string, row migrate.AiCodeFixRowOutcome) map[string]string {
+	detail := row.Detail
+	if row.NearPerfect {
+		detail += migrate.AiCodeFixNearPerfectMarker
+	}
+	return map[string]string{
+		"org":    org,
+		"status": row.Status,
+		"detail": detail,
+		"reason": row.Reason,
+	}
 }
 
 // jsonStringField pulls a top-level string field out of a JSON object
