@@ -65,23 +65,50 @@ You'll type one command and the tool does the rest. Open the right app for your 
 
 ---
 
-## Step 3 — Pick your migration path
+## Step 3 — Run the migration
 
-The tool ships with two ways to run. They do the same job — pick the one that matches what you're doing.
+The tool ships with two top-level commands. Pick the one that matches your situation.
 
-### I just want to migrate one project
+### Migrating one project (or just a few)
 
-Use the `transfer` command. It runs the whole migration as a single command.
+Use `transfer`. It runs the whole migration in a single command — extracting from SonarQube Server, mapping the configuration, and pushing it to SonarQube Cloud — and finishes by writing a PDF summary you can hand to your team.
 
+```bash
+./sonar-migration-tool transfer \
+  --sq-url https://sonarqube.example.com \
+  --sq-token sqp_xxx \
+  --project-key my-project \
+  --sc-token squ_xxx \
+  --sc-org my-org
+```
+
+Full reference, more examples, and the config-file format:
 👉 **[Using `transfer` — Transfer One Project](docs/TRANSFER.md)**
 
-### I'm migrating many projects (or want more control)
+### Migrating many projects (or many SonarQube Server instances)
 
-Use the `migrate` command. It runs the migration in clear, separate steps so you can review the output of each one before moving on.
+Use `migrate` together with the underlying `extract` / `structure` / `mappings` commands. This gives you a chance to review and edit the mapping CSVs between phases — useful when projects need to land in different SonarQube Cloud organizations, or when you want to re-run individual steps after a failure.
 
+```bash
+./sonar-migration-tool extract <SQ_URL> <SQ_TOKEN>
+# → edit organizations.csv to set sonarcloud_org_key per row
+./sonar-migration-tool structure
+./sonar-migration-tool mappings
+./sonar-migration-tool migrate <SC_TOKEN> <SC_ENTERPRISE_KEY>
+```
+
+Full reference, flags, multi-server migration, and resume support:
 👉 **[Using `migrate` — Migrate All Projects](docs/MIGRATE.md)**
 
-If you're not sure which one fits, start with `transfer` — you can always re-run with `migrate` if you need to.
+### Want a guided experience?
+
+If you'd rather not pick phases yourself, run the interactive wizard — it asks you for the values it needs and runs the right commands for you:
+
+```bash
+./sonar-migration-tool wizard
+```
+
+If you're not sure which path fits, start with `transfer`. You can always re-run with `migrate` for more control.
 
 ---
 

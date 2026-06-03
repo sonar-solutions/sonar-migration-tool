@@ -1,13 +1,17 @@
 # Using `migrate` — Migrate All Projects
 
-`migrate` is the **full workflow** path. It exposes every phase of the migration — extract, structure, mappings, validate, migrate — as separate commands you run in sequence. Use it for:
+> **Quick decision guide**
+> - Migrating **one** project and don't need to review intermediate files? Use **[`transfer`](TRANSFER.md)** — a single command that does everything.
+> - Want the same multi-phase workflow but with prompts instead of typing each command? Use the **`wizard`** command — interactive and guided.
+> - Want full control over each phase, multiple SonarQube Server instances, or to inspect / edit the mapping CSVs before pushing? You're in the right place — keep reading.
 
-- Migrating **many** projects from one or more SonarQube Server instances.
-- Reviewing and editing the mapping CSVs before pushing to SonarQube Cloud.
-- Resuming a failed migration without re-running work that already succeeded.
-- Auditing intermediate files for compliance or change management.
+The `migrate` command is the **final phase** of a six-phase pipeline. You run it together with the underlying `extract`, `structure`, and `mappings` commands to move configuration from one or more SonarQube Server instances into SonarQube Cloud. Use it when you need:
 
-If you have **one** project to move and don't need to inspect intermediate files, the [Using `transfer`](TRANSFER.md) command is a one-shot alternative.
+- To migrate **many** projects from one or more SonarQube Server instances.
+- To review and edit the per-entity mapping CSVs (`gates.csv`, `profiles.csv`, `groups.csv`, `templates.csv`, `portfolios.csv`) before pushing to SonarQube Cloud.
+- To resume a failed migration from the last completed task without redoing successful work.
+- To audit intermediate files for compliance or change management.
+- To script the phases independently in CI/CD pipelines.
 
 ---
 
