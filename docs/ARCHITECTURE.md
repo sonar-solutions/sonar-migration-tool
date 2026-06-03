@@ -269,7 +269,7 @@ The tool auto-detects SonarQube Server version and edition:
 
 ## Configuration
 
-Commands accept flags, positional arguments, or a JSON config file (`--config path/to/config.json`). CLI flags override config file values. See `docs/CONFIG.md` for details.
+Commands accept flags, positional arguments, or a JSON config file (`--config path/to/config.json`). CLI flags override config file values. See [`docs/ADVANCED-CONFIG.md`](ADVANCED-CONFIG.md) for the full reference.
 
 ## Browser-Based GUI
 <!-- updated: 2026-05-30_08:00:00 -->
