@@ -56,6 +56,13 @@ type Executor struct {
 func RunMigrate(ctx context.Context, cfg MigrateConfig) (string, error) {
 	cfg.applyDefaults()
 
+	// Fail fast when no SQC org mapping has been defined — otherwise the
+	// run would complete with nothing migrated, which is indistinguishable
+	// from a successful no-op (issue #279).
+	if err := validateOrgMapping(cfg.ExportDirectory); err != nil {
+		return "", err
+	}
+
 	level := slog.LevelInfo
 	if cfg.Debug {
 		level = slog.LevelDebug
