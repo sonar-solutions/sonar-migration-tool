@@ -317,6 +317,7 @@ sonar-migration-tool migrate <TOKEN> <ENTERPRISE_KEY> --export_directory ./files
 | `--run_id` | Resume a failed migration from the last completed task |
 | `--target_task` | Run a specific migration task (with its dependencies) |
 | `--skip_profiles` | Skip quality profile migration/provisioning |
+| `--default_organization` | SonarQube Cloud organization key applied to every project when `organizations.csv` has no mapping defined. Ignored (with a WARN) if any row already carries a `sonarcloud_org_key`. Useful for small instances where every SQS project migrates into one SQC org. |
 | `--edition` | SonarQube Cloud license edition |
 | `--url` | SonarQube Cloud URL (default: `https://sonarcloud.io/`) |
 | `--concurrency` | Max concurrent requests |

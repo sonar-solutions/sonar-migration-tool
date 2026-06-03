@@ -115,6 +115,7 @@ Usage:
 | `concurrency` | number | `25` | Maximum concurrent requests |
 | `run_id` | string | `null` | ID of run to resume |
 | `target_task` | string | `null` | Specific migration task |
+| `default_organization` | string | `null` | SonarCloud organization applied to every project when `organizations.csv` has no mapping. Ignored (WARN) if any row already carries a `sonarcloud_org_key`. In the unified config shape this lives under `target.default_organization`. CLI `--default_organization` wins. Issue #281. |
 
 ### Structure and Mappings Commands
 

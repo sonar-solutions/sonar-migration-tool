@@ -197,6 +197,30 @@ func TestLoadMigrateConfigFileUnifiedShape(t *testing.T) {
 	}
 }
 
+// Issue #281: target.default_organization parses into
+// MigrateConfig.DefaultOrganization.
+func TestLoadMigrateConfigFileUnifiedShape_DefaultOrganization(t *testing.T) {
+	body := `{
+  "target": {
+    "url": "https://sonarcloud.io/",
+    "token": "t",
+    "default_organization": "my-single-org"
+  }
+}`
+	dir := t.TempDir()
+	path := dir + "/unified.json"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadMigrateConfigFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.DefaultOrganization != "my-single-org" {
+		t.Errorf("DefaultOrganization: got %q, want my-single-org", cfg.DefaultOrganization)
+	}
+}
+
 // Target block overrides top-level concurrency when set.
 func TestLoadMigrateConfigFileUnifiedShape_TargetOverridesGlobals(t *testing.T) {
 	body := `{
