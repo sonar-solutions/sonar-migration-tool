@@ -208,6 +208,12 @@ func (s *Suite) getProjects(ctx context.Context) ([]string, error) {
 			Key string `json:"key"`
 		}
 		if err := json.Unmarshal(raw, &c); err != nil {
+			// A malformed component means a project will be silently absent
+			// from the regression list, so the suite would appear to pass
+			// checks for a project it never examined. Warn loudly so the
+			// caller knows the project list may be incomplete.
+			s.logger.Warn("skipping SQS project with unparseable payload",
+				"err", err, "payload", string(raw))
 			continue
 		}
 		if c.Key != "" {
