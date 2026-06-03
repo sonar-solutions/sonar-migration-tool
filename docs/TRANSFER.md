@@ -46,7 +46,9 @@ cd go && go run . transfer -c config.json
 sonar-migration-tool transfer -c config.json
 ```
 
-`config.json` shape (see [CONFIG.md](CONFIG.md) for the full reference):
+`config.json` shape — the required blocks are `sonarqube` and `sonarcloud`; the `settings` block is optional and has sensible defaults. See [CONFIG.md](CONFIG.md) for the full reference.
+
+Minimal form:
 
 ```json
 {
@@ -58,6 +60,30 @@ sonar-migration-tool transfer -c config.json
   "sonarcloud": {
     "token": "squ_xxx",
     "organization": "my-org"
+  }
+}
+```
+
+Full form with optional `settings` block:
+
+```json
+{
+  "sonarqube": {
+    "url": "https://sonarqube.example.com",
+    "token": "sqp_xxx",
+    "projectKey": "my-project"
+  },
+  "sonarcloud": {
+    "url": "https://sonarcloud.io/",
+    "token": "squ_xxx",
+    "organization": "my-org",
+    "enterpriseKey": "my-enterprise"
+  },
+  "settings": {
+    "exportDirectory": "./migration-files",
+    "concurrency": 25,
+    "includeScanHistory": false,
+    "debug": false
   }
 }
 ```
