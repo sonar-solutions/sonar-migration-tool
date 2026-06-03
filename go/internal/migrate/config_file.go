@@ -69,15 +69,16 @@ type unifiedSourceBlock struct {
 // the unified config shape (#266). organization_key is provisional
 // for future SQC-org-to-SQC-org migration and is ignored for now.
 type unifiedTargetBlock struct {
-	URL             string `json:"url"`
-	Token           string `json:"token"`
-	EnterpriseKey   string `json:"enterprise_key"`
-	Edition         string `json:"edition"`
-	Concurrency     int    `json:"concurrency"`
-	Timeout         int    `json:"timeout"`
-	RunID           string `json:"run_id"`
-	TargetTask      string `json:"target_task"`
-	OrganizationKey string `json:"organization_key"` // provisional, ignored
+	URL                 string `json:"url"`
+	Token               string `json:"token"`
+	EnterpriseKey       string `json:"enterprise_key"`
+	Edition             string `json:"edition"`
+	Concurrency         int    `json:"concurrency"`
+	Timeout             int    `json:"timeout"`
+	RunID               string `json:"run_id"`
+	TargetTask          string `json:"target_task"`
+	OrganizationKey     string `json:"organization_key"`     // provisional, ignored
+	DefaultOrganization string `json:"default_organization"` // #281
 }
 
 type sonarCloudBlock struct {
@@ -140,6 +141,7 @@ func (s configFileShape) toMigrateConfig() MigrateConfig {
 			cfg.RunID = s.Target.RunID
 			cfg.TargetTask = s.Target.TargetTask
 			cfg.Concurrency = s.Target.Concurrency
+			cfg.DefaultOrganization = s.Target.DefaultOrganization
 		}
 		if cfg.Concurrency == 0 {
 			cfg.Concurrency = s.Concurrency

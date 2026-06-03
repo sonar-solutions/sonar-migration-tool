@@ -123,6 +123,8 @@ http://localhost:9000,my-cloud-org-key
 
 Save the file when you are done.
 
+> **Shortcut for single-org migrations:** if every project on every server is going to land in the same SonarQube Cloud organization, you can skip this step and pass `--default_organization <org-key>` (or set `target.default_organization` in the config file) when running `migrate` in Step 6. The tool will fill `sonarcloud_org_key` for every row in `organizations.csv` automatically. If you have already mapped any row by hand, the flag is ignored and a `WARN` is logged. Issue #281.
+
 ---
 
 ### Step 5: Generate Entity Mappings
@@ -179,6 +181,7 @@ sonar-migration-tool migrate YOUR_CLOUD_TOKEN YOUR_ENTERPRISE_KEY --export_direc
 | `--run_id`          | Resume a previously started migration by its run ID       | --                        |
 | `--target_task`     | Run a specific migration task only                        | --                        |
 | `--skip_profiles`   | Skip migrating quality profiles                           | --                        |
+| `--default_organization` | SonarCloud organization applied to every project when `organizations.csv` has no mapping. Ignored (WARN) if any row is already mapped. | --              |
 
 ---
 

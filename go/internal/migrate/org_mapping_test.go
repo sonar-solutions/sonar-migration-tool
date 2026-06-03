@@ -1,7 +1,10 @@
 package migrate
 
 import (
+	"bytes"
+	"encoding/csv"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,87 +20,131 @@ func writeOrgCSV(t *testing.T, dir, contents string) {
 	}
 }
 
-// Issue #279: when every sonarcloud_org_key column is empty, migrate
-// should fail fast with the specified message and exit code 2 instead
-// of "succeeding" while doing nothing.
-func TestValidateOrgMapping_AllEmptyReturnsExit2(t *testing.T) {
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+}
+
+// Issue #279: when every sonarcloud_org_key column is empty and no
+// default_organization is provided, migrate should fail fast with exit
+// code 2.
+func TestApplyOrgMapping_AllEmptyNoDefaultReturnsExit2(t *testing.T) {
 	dir := t.TempDir()
 	writeOrgCSV(t, dir, `sonarqube_org_key,sonarcloud_org_key
 org-a,
 org-b,
 org-c,
 `)
-	err := validateOrgMapping(dir)
+	err := applyOrgMapping(dir, "", discardLogger())
 	if err == nil {
-		t.Fatal("expected an error when no mapping is defined")
+		t.Fatal("expected an error when no mapping is defined and no default")
 	}
 	var ec *common.ExitCodeError
-	if !errors.As(err, &ec) {
-		t.Fatalf("expected *ExitCodeError, got %T", err)
+	if !errors.As(err, &ec) || ec.Code != 2 {
+		t.Errorf("expected exit code 2 error, got %v (%T)", err, err)
 	}
-	if ec.Code != 2 {
-		t.Errorf("exit code: got %d, want 2", ec.Code)
-	}
-	expected := "No organization mapping has been defined, please review the"
-	if !strings.Contains(err.Error(), expected) {
-		t.Errorf("error message: got %q, want it to contain %q", err.Error(), expected)
-	}
-	if !strings.Contains(err.Error(), filepath.Join(dir, "organizations.csv")) {
-		t.Errorf("error should include the CSV path, got %q", err.Error())
+	if !strings.Contains(err.Error(), "No organization mapping has been defined") {
+		t.Errorf("error should carry the spec'd message, got %q", err.Error())
 	}
 }
 
-// At least one mapped row → no error.
-func TestValidateOrgMapping_OneMappedPasses(t *testing.T) {
+// Issue #281: empty CSV + default_organization → rewrite the CSV with
+// the default in every row, no error.
+func TestApplyOrgMapping_AllEmptyWithDefaultFillsRows(t *testing.T) {
+	dir := t.TempDir()
+	writeOrgCSV(t, dir, `sonarqube_org_key,sonarcloud_org_key,server_url
+org-a,,https://sqs-a.example.com
+org-b,,https://sqs-b.example.com
+`)
+	if err := applyOrgMapping(dir, "my-cloud-org", discardLogger()); err != nil {
+		t.Fatalf("expected success with default_organization, got %v", err)
+	}
+
+	// CSV must now carry the default for every row, original columns preserved.
+	f, err := os.Open(filepath.Join(dir, "organizations.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	records, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records[0][0] != "sonarqube_org_key" || records[0][1] != "sonarcloud_org_key" || records[0][2] != "server_url" {
+		t.Errorf("headers preserved: got %v", records[0])
+	}
+	if records[1][1] != "my-cloud-org" || records[2][1] != "my-cloud-org" {
+		t.Errorf("expected my-cloud-org in every row, got %v", records)
+	}
+	if records[1][2] != "https://sqs-a.example.com" {
+		t.Errorf("server_url should be preserved, got %q", records[1][2])
+	}
+}
+
+// Issue #281: mapped CSV + default_organization → ignore the default,
+// emit a WARN, leave the CSV untouched.
+func TestApplyOrgMapping_MappedWithDefaultWarnsAndIgnores(t *testing.T) {
+	dir := t.TempDir()
+	original := `sonarqube_org_key,sonarcloud_org_key
+org-a,real-cloud-org
+org-b,
+`
+	writeOrgCSV(t, dir, original)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	if err := applyOrgMapping(dir, "default-cloud-org", logger); err != nil {
+		t.Fatalf("expected nil with mapped CSV + default, got %v", err)
+	}
+	// CSV must be unchanged.
+	got, _ := os.ReadFile(filepath.Join(dir, "organizations.csv"))
+	if string(got) != original {
+		t.Errorf("CSV must not be modified when mapping is already defined.\ngot:  %q\nwant: %q", string(got), original)
+	}
+	// WARN must mention the verbatim spec'd message.
+	if !strings.Contains(buf.String(), "Since organizations.csv mapping is defined, the provided default organization parameter is ignored") {
+		t.Errorf("expected the spec'd WARN message, got %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("expected WARN level, got %q", buf.String())
+	}
+}
+
+// Mapped CSV + no default → no warning, no error, CSV untouched.
+func TestApplyOrgMapping_MappedNoDefaultPasses(t *testing.T) {
 	dir := t.TempDir()
 	writeOrgCSV(t, dir, `sonarqube_org_key,sonarcloud_org_key
 org-a,
-org-b,my-cloud-org
-org-c,
+org-b,real-cloud-org
 `)
-	if err := validateOrgMapping(dir); err != nil {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	if err := applyOrgMapping(dir, "", logger); err != nil {
 		t.Errorf("expected nil for partial mapping, got %v", err)
+	}
+	if strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("must not emit a WARN when no default is provided, got %q", buf.String())
 	}
 }
 
-// SKIPPED rows count as deliberately mapped — they do not trigger the
-// "no mapping defined" error even if every other row is empty. The
-// sentinel is the user's explicit choice; an empty cell is the
-// forgotten-to-fill case.
-func TestValidateOrgMapping_OnlySkippedRowsPass(t *testing.T) {
+// SKIPPED rows count as mapped → no error, no default applied.
+func TestApplyOrgMapping_OnlySkippedRowsPass(t *testing.T) {
 	dir := t.TempDir()
 	writeOrgCSV(t, dir, `sonarqube_org_key,sonarcloud_org_key
 org-a,SKIPPED
 org-b,SKIPPED
 `)
-	if err := validateOrgMapping(dir); err != nil {
+	if err := applyOrgMapping(dir, "", discardLogger()); err != nil {
 		t.Errorf("expected nil when all rows are SKIPPED, got %v", err)
 	}
 }
 
-// Whitespace-only cells are still "empty" — the user did not type a
-// real key, so the error must fire.
-func TestValidateOrgMapping_WhitespaceCountsAsEmpty(t *testing.T) {
+// Missing file → still surfaces the code-2 error (can't synthesize
+// without rows).
+func TestApplyOrgMapping_MissingFileReturnsExit2(t *testing.T) {
 	dir := t.TempDir()
-	writeOrgCSV(t, dir, `sonarqube_org_key,sonarcloud_org_key
-org-a,
-org-b,
-`)
-	if err := validateOrgMapping(dir); err == nil {
-		t.Error("expected error when all sonarcloud_org_key values are whitespace")
-	}
-}
-
-// Missing file → also surfaces the same error so the operator hears
-// about a misconfigured working directory immediately.
-func TestValidateOrgMapping_MissingFileReturnsExit2(t *testing.T) {
-	dir := t.TempDir()
-	err := validateOrgMapping(dir)
-	if err == nil {
+	if err := applyOrgMapping(dir, "any-default", discardLogger()); err == nil {
 		t.Fatal("expected error when organizations.csv is missing")
-	}
-	var ec *common.ExitCodeError
-	if !errors.As(err, &ec) || ec.Code != 2 {
-		t.Errorf("expected exit code 2 error, got %v (%T)", err, err)
 	}
 }

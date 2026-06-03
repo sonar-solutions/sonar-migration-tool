@@ -31,6 +31,12 @@ type MigrateConfig struct {
 	SkipProfiles       bool
 	IncludeScanHistory bool
 	Debug              bool // Enable slog.LevelDebug + verbose request payload logs
+
+	// DefaultOrganization, when set, is used as the SonarCloud org for
+	// every row in organizations.csv if none have a sonarcloud_org_key.
+	// If at least one mapping is defined, this is ignored with a Warn
+	// log. Issue #281.
+	DefaultOrganization string
 }
 
 // Executor is the runtime context passed to every migrate task function.
@@ -56,18 +62,18 @@ type Executor struct {
 func RunMigrate(ctx context.Context, cfg MigrateConfig) (string, error) {
 	cfg.applyDefaults()
 
-	// Fail fast when no SQC org mapping has been defined — otherwise the
-	// run would complete with nothing migrated, which is indistinguishable
-	// from a successful no-op (issue #279).
-	if err := validateOrgMapping(cfg.ExportDirectory); err != nil {
-		return "", err
-	}
-
 	level := slog.LevelInfo
 	if cfg.Debug {
 		level = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	// Validate the SQC org mapping and apply --default_organization
+	// fallback if requested (issues #279 + #281). Done before any API
+	// client setup so the failure or warning surfaces immediately.
+	if err := applyOrgMapping(cfg.ExportDirectory, cfg.DefaultOrganization, logger); err != nil {
+		return "", err
+	}
 
 	cloudURL := cfg.URL
 	apiURL := strings.Replace(cloudURL, "https://", "https://api.", 1)
