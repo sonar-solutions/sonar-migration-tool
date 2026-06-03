@@ -199,6 +199,7 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 		}
 	}
 	extracted := toExtractedIssues(issues)
+	extracted = append(extracted, extIssuesToExtracted(extIssues)...)
 	scanreport.BackdateChangesets(extracted, changesetsByKey, now)
 
 	metadata := scanreport.BuildMetadata(scanreport.MetadataInput{
@@ -429,16 +430,17 @@ func classifyExternalIssue(data json.RawMessage) (scanreport.ExternalIssueInput,
 	}
 	engineID := strings.TrimPrefix(repo, "external_")
 	return scanreport.ExternalIssueInput{
-		EngineID:  engineID,
-		RuleID:    key,
-		Message:   extractField(data, "message"),
-		Severity:  extractField(data, "severity"),
-		Type:      extractField(data, "type"),
-		StartLine: extractInt32(data, "textRange", "startLine"),
-		EndLine:   extractInt32(data, "textRange", "endLine"),
-		StartOff:  extractInt32(data, "textRange", "startOffset"),
-		EndOff:    extractInt32(data, "textRange", "endOffset"),
-		Component: extractField(data, "component"),
+		EngineID:     engineID,
+		RuleID:       key,
+		Message:      extractField(data, "message"),
+		Severity:     extractField(data, "severity"),
+		Type:         extractField(data, "type"),
+		StartLine:    extractInt32(data, "textRange", "startLine"),
+		EndLine:      extractInt32(data, "textRange", "endLine"),
+		StartOff:     extractInt32(data, "textRange", "startOffset"),
+		EndOff:       extractInt32(data, "textRange", "endOffset"),
+		Component:    extractField(data, "component"),
+		CreationDate: parseISODate(extractField(data, "creationDate")),
 	}, scanreport.AdHocRuleInput{
 		EngineID:    engineID,
 		RuleID:      key,
@@ -726,6 +728,19 @@ func toExtractedIssues(issues []scanreport.IssueInput) []scanreport.ExtractedIss
 	for _, iss := range issues {
 		result = append(result, scanreport.ExtractedIssue{
 			Key:          iss.Key,
+			Component:    iss.Component,
+			CreationDate: iss.CreationDate,
+			StartLine:    iss.StartLine,
+			EndLine:      iss.EndLine,
+		})
+	}
+	return result
+}
+
+func extIssuesToExtracted(extIssues []scanreport.ExternalIssueInput) []scanreport.ExtractedIssue {
+	result := make([]scanreport.ExtractedIssue, 0, len(extIssues))
+	for _, iss := range extIssues {
+		result = append(result, scanreport.ExtractedIssue{
 			Component:    iss.Component,
 			CreationDate: iss.CreationDate,
 			StartLine:    iss.StartLine,
