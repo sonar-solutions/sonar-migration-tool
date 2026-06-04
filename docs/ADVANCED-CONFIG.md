@@ -38,8 +38,11 @@ All optional.
 | `concurrency` | `10` | Default max parallel HTTP calls. |
 | `timeout` | `60` | Default HTTP request timeout in seconds. |
 | `export_directory` | `./migration-files` | Root directory for extract / migrate output. |
+| `skip-issue-sync` | `false` | When `true` (or `"on"` / `"yes"` / `1`), skip the final per-issue and per-hotspot metadata sync that runs after scan history is replayed. Defaults to `false` so the sync happens. Accepted aliases are case-insensitive. Issue #299. |
 
 `concurrency` and `timeout` can also be set inside `source` / `target` — those values override the top-level default for that command only.
+
+The CLI flag `--skip-issue-sync` on `migrate` / `transfer` is the one-way equivalent of the config field — passing the flag forces the trailing sync off, regardless of the config-file value.
 
 ---
 
@@ -134,6 +137,7 @@ sonar-migration-tool migrate [token] [enterprise_key] [flags]
 | `--target_task <task>` | Run a specific migration task (with its dependencies). |
 | `--skip_profiles` | Skip quality profile migration / provisioning. |
 | `--include_scan_history` | Import scan history into SQC projects. |
+| `--skip-issue-sync` | Skip the final per-issue / per-hotspot metadata sync (#299). One-way: setting this on the CLI forces the sync off, overriding the `skip-issue-sync` config field. |
 | `--default_organization <key>` | SonarCloud org applied to every project when `organizations.csv` has no mapping defined. |
 | `--concurrency <n>` | Max concurrent requests. |
 
@@ -183,6 +187,7 @@ file.
 | `--key_file_path <path>` | `source.key_file_path` | Client mTLS key file. |
 | `--cert_password <pw>` | `source.cert_password` | Client mTLS password. |
 | `--include-scan-history` | `include_scan_history` | Extract + import full scan history. |
+| `--skip-issue-sync` | top-level `skip-issue-sync` | Skip the final per-issue / per-hotspot metadata sync (#299). |
 
 CLI flags always override the corresponding config-file value.
 

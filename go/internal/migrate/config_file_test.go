@@ -197,6 +197,51 @@ func TestLoadMigrateConfigFileUnifiedShape(t *testing.T) {
 	}
 }
 
+// Issue #299: top-level `skip-issue-sync` parses into
+// MigrateConfig.SkipIssueSync one-for-one (no inversion). Defaults to
+// false (sync happens). Verifies every accepted alias from the
+// FlexibleBool type plus case variations.
+func TestLoadMigrateConfigFile_SkipIssueSync(t *testing.T) {
+	cases := []struct {
+		name      string
+		bodyField string
+		wantSkip  bool
+	}{
+		{"absent (default)", "", false},
+		{"true", `"skip-issue-sync": true,`, true},
+		{"false", `"skip-issue-sync": false,`, false},
+		{"string on", `"skip-issue-sync": "on",`, true},
+		{"string off", `"skip-issue-sync": "OFF",`, false},
+		{"string yes", `"skip-issue-sync": "Yes",`, true},
+		{"string no", `"skip-issue-sync": "no",`, false},
+		{"numeric 1", `"skip-issue-sync": 1,`, true},
+		{"numeric 0", `"skip-issue-sync": 0,`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := `{
+  ` + c.bodyField + `
+  "target": {
+    "url": "https://sonarcloud.io/",
+    "token": "t"
+  }
+}`
+			dir := t.TempDir()
+			path := dir + "/skip-issue-sync.json"
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadMigrateConfigFile(path)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if cfg.SkipIssueSync != c.wantSkip {
+				t.Errorf("SkipIssueSync: got %v, want %v", cfg.SkipIssueSync, c.wantSkip)
+			}
+		})
+	}
+}
+
 // Issue #281: target.default_organization parses into
 // MigrateConfig.DefaultOrganization.
 func TestLoadMigrateConfigFileUnifiedShape_DefaultOrganization(t *testing.T) {
