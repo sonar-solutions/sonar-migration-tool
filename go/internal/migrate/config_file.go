@@ -29,13 +29,13 @@ type configFileShape struct {
 	TargetTask         string `json:"target_task"`
 	SkipProfiles       bool   `json:"skip_profiles"`
 	IncludeScanHistory bool   `json:"include_scan_history"`
-	// IssueSync controls whether the final per-issue / per-hotspot
+	// SkipIssueSync controls whether the final per-issue / per-hotspot
 	// metadata sync runs after scan-history is replayed (#299).
-	// Defaults to "sync happens"; set to false (or "off" / "no") to
-	// skip it. Pointer + custom unmarshaller so we can distinguish
-	// absent from explicit-true.
-	IssueSync *FlexibleBool `json:"issue-sync"`
-	Debug     bool          `json:"debug"`
+	// Defaults to false (sync happens); set to true (or on / yes) to
+	// skip the sync. Pointer + custom unmarshaller so we can
+	// distinguish "absent" from "explicit false".
+	SkipIssueSync *FlexibleBool `json:"skip-issue-sync"`
+	Debug         bool          `json:"debug"`
 
 	// Shape 2 (command-sectioned).
 	Migrate *configFileShape `json:"migrate"`
@@ -153,24 +153,25 @@ func (s configFileShape) toMigrateConfig() MigrateConfig {
 			cfg.Concurrency = s.Concurrency
 		}
 		cfg.ExportDirectory = s.ExportDirectory
-		// Top-level issue-sync applies to every shape (#299).
-		// SkipIssueSync is the inverse of the user-facing toggle.
-		if s.IssueSync != nil && s.IssueSync.Set {
-			cfg.SkipIssueSync = !s.IssueSync.Value
+		// Top-level skip-issue-sync applies to every shape (#299).
+		// The field name matches the MigrateConfig field one-for-one
+		// so there's no inversion.
+		if s.SkipIssueSync != nil && s.SkipIssueSync.Set {
+			cfg.SkipIssueSync = s.SkipIssueSync.Value
 		}
 		return cfg
 	case s.SonarCloud != nil:
 		cfg := s.SonarCloud.toMigrateConfig(s.Settings)
-		if s.IssueSync != nil && s.IssueSync.Set {
-			cfg.SkipIssueSync = !s.IssueSync.Value
+		if s.SkipIssueSync != nil && s.SkipIssueSync.Set {
+			cfg.SkipIssueSync = s.SkipIssueSync.Value
 		}
 		return cfg
 	case s.Migrate != nil:
 		cfg := s.Migrate.toMigrateConfig()
-		// Outer-level issue-sync wins when both outer and inner set it
-		// (#299). If only outer is set, propagate it down.
-		if s.IssueSync != nil && s.IssueSync.Set {
-			cfg.SkipIssueSync = !s.IssueSync.Value
+		// Outer-level skip-issue-sync wins when both outer and inner
+		// set it (#299). If only outer is set, propagate it down.
+		if s.SkipIssueSync != nil && s.SkipIssueSync.Set {
+			cfg.SkipIssueSync = s.SkipIssueSync.Value
 		}
 		return cfg
 	default:
@@ -187,8 +188,8 @@ func (s configFileShape) toMigrateConfig() MigrateConfig {
 			IncludeScanHistory: s.IncludeScanHistory,
 			Debug:              s.Debug,
 		}
-		if s.IssueSync != nil && s.IssueSync.Set {
-			cfg.SkipIssueSync = !s.IssueSync.Value
+		if s.SkipIssueSync != nil && s.SkipIssueSync.Set {
+			cfg.SkipIssueSync = s.SkipIssueSync.Value
 		}
 		return cfg
 	}

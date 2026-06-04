@@ -197,24 +197,25 @@ func TestLoadMigrateConfigFileUnifiedShape(t *testing.T) {
 	}
 }
 
-// Issue #299: top-level `issue-sync` parses into
-// MigrateConfig.SkipIssueSync (with inversion — true means "sync
-// happens", which leaves SkipIssueSync=false). Verifies every accepted
-// alias from the flexibleBool type.
-func TestLoadMigrateConfigFile_IssueSync(t *testing.T) {
+// Issue #299: top-level `skip-issue-sync` parses into
+// MigrateConfig.SkipIssueSync one-for-one (no inversion). Defaults to
+// false (sync happens). Verifies every accepted alias from the
+// FlexibleBool type plus case variations.
+func TestLoadMigrateConfigFile_SkipIssueSync(t *testing.T) {
 	cases := []struct {
 		name      string
 		bodyField string
 		wantSkip  bool
 	}{
 		{"absent (default)", "", false},
-		{"true", `"issue-sync": true,`, false},
-		{"false", `"issue-sync": false,`, true},
-		{"string off", `"issue-sync": "off",`, true},
-		{"string no", `"issue-sync": "NO",`, true},
-		{"string yes", `"issue-sync": "Yes",`, false},
-		{"numeric 0", `"issue-sync": 0,`, true},
-		{"numeric 1", `"issue-sync": 1,`, false},
+		{"true", `"skip-issue-sync": true,`, true},
+		{"false", `"skip-issue-sync": false,`, false},
+		{"string on", `"skip-issue-sync": "on",`, true},
+		{"string off", `"skip-issue-sync": "OFF",`, false},
+		{"string yes", `"skip-issue-sync": "Yes",`, true},
+		{"string no", `"skip-issue-sync": "no",`, false},
+		{"numeric 1", `"skip-issue-sync": 1,`, true},
+		{"numeric 0", `"skip-issue-sync": 0,`, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -226,7 +227,7 @@ func TestLoadMigrateConfigFile_IssueSync(t *testing.T) {
   }
 }`
 			dir := t.TempDir()
-			path := dir + "/issue-sync.json"
+			path := dir + "/skip-issue-sync.json"
 			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 				t.Fatal(err)
 			}

@@ -29,7 +29,7 @@ const (
 	flagDefaultOrg         = "default_organization"
 	flagExportDir          = "export-dir"
 	flagIncludeScanHistory = "include-scan-history"
-	flagNoIssueSync        = "no-issue-sync"
+	flagSkipIssueSync      = "skip-issue-sync"
 	flagConcurrency        = "concurrency"
 	flagTimeout            = "timeout"
 	flagPEMFilePath        = "pem_file_path"
@@ -100,7 +100,7 @@ func init() {
 	f.String(flagEnterpriseKey, "", scCloudName+" enterprise key (maps to target.enterprise_key, defaults to --"+flagDefaultOrg+")")
 	f.String(flagExportDir, "./migration-files/", "Working directory for intermediate files (maps to export_directory)")
 	f.Bool(flagIncludeScanHistory, false, "Extract and import full issue/hotspot scan history (maps to include_scan_history)")
-	f.Bool(flagNoIssueSync, false, "Skip the final per-issue and per-hotspot metadata sync (#299). Overrides the issue-sync config-file field when set.")
+	f.Bool(flagSkipIssueSync, false, "Skip the final per-issue and per-hotspot metadata sync (#299). Same semantics as the skip-issue-sync config-file field — defaults to false (sync happens); pass the flag to skip.")
 	f.Int(flagConcurrency, 0, "Max concurrent requests (default: 25) (maps to concurrency)")
 	f.Int(flagTimeout, 0, "HTTP request timeout in seconds (maps to timeout)")
 	f.String(flagPEMFilePath, "", "Path to client mTLS PEM file for the source server (maps to source.pem_file_path)")
@@ -218,11 +218,11 @@ func resolveTransferConfig(cmd *cobra.Command) (transferConfig, error) {
 	applyFlagString(cmd, flagKeyFilePath, &cfg.keyFilePath)
 	applyFlagString(cmd, flagCertPassword, &cfg.certPassword)
 	applyFlagBool(cmd, flagIncludeScanHistory, &cfg.includeScanHistory)
-	// --no-issue-sync is one-way: explicit true on the CLI sets
+	// --skip-issue-sync is one-way: explicit true on the CLI sets
 	// skipIssueSync, but the absence of the flag does NOT undo a
-	// config-file `issue-sync: false`.
-	if cmd.Flags().Changed(flagNoIssueSync) {
-		v, _ := cmd.Flags().GetBool(flagNoIssueSync)
+	// config-file skip-issue-sync: true.
+	if cmd.Flags().Changed(flagSkipIssueSync) {
+		v, _ := cmd.Flags().GetBool(flagSkipIssueSync)
 		if v {
 			cfg.skipIssueSync = true
 		}
