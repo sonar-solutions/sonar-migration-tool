@@ -40,6 +40,7 @@ const (
 	flagKeyFilePath        = "key_file_path"
 	flagCertPassword       = "cert_password"
 	flagDebug              = "debug"
+	flagExcludeBranches    = "exclude-branches"
 )
 
 var transferCmd = &cobra.Command{
@@ -110,6 +111,7 @@ func init() {
 	f.String(flagPEMFilePath, "", "Path to client mTLS PEM file for the source server (maps to source.pem_file_path)")
 	f.String(flagKeyFilePath, "", "Path to client mTLS key file for the source server (maps to source.key_file_path)")
 	f.String(flagCertPassword, "", "Password for the source server mTLS client certificate (maps to source.cert_password)")
+	f.StringSlice(flagExcludeBranches, nil, "Glob patterns for non-main branches to skip during scan history import (e.g. feature/*,bugfix/*)")
 }
 
 // transferConfig holds the resolved configuration after merging file and flag values.
@@ -130,6 +132,7 @@ type transferConfig struct {
 	includeScanHistory  bool
 	skipIssueSync       bool
 	debug               bool
+	excludeBranches     []string
 }
 
 func applyFlagString(cmd *cobra.Command, name string, target *string) {
@@ -193,6 +196,7 @@ func loadTransferFileDefaults(path string) (transferConfig, error) {
 	cfg.includeScanHistory = extractCfg.IncludeScanHistory || migrateCfg.IncludeScanHistory
 	cfg.skipIssueSync = migrateCfg.SkipIssueSync
 	cfg.debug = migrateCfg.Debug
+	cfg.excludeBranches = migrateCfg.ExcludeBranches
 	return cfg, nil
 }
 
@@ -232,6 +236,9 @@ func resolveTransferConfig(cmd *cobra.Command) (transferConfig, error) {
 		}
 	}
 	applyFlagBool(cmd, flagDebug, &cfg.debug)
+	if cmd.Flags().Changed(flagExcludeBranches) {
+		cfg.excludeBranches, _ = cmd.Flags().GetStringSlice(flagExcludeBranches)
+	}
 
 	if cfg.exportDir == "" {
 		cfg.exportDir = "./migration-files/"
@@ -362,6 +369,7 @@ func runTransferMigrate(ctx context.Context, cfg transferConfig) (string, error)
 		IncludeScanHistory: cfg.includeScanHistory,
 		SkipIssueSync:      cfg.skipIssueSync,
 		Debug:              cfg.debug,
+		ExcludeBranches:    cfg.excludeBranches,
 	})
 	if err != nil {
 		return "", fmt.Errorf("migrate failed: %w", err)

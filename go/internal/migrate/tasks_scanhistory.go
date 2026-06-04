@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/scanreport"
 	pb "github.com/sonar-solutions/sonar-migration-tool/internal/scanreport/proto"
+	"golang.org/x/sync/errgroup"
 )
 
 func scanHistoryTasks() []TaskDef {
@@ -39,6 +42,11 @@ func runImportScanHistory(ctx context.Context, e *Executor) error {
 		return err
 	}
 
+	completed := loadCompletedBranches(e.Store)
+
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
+
 	for i, proj := range projects {
 		cloudKey := extractField(proj, "cloud_project_key")
 		orgKey := extractField(proj, "sonarcloud_org_key")
@@ -51,15 +59,27 @@ func runImportScanHistory(ctx context.Context, e *Executor) error {
 
 		e.Logger.Info("importing scan history", "project", cloudKey, "progress", fmt.Sprintf("%d/%d", i+1, len(projects)))
 
-		sqBranches := collectBranchInfo(e, serverURL, serverKey)
-		if len(sqBranches) == 0 {
-			sqBranches = []branchInfo{{Name: "main", IsMain: true}}
-		}
+		g.Go(func() error {
+			if gCtx.Err() != nil {
+				return gCtx.Err()
+			}
 
-		scMainBranch := fetchSCMainBranch(ctx, e, cloudKey)
-		importProjectBranches(ctx, e, proj, sqBranches, scMainBranch, w)
+			sqBranches := collectBranchInfo(e, serverURL, serverKey)
+			if len(sqBranches) == 0 {
+				sqBranches = []branchInfo{{Name: "main", IsMain: true}}
+			}
+			sortBranchesMainFirst(sqBranches)
+			sqBranches = filterBranches(sqBranches, e.ExcludeBranches)
+
+			scMainBranch := fetchSCMainBranch(gCtx, e, cloudKey)
+
+			if err := importProjectBranches(gCtx, e, proj, sqBranches, scMainBranch, completed, w); err != nil {
+				e.Logger.Warn("project scan history failed", "project", cloudKey, "err", err)
+			}
+			return nil
+		})
 	}
-	return nil
+	return g.Wait()
 }
 
 // fetchSCMainBranch queries SonarCloud for the main branch name of a project.
@@ -82,39 +102,101 @@ func fetchSCMainBranch(ctx context.Context, e *Executor, cloudKey string) string
 }
 
 // importProjectBranches imports scan history for every branch of one project.
-func importProjectBranches(ctx context.Context, e *Executor, proj json.RawMessage, sqBranches []branchInfo, scMainBranch string, w *common.ChunkWriter) {
+// Main branch is imported first; if it fails, remaining branches are skipped.
+func importProjectBranches(ctx context.Context, e *Executor, proj json.RawMessage,
+	sqBranches []branchInfo, scMainBranch string, completed map[string]bool, w *common.ChunkWriter) error {
+
 	cloudKey := extractField(proj, "cloud_project_key")
 	orgKey := extractField(proj, "sonarcloud_org_key")
 	serverURL := extractField(proj, "server_url")
 	serverKey := extractField(proj, "key")
 
-	for _, branch := range sqBranches {
-		targetBranch := branch.Name
-		if branch.IsMain && scMainBranch != "" {
-			targetBranch = scMainBranch
-		}
-		result, err := importBranch(ctx, e, importBranchInput{
-			CloudKey:     cloudKey,
-			OrgKey:       orgKey,
-			ServerURL:    serverURL,
-			ServerKey:    serverKey,
-			Branch:       branch.Name,
-			TargetBranch: targetBranch,
-		})
-		if err != nil {
-			logAPIWarn(e.Logger, "scan history import failed", err, "project", cloudKey, "branch", branch.Name)
-			result = &importResult{Status: "failed", Error: err.Error()}
-		}
-
-		record, _ := json.Marshal(map[string]any{
-			"cloud_project_key": cloudKey,
-			"branch":            branch.Name,
-			"status":            result.Status,
-			"task_id":           result.TaskID,
-			"error":             result.Error,
-		})
-		w.WriteOne(record) //nolint:errcheck
+	bctx := branchImportContext{
+		CloudKey:     cloudKey,
+		OrgKey:       orgKey,
+		ServerURL:    serverURL,
+		ServerKey:    serverKey,
+		SCMainBranch: scMainBranch,
+		Completed:    completed,
+		Writer:       w,
 	}
+
+	var mainBranch *branchInfo
+	var nonMainBranches []branchInfo
+	for i := range sqBranches {
+		if sqBranches[i].IsMain {
+			mainBranch = &sqBranches[i]
+		} else {
+			nonMainBranches = append(nonMainBranches, sqBranches[i])
+		}
+	}
+
+	// Phase 1: import main branch (blocking gate).
+	if mainBranch != nil {
+		if err := importAndRecordBranch(ctx, e, bctx, *mainBranch); err != nil {
+			e.Logger.Warn("main branch failed, skipping remaining branches",
+				"project", cloudKey, "err", err)
+			for _, nb := range nonMainBranches {
+				recordBranchResult(w, cloudKey, nb.Name, &importResult{
+					Status: "skipped", Error: "skipped: main branch CE failed",
+				})
+			}
+			return fmt.Errorf("main branch CE failed for %s: %w", cloudKey, err)
+		}
+	}
+
+	// Phase 2: import non-main branches sequentially.
+	for _, branch := range nonMainBranches {
+		_ = importAndRecordBranch(ctx, e, bctx, branch)
+	}
+	return nil
+}
+
+type branchImportContext struct {
+	CloudKey     string
+	OrgKey       string
+	ServerURL    string
+	ServerKey    string
+	SCMainBranch string
+	Completed    map[string]bool
+	Writer       *common.ChunkWriter
+}
+
+func importAndRecordBranch(ctx context.Context, e *Executor, bctx branchImportContext, branch branchInfo) error {
+	if shouldSkipBranch(bctx.Completed, bctx.CloudKey, branch.Name) {
+		e.Logger.Debug("skipping already-completed branch", "project", bctx.CloudKey, "branch", branch.Name)
+		return nil
+	}
+
+	targetBranch := branch.Name
+	if branch.IsMain && bctx.SCMainBranch != "" {
+		targetBranch = bctx.SCMainBranch
+	}
+	result, err := importBranch(ctx, e, importBranchInput{
+		CloudKey:     bctx.CloudKey,
+		OrgKey:       bctx.OrgKey,
+		ServerURL:    bctx.ServerURL,
+		ServerKey:    bctx.ServerKey,
+		Branch:       branch.Name,
+		TargetBranch: targetBranch,
+	})
+	if err != nil {
+		logAPIWarn(e.Logger, "scan history import failed", err, "project", bctx.CloudKey, "branch", branch.Name)
+		result = &importResult{Status: "failed", Error: err.Error()}
+	}
+	recordBranchResult(bctx.Writer, bctx.CloudKey, branch.Name, result)
+	return err
+}
+
+func recordBranchResult(w *common.ChunkWriter, cloudKey, branchName string, result *importResult) {
+	record, _ := json.Marshal(map[string]any{
+		"cloud_project_key": cloudKey,
+		"branch":            branchName,
+		"status":            result.Status,
+		"task_id":           result.TaskID,
+		"error":             result.Error,
+	})
+	w.WriteOne(record) //nolint:errcheck
 }
 
 type importBranchInput struct {
@@ -303,6 +385,67 @@ func collectBranchInfo(e *Executor, serverURL, serverKey string) []branchInfo {
 		}
 	}
 	return branches
+}
+
+func sortBranchesMainFirst(branches []branchInfo) {
+	slices.SortStableFunc(branches, func(a, b branchInfo) int {
+		if a.IsMain && !b.IsMain {
+			return -1
+		}
+		if !a.IsMain && b.IsMain {
+			return 1
+		}
+		return 0
+	})
+}
+
+func filterBranches(branches []branchInfo, excludePatterns []string) []branchInfo {
+	if len(excludePatterns) == 0 {
+		return branches
+	}
+	var filtered []branchInfo
+	for _, b := range branches {
+		if b.IsMain {
+			filtered = append(filtered, b)
+			continue
+		}
+		if matchesAnyGlob(b.Name, excludePatterns) {
+			continue
+		}
+		filtered = append(filtered, b)
+	}
+	return filtered
+}
+
+func matchesAnyGlob(name string, patterns []string) bool {
+	for _, p := range patterns {
+		if matched, _ := filepath.Match(p, name); matched {
+			return true
+		}
+	}
+	return false
+}
+
+func loadCompletedBranches(store *common.DataStore) map[string]bool {
+	items, err := store.ReadAll("importScanHistory")
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+	done := make(map[string]bool)
+	for _, item := range items {
+		if extractField(item, "status") == "success" {
+			key := extractField(item, "cloud_project_key") + ":" + extractField(item, "branch")
+			done[key] = true
+		}
+	}
+	return done
+}
+
+func shouldSkipBranch(completed map[string]bool, cloudKey, branchName string) bool {
+	if completed == nil {
+		return false
+	}
+	return completed[cloudKey+":"+branchName]
 }
 
 type sourceRecord struct {

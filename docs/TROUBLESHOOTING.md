@@ -259,6 +259,47 @@ These differences have been investigated. They do NOT cause CE processing failur
 
 ---
 
+## Branch Migration Ordering and Failures
+<!-- updated: 2026-06-04_15:00:00 -->
+
+When `importScanHistory` migrates a project with multiple branches, the ordering of branch uploads matters. SonarCloud's Compute Engine (CE) requires the main branch to be imported and fully processed before any non-main branches can be submitted. If non-main branches are uploaded first, CE will reject them.
+
+### Main branch must succeed before non-main branches
+
+The tool automatically handles this: it sorts branches so the main branch is always first, imports it, and waits for CE to report SUCCESS before proceeding with non-main branches. If the main branch CE task fails, all remaining branches for that project are marked as "skipped" and the tool moves on to the next project.
+
+**Symptom**: Non-main branch CE tasks fail with errors like "Invalid branch type" or "Branch 'main' already exists with type 'LONG'".
+
+**Solution**: This is now handled automatically. If you see these errors on older runs, re-run the migration — the tool will use per-branch checkpoint/resume to skip already-completed branches and retry the failed ones in the correct order.
+
+### Excluding branches from migration
+
+Use the `--exclude-branches` flag (or `exclude_branches` in the JSON config) to skip specific non-main branches during scan history import. This accepts glob patterns compatible with Go's `filepath.Match`:
+
+```bash
+# Exclude all feature branches and release branches
+sonar-migration-tool migrate ... --exclude-branches "feature/*" --exclude-branches "release/*"
+
+# Or in config.json
+{
+  "target": {
+    "exclude_branches": ["feature/*", "release/*"]
+  }
+}
+```
+
+The main branch is **never** excluded, regardless of patterns. See [ADVANCED-CONFIG.md](ADVANCED-CONFIG.md) for the full config reference.
+
+### Resuming after a branch failure
+
+The tool tracks per-branch completion status. When resuming a failed migration with `--run_id`, branches that already succeeded are automatically skipped. Only failed or not-yet-attempted branches are retried.
+
+### Project-level parallelism
+
+Multiple projects are imported in parallel (bounded by concurrency). A failure in one project does not cancel or affect other projects — each project's branches are processed independently.
+
+---
+
 ## Getting Help
 <!-- updated: 2026-06-04_01:14:00.000 by Claude -->
 

@@ -42,6 +42,10 @@ type MigrateConfig struct {
 	// If at least one mapping is defined, this is ignored with a Warn
 	// log. Issue #281.
 	DefaultOrganization string
+
+	// ExcludeBranches holds glob patterns for non-main branches to skip
+	// during scan history import. Main branch is never excluded.
+	ExcludeBranches []string
 }
 
 // Executor is the runtime context passed to every migrate task function.
@@ -60,6 +64,7 @@ type Executor struct {
 	Mapping   structure.ExtractMapping
 	Sem       chan struct{}
 	Logger    *slog.Logger
+	ExcludeBranches []string
 }
 
 // RunMigrate is the main entry point for the migrate command.
@@ -184,7 +189,8 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) (string, error) {
 		Edition:   edition,
 		ExportDir: cfg.ExportDirectory,
 		Mapping:   mapping,
-		Sem:       make(chan struct{}, cfg.Concurrency),
+		Sem:             make(chan struct{}, cfg.Concurrency),
+		ExcludeBranches: cfg.ExcludeBranches,
 		Logger:    logger,
 	}
 

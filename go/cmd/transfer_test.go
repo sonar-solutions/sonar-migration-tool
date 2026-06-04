@@ -7,6 +7,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -92,7 +93,7 @@ func TestResolveTransferConfig_UnifiedConfigShape(t *testing.T) {
 		keyFilePath:         "/cert/key",
 		certPassword:        "p4ss",
 	}
-	if cfg != want {
+	if !reflect.DeepEqual(cfg, want) {
 		t.Errorf("got %+v\nwant %+v", cfg, want)
 	}
 }
