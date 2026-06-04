@@ -30,6 +30,7 @@ type MigrateConfig struct {
 	TargetTask      string
 	SkipProfiles       bool
 	IncludeScanHistory bool
+	SkipIssueSync      bool // Skip the final issue / hotspot metadata sync (#299).
 	Debug              bool // Enable slog.LevelDebug + verbose request payload logs
 
 	// DefaultOrganization, when set, is used as the SonarCloud org for
@@ -131,7 +132,16 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) (string, error) {
 	registry := BuildMigrateRegistry(allDefs)
 	registry = FilterByEdition(registry, edition)
 
-	targets := MigrateTargetTasks(registry, cfg.TargetTask, cfg.SkipProfiles, cfg.IncludeScanHistory)
+	// Announce the skipped sync tasks explicitly so an operator who
+	// passed --no-issue-sync (or set issue-sync: false in the config)
+	// sees them named in the log alongside the rest of the plan. The
+	// gating itself happens inside MigrateTargetTasks. #299.
+	if cfg.SkipIssueSync && cfg.IncludeScanHistory {
+		logger.Info("skipping per-issue / per-hotspot metadata sync (issue-sync disabled)",
+			"skipped_tasks", []string{"syncIssueMetadata", "syncHotspotMetadata"})
+	}
+
+	targets := MigrateTargetTasks(registry, cfg.TargetTask, cfg.SkipProfiles, cfg.IncludeScanHistory, cfg.SkipIssueSync)
 	taskSet := ResolveDependencies(targets, registry)
 	if taskSet == nil {
 		return "", fmt.Errorf("cannot resolve dependencies for target tasks")

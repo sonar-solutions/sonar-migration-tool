@@ -29,7 +29,13 @@ type configFileShape struct {
 	TargetTask         string `json:"target_task"`
 	SkipProfiles       bool   `json:"skip_profiles"`
 	IncludeScanHistory bool   `json:"include_scan_history"`
-	Debug              bool   `json:"debug"`
+	// IssueSync controls whether the final per-issue / per-hotspot
+	// metadata sync runs after scan-history is replayed (#299).
+	// Defaults to "sync happens"; set to false (or "off" / "no") to
+	// skip it. Pointer + custom unmarshaller so we can distinguish
+	// absent from explicit-true.
+	IssueSync *FlexibleBool `json:"issue-sync"`
+	Debug     bool          `json:"debug"`
 
 	// Shape 2 (command-sectioned).
 	Migrate *configFileShape `json:"migrate"`
@@ -147,13 +153,28 @@ func (s configFileShape) toMigrateConfig() MigrateConfig {
 			cfg.Concurrency = s.Concurrency
 		}
 		cfg.ExportDirectory = s.ExportDirectory
+		// Top-level issue-sync applies to every shape (#299).
+		// SkipIssueSync is the inverse of the user-facing toggle.
+		if s.IssueSync != nil && s.IssueSync.Set {
+			cfg.SkipIssueSync = !s.IssueSync.Value
+		}
 		return cfg
 	case s.SonarCloud != nil:
-		return s.SonarCloud.toMigrateConfig(s.Settings)
+		cfg := s.SonarCloud.toMigrateConfig(s.Settings)
+		if s.IssueSync != nil && s.IssueSync.Set {
+			cfg.SkipIssueSync = !s.IssueSync.Value
+		}
+		return cfg
 	case s.Migrate != nil:
-		return s.Migrate.toMigrateConfig()
+		cfg := s.Migrate.toMigrateConfig()
+		// Outer-level issue-sync wins when both outer and inner set it
+		// (#299). If only outer is set, propagate it down.
+		if s.IssueSync != nil && s.IssueSync.Set {
+			cfg.SkipIssueSync = !s.IssueSync.Value
+		}
+		return cfg
 	default:
-		return MigrateConfig{
+		cfg := MigrateConfig{
 			Token:              s.Token,
 			EnterpriseKey:      s.EnterpriseKey,
 			URL:                s.URL,
@@ -166,6 +187,10 @@ func (s configFileShape) toMigrateConfig() MigrateConfig {
 			IncludeScanHistory: s.IncludeScanHistory,
 			Debug:              s.Debug,
 		}
+		if s.IssueSync != nil && s.IssueSync.Set {
+			cfg.SkipIssueSync = !s.IssueSync.Value
+		}
+		return cfg
 	}
 }
 

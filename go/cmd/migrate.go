@@ -48,6 +48,7 @@ func init() {
 	f.String("target_task", "", "Name of a specific migration task to complete")
 	f.Bool("skip_profiles", false, "Skip quality profile migration/provisioning in SonarQube Cloud")
 	f.Bool("include_scan_history", false, "Import scan history (issues, metrics) into SonarQube Cloud projects")
+	f.Bool("no-issue-sync", false, "Skip the final per-issue and per-hotspot metadata sync (#299). Overrides the issue-sync config-file field when set.")
 	f.String("default_organization", "", "SonarQube Cloud organization to migrate every project into when organizations.csv has no mapping defined. Ignored if any mapping is present.")
 }
 
@@ -86,6 +87,16 @@ func buildMigrateConfig(cmd *cobra.Command, args []string) (migrate.MigrateConfi
 	}
 	if cmd.Flags().Changed("include_scan_history") {
 		cfg.IncludeScanHistory, _ = cmd.Flags().GetBool("include_scan_history")
+	}
+	// --no-issue-sync explicitly turns off the trailing sync. The flag
+	// always wins over the config-file `issue-sync` field. Note we
+	// don't allow --no-issue-sync=false on the CLI to undo a config
+	// `issue-sync: false` — the flag is one-way (opt-out).
+	if cmd.Flags().Changed("no-issue-sync") {
+		v, _ := cmd.Flags().GetBool("no-issue-sync")
+		if v {
+			cfg.SkipIssueSync = true
+		}
 	}
 	if cmd.Flags().Changed("debug") {
 		cfg.Debug, _ = cmd.Flags().GetBool("debug")

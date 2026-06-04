@@ -70,20 +70,32 @@ func RegisterAll() []TaskDef {
 
 // migrateScanHistoryTasks lists task names that require the --include-scan-history flag.
 var migrateScanHistoryTasks = map[string]bool{
-	"importScanHistory":    true,
-	"syncHotspotMetadata":  true,
-	"syncIssueMetadata":    true,
+	"importScanHistory":   true,
+	"syncHotspotMetadata": true,
+	"syncIssueMetadata":   true,
+}
+
+// migrateIssueSyncTasks lists the final per-issue / per-hotspot
+// metadata sync tasks that --no-issue-sync (or config issue-sync:
+// false) excludes. The two are bundled together — issue #299 treats
+// "issue sync" as both the issue-status pass AND the hotspot-status
+// pass, since they're the same kind of post-import touch-up step.
+// importScanHistory itself stays included; only the trailing sync
+// pair is skipped.
+var migrateIssueSyncTasks = map[string]bool{
+	"syncHotspotMetadata": true,
+	"syncIssueMetadata":   true,
 }
 
 // MigrateTargetTasks determines which tasks to run.
 // Default: all tasks NOT starting with "get", "delete", or "reset".
-func MigrateTargetTasks(reg map[string]*TaskDef, targetTask string, skipProfiles, includeScanHistory bool) []string {
+func MigrateTargetTasks(reg map[string]*TaskDef, targetTask string, skipProfiles, includeScanHistory, skipIssueSync bool) []string {
 	if targetTask != "" {
 		return []string{targetTask}
 	}
 	var tasks []string
 	for name := range reg {
-		if isExcludedTask(name, skipProfiles, includeScanHistory) {
+		if isExcludedTask(name, skipProfiles, includeScanHistory, skipIssueSync) {
 			continue
 		}
 		tasks = append(tasks, name)
@@ -94,7 +106,7 @@ func MigrateTargetTasks(reg map[string]*TaskDef, targetTask string, skipProfiles
 
 var excludePrefixes = []string{"get", "delete", "reset"}
 
-func isExcludedTask(name string, skipProfiles, includeScanHistory bool) bool {
+func isExcludedTask(name string, skipProfiles, includeScanHistory, skipIssueSync bool) bool {
 	for _, prefix := range excludePrefixes {
 		if strings.HasPrefix(name, prefix) {
 			return true
@@ -103,5 +115,11 @@ func isExcludedTask(name string, skipProfiles, includeScanHistory bool) bool {
 	if skipProfiles && (strings.Contains(name, "Profile") || strings.Contains(name, "profile")) {
 		return true
 	}
-	return migrateScanHistoryTasks[name] && !includeScanHistory
+	if migrateScanHistoryTasks[name] && !includeScanHistory {
+		return true
+	}
+	if skipIssueSync && migrateIssueSyncTasks[name] {
+		return true
+	}
+	return false
 }
