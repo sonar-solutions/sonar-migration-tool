@@ -1,3 +1,7 @@
+// Copyright (C) SonarSource Sàrl
+// For more information, see https://sonarsource.com/legal/
+// mailto:info AT sonarsource DOT com
+
 // Package scanreport builds and submits SonarScanner-compatible reports
 // to SonarCloud's Compute Engine for scan history migration.
 package scanreport

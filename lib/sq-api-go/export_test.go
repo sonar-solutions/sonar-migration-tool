@@ -1,3 +1,7 @@
+// Copyright (C) SonarSource Sàrl
+// For more information, see https://sonarsource.com/legal/
+// mailto:info AT sonarsource DOT com
+
 // This file is in package sqapi (not sqapi_test) so it can access unexported
 // identifiers. It is compiled only during 'go test' because the filename ends
 // in _test.go. These exports are not part of the public API.

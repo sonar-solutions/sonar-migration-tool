@@ -1,3 +1,7 @@
+// Copyright (C) SonarSource Sàrl
+// For more information, see https://sonarsource.com/legal/
+// mailto:info AT sonarsource DOT com
+
 // Package predict produces a migration summary PDF before any migrate
 // step has run. It synthesises the JSONL outputs the summary pipeline
 // expects (generate*Mappings + create* + addGateConditions.notes) from

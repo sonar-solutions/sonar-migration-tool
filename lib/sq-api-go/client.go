@@ -1,3 +1,7 @@
+// Copyright (C) SonarSource Sàrl
+// For more information, see https://sonarsource.com/legal/
+// mailto:info AT sonarsource DOT com
+
 // Package sqapi provides a typed Go client for the SonarQube Server and
 // SonarQube Cloud APIs. It is scoped to the endpoints used by the
 // sonar-migration-tool.

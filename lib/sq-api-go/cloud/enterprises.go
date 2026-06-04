@@ -1,3 +1,7 @@
+// Copyright (C) SonarSource Sàrl
+// For more information, see https://sonarsource.com/legal/
+// mailto:info AT sonarsource DOT com
+
 // Package cloud — enterprises.go covers the /enterprises REST API available on
 // SonarQube Cloud Enterprise plans. This API uses a different base URL
 // (api.sonarcloud.io rather than sonarcloud.io) and JSON request/response bodies.

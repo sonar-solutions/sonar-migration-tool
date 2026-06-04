@@ -1,3 +1,7 @@
+// Copyright (C) SonarSource Sàrl
+// For more information, see https://sonarsource.com/legal/
+// mailto:info AT sonarsource DOT com
+
 // Package cloud — newcode.go covers the /api/new_code_periods endpoints used
 // by the sonar-migration-tool to migrate per-branch new-code policy.
 package cloud

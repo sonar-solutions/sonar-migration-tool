@@ -1,3 +1,7 @@
+// Copyright (C) SonarSource Sàrl
+// For more information, see https://sonarsource.com/legal/
+// mailto:info AT sonarsource DOT com
+
 // Package server provides typed SonarQube Server API clients for the endpoints
 // used by the sonar-migration-tool.
 //

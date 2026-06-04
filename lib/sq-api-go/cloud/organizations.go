@@ -1,3 +1,7 @@
+// Copyright (C) SonarSource Sàrl
+// For more information, see https://sonarsource.com/legal/
+// mailto:info AT sonarsource DOT com
+
 // Package cloud — organizations.go covers the lookup endpoints we need to
 // resolve a human-readable organization key (e.g. "my-org") to the UUID that
 // other SonarQube Cloud enterprise endpoints expect — in particular

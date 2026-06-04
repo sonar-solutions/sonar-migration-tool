@@ -1,3 +1,7 @@
+// Copyright (C) SonarSource Sàrl
+// For more information, see https://sonarsource.com/legal/
+// mailto:info AT sonarsource DOT com
+
 // Package pipeline provides the version-specific extraction interface and four
 // concrete implementations covering SQ 9.9 LTS, SQ 10.0-10.3, SQ 10.4-10.8,
 // and SQ 2025.1+. A version router selects the correct pipeline at startup.
