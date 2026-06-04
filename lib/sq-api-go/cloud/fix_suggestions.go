@@ -1,3 +1,7 @@
+// Copyright (C) SonarSource Sàrl
+// For more information, see https://sonarsource.com/legal/
+// mailto:info AT sonarsource DOT com
+
 // Package cloud — fix_suggestions.go covers the SonarQube Cloud AI
 // Code Fix organization-config endpoint, used by the migration tool to
 // translate SQS-side AI Code Fix configuration into the equivalent SQC

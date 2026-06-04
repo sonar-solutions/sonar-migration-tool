@@ -1,3 +1,7 @@
+// Copyright (C) SonarSource Sàrl
+// For more information, see https://sonarsource.com/legal/
+// mailto:info AT sonarsource DOT com
+
 // Package cloud provides typed SonarQube Cloud API clients for the endpoints
 // used by the sonar-migration-tool. It covers write-path (migration) operations:
 // creating, updating, and deleting projects, groups, quality profiles, quality
