@@ -1,0 +1,19 @@
+{
+  "sonarqube": {
+    "url": "https://sonarqube.example.com",
+    "token": "sqp_YOUR_SONARQUBE_SERVER_TOKEN",
+    "projectKey": "my-project-key"
+  },
+  "sonarcloud": {
+    "url": "https://sonarcloud.io/",
+    "token": "YOUR_SONARCLOUD_TOKEN",
+    "organization": "my-org",
+    "enterpriseKey": "my-enterprise"
+  },
+  "settings": {
+    "exportDirectory": "./migration-files",
+    "concurrency": 10,
+    "includeScanHistory": true,
+    "debug": false
+  }
+}

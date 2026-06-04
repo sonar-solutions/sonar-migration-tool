@@ -58,8 +58,8 @@ func TestBuildBranchMapShortFiltered(t *testing.T) {
 
 func TestScanHistoryTasks(t *testing.T) {
 	tasks := scanHistoryTasks()
-	if len(tasks) != 5 {
-		t.Fatalf("expected 5 scan history tasks, got %d", len(tasks))
+	if len(tasks) != 6 {
+		t.Fatalf("expected 6 scan history tasks, got %d", len(tasks))
 	}
 
 	names := map[string]bool{}
@@ -72,6 +72,7 @@ func TestScanHistoryTasks(t *testing.T) {
 		"getProjectComponentTree",
 		"getProjectSourceCode",
 		"getProjectSCMData",
+		"getProjectVersions",
 	}
 	for _, name := range expected {
 		if !names[name] {
@@ -440,6 +441,75 @@ func TestProjectIssuesFullTaskNonFatal(t *testing.T) {
 	e.Store.Writer("getBranches")
 
 	fn := projectIssuesFullTask()
+	err := fn(ctx(t), e)
+	if err != nil {
+		t.Fatalf("expected non-fatal skip, got error: %v", err)
+	}
+}
+
+func TestProjectVersionsTask(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/navigation/component" {
+			json.NewEncoder(w).Encode(map[string]any{
+				"key":     r.URL.Query().Get("component"),
+				"name":    "My Project",
+				"version": "2.5.0",
+			})
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	e := newTestExecutor(t)
+	e.ServerURL = "http://test/"
+	e.Raw = NewRawClient(srv.Client(), srv.URL+"/")
+
+	w, _ := e.Store.Writer("getProjects")
+	b, _ := json.Marshal(map[string]any{"key": "p1"})
+	w.WriteOne(b)
+	e.Store.Writer("getBranches")
+
+	fn := projectVersionsTask()
+	err := fn(ctx(t), e)
+	if err != nil {
+		t.Fatalf("projectVersionsTask: %v", err)
+	}
+
+	items, _ := e.Store.ReadAll("getProjectVersions")
+	if len(items) != 1 {
+		t.Fatalf("expected 1 version record, got %d", len(items))
+	}
+	version := extractField(items[0], "version")
+	if version != "2.5.0" {
+		t.Errorf("expected version 2.5.0, got %s", version)
+	}
+	proj := extractField(items[0], "projectKey")
+	if proj != "p1" {
+		t.Errorf("expected projectKey p1, got %s", proj)
+	}
+	branch := extractField(items[0], "branch")
+	if branch != "main" {
+		t.Errorf("expected branch main, got %s", branch)
+	}
+}
+
+func TestProjectVersionsTaskNonFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(403)
+	}))
+	defer srv.Close()
+
+	e := newTestExecutor(t)
+	e.ServerURL = "http://test/"
+	e.Raw = NewRawClient(srv.Client(), srv.URL+"/")
+
+	w, _ := e.Store.Writer("getProjects")
+	b, _ := json.Marshal(map[string]any{"key": "p1"})
+	w.WriteOne(b)
+	e.Store.Writer("getBranches")
+
+	fn := projectVersionsTask()
 	err := fn(ctx(t), e)
 	if err != nil {
 		t.Fatalf("expected non-fatal skip, got error: %v", err)

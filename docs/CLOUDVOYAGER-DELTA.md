@@ -253,18 +253,28 @@ the component tree in SQ's API) but it's discarded.
 ---
 
 ### BUG-11: No measures data included in protobuf report
-<!-- updated: 2026-06-04_01:14:00.000 by Claude -->
+<!-- updated: 2026-06-04_12:00:00 -->
 
 **File**: [go/internal/migrate/tasks_scanhistory.go:218](../go/internal/migrate/tasks_scanhistory.go#L218)
+**Tracking**: [GitHub Issue #106](https://github.com/sonar-solutions/sonar-migration-tool/issues/106) — **Implementation plan**: [PLAN-FIX-106.md](../PLAN-FIX-106.md)
 
 `reportData.Measures` is initialized as `make(map[int32][]*pb.Measure)` (empty map) and
-never populated. There is no `loadExtractedMeasures()` function.
+never populated. There is no `loadExtractedMeasures()` function. The protobuf infrastructure
+(`BuildMeasures()`, `addMeasures()`, `Measure` proto message) is fully built and tested — only
+the wiring in `importBranch()` and the extract metric key expansion are missing.
 
 **CloudVoyager**: builds measures from `buildMeasures()` covering lines, complexity, coverage,
-issues, bugs, etc.
+issues, bugs, etc. Encodes file-level measures into `measures-{ref}.pb` protobuf files grouped
+by component ref. Uses a `STRING_METRICS` allowlist and int32/int64 range splitting.
 
 **Impact**: All code metrics (lines of code, coverage, complexity, etc.) in SC will be zero
 or absent after migration — only live scans will populate them.
+
+**Fix summary** (see [PLAN-FIX-106.md](../PLAN-FIX-106.md) for full details):
+1. Expand `projectComponentTreeTask()` to request ~35 metric keys (not just `ncloc`)
+2. Fix `buildMeasureValue()` for LongValue and string metric handling
+3. Add `loadExtractedComponentMeasures()` in migrate phase
+4. Wire `BuildMeasures()` into `importBranch()` and populate `ReportData.Measures`
 
 ---
 
@@ -351,6 +361,20 @@ CloudVoyager's `--only` flag lets users run only specific steps:
 
 The migration tool has `--target_task` but it targets a single task by exact name, not a
 semantic group. Users can't easily say "only sync issues, skip everything else."
+
+---
+
+### ~~FEAT-08a: No project version migration~~ **[FIXED]**
+<!-- updated: 2026-06-04_15:30:00 -->
+
+**Status**: FIXED — Issue #102. The `getProjectVersions` extract task fetches the current project version per branch via `/api/navigation/component`. During scan history import, the extracted version is passed to both the protobuf metadata and the CE submit form. Falls back to `"1.0.0"` if not available (matching CloudVoyager behavior). Harvested from CloudVoyager's `resolve-source-project-version.js`. Additionally, `resolveProjectVersion` normalizes the SonarQube sentinel string `"not provided"` (returned when no `sonar.projectVersion` is configured) to empty string, so the `"1.0.0"` fallback triggers correctly.
+
+~~CloudVoyager resolves the source project version via `resolve-source-project-version.js`
+and passes `sonar.projectVersion` to both the protobuf metadata and the CE submit form.
+The migration tool did not extract or set the project version.~~
+
+~~**Impact**: Projects migrated to SonarQube Cloud had no project version set, losing version
+tracking metadata.~~
 
 ---
 
@@ -473,7 +497,7 @@ systematic wrong dates for projects with multiple issues of the same rule.~~
 ---
 
 ## Summary Table
-<!-- updated: 2026-06-04_01:14:00.000 by Claude -->
+<!-- updated: 2026-06-04_15:30:00 -->
 
 | ID | Severity | Area | Description |
 |----|----------|------|-------------|
@@ -495,6 +519,7 @@ systematic wrong dates for projects with multiple issues of the same rule.~~
 | FEAT-05 | P2 | Scan History | No CE submission retry logic |
 | FEAT-06 | P2 | Hotspot Sync | No hotspot assignment sync |
 | FEAT-07 | P2 | CLI | No `--only` selective migration flag |
+| FEAT-08a | ~~P2~~ **FIXED** | Scan History | ~~No project version migration~~ Fixed: Issue #102, harvested from CloudVoyager's `resolve-source-project-version.js` |
 | FEAT-08 | P3 | CLI | No incremental transfer mode |
 | FEAT-09 | P2 | Issue Sync | `syncIssueMetadata` writes no per-project output file |
 | FEAT-10 | ~~P2~~ **FIXED** | CLI | ~~`--url` default silently targets production~~ Fixed: `--target-url` flag added to transfer command (renamed from `--sc-url` in #295) |

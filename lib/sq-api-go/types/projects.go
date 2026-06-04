@@ -22,6 +22,7 @@ type ComponentDetails struct {
 	Qualifier  string   `json:"qualifier"`
 	Visibility string   `json:"visibility"`
 	Tags       []string `json:"tags"`
+	Version    string   `json:"version"`
 }
 
 // ComponentShowResponse is the response envelope for /api/components/show.
@@ -36,6 +37,7 @@ type NavigationComponentResponse struct {
 	Qualifier  string   `json:"qualifier"`
 	Visibility string   `json:"visibility"`
 	Tags       []string `json:"tags"`
+	Version    string   `json:"version"`
 }
 
 // ProjectsLicenseUsageResponse is the response envelope for /api/projects/license_usage.

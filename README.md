@@ -1,342 +1,226 @@
-# SonarQube Migration Tool
+# Sonar Migration Tool
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
 
-`sonar-migration-tool` migrates a SonarQube Server (SQS) instance to a SonarQube Cloud (SQC) Enterprise. In a single run it lifts the SQS side of your setup — projects, portfolios, quality gates, quality profiles, groups, permissions, permission templates, AI Code Fix configuration, and (optionally) scan history — and recreates the matching configuration in one or more SQC organizations.
+Migrate your SonarQube Server to SonarQube Cloud — projects, configuration, source code, issues, and history.
 
-The tool ships as a single static binary. Grab the latest release from [GitHub Releases](https://github.com/sonar-solutions/sonar-migration-tool/releases) and you're ready to go — no runtime to install. If you want to build from source instead, see [BUILD.md](docs/BUILD.md).
+The tool ships as a single static binary. No installer, no runtime dependencies. Download it, run one command, and your projects land in SonarQube Cloud with their full issue history intact.
+
+---
 
 ## What gets migrated
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
 
-| ✅ Migrated | ❌ Not migrated |
+| ✅ Migrated | ❌ NOT migrated |
 |---|---|
-| Projects (key, name, visibility, tags, links, webhooks) | Issues and their history *(unless `--include_scan_history` is set)* |
-| Quality Gates + conditions | Source code *(re-scan after migration)* |
-| Quality Profiles + custom rules | Users *(re-invited on the SQC side)* |
-| Groups, Permissions, Permission Templates | Applications *(no SQC counterpart)* |
-| Portfolios | |
-| Global settings *(SQS keys that have an SQC equivalent)* | |
-| AI Code Fix configuration | |
-| Scan history *(optional, behind `--include_scan_history`)* | |
-
-## Compatibility
-
-- **SonarQube Server**: 9.9+ tested end-to-end; SQS 6.3+ extracted with limited coverage. Authentication auto-detects the right scheme (Basic auth < 10, Bearer token ≥ 10).
-- **Editions**: Community, Developer, Enterprise, Data Center. Edition-specific entities (applications, portfolios) are skipped gracefully on lower editions.
-- **SonarQube Cloud**: any Enterprise plan with target organizations already created.
-
-## Table of contents
-
-1. [Quick start — single SQC organization](#quick-start--single-sqc-organization) — every SQS project lands in one SQC org. The shortest happy path.
-2. [Quick start — multiple SQC organizations](#quick-start--multiple-sqc-organizations) — when projects map to several SQC orgs.
-3. [Configuration file & top-level CLI options](#configuration-file--top-level-cli-options)
-4. [Migration steps in detail](#migration-steps-in-detail) — [`extract`](#1-extract), [`structure`](#2-structure), [`mappings`](#3-mappings), [`migrate`](#4-migrate)
-5. [Single-project transfer](#single-project-transfer) — `transfer`
-6. [Interactive wizard](#interactive-wizard) — `wizard`
-7. [Browser-based UI](#browser-based-ui) — `gui`
-8. [Predictive report](#predictive-report) — preview what `migrate` will do, before doing it.
-9. [Reset](#reset) — wipe an SQC enterprise back to empty.
-10. [Post-migration checklist](#post-migration-checklist)
-11. [Further reading](#further-reading)
+| Projects, Quality Gates, Quality Profiles | User accounts (Cloud users are managed by the IdP) |
+| Groups, Permissions, Permission Templates | CI/CD pipeline configuration (update `SONAR_HOST_URL` manually) |
+| Project Settings, Webhooks, Links | |
+| Portfolios (Enterprise) | |
+| **Issues & Hotspots** with status, comments, and tags (via `--include-scan-history`) | |
+| **Source Code** and measures (via `--include-scan-history`) | |
+| **Issue Creation Dates** preserved via BackdateChangesets (via `--include-scan-history`) | |
 
 ---
 
-## Quick start — single SQC organization
+## Before you start
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
 
-Use this when every SQS project should land in **one** target SQC organization (typically the case for small instances, or when you have at most one DevOps Platform configured on SQS). The whole migration runs in four commands.
+Make sure you have:
 
-> **Prerequisites**: an SQS admin token, an SQC token with enterprise+org admin permissions, and the target SQC organization already created.
+- A computer running **macOS, Linux, or Windows**.
+- **Admin access** to your SonarQube Server.
+- A **SonarQube Cloud** account with the target organizations already created.
+- **Two admin tokens** — one for SonarQube Server, one for SonarQube Cloud. The exact permissions are listed in [the MIGRATE guide](docs/MIGRATE.md#token-permissions).
 
-```bash
-# 1. Pull configuration off SQS.
-sonar-migration-tool extract --config config.json
-
-# 2. Group projects by their source organization (one row per SQS org).
-sonar-migration-tool structure --config config.json
-
-# 3. Generate mapping CSVs (gates, profiles, groups, templates, portfolios).
-sonar-migration-tool mappings --config config.json
-
-# 4. Apply to SQC. --default_organization fills in the SQC org for every project.
-sonar-migration-tool migrate --config config.json --default_organization my-sqc-org
-```
-
-Minimal `config.json` (see [`examples/config.minimal.example.json`](examples/config.minimal.example.json)):
-
-```jsonc
-{
-  "source": {
-    "url":   "https://sonarqube.example.com",
-    "token": "squ_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  },
-  "target": {
-    "url":   "https://sonarcloud.io/",
-    "token": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-    "enterprise_key": "your-enterprise"
-  }
-}
-```
-
-When `migrate` finishes you'll find `migration_summary.pdf` in your export directory describing every object that was created.
+That's it. No Go install, no databases, no config files required for the simple path.
 
 ---
 
-## Quick start — multiple SQC organizations
+## Step 1 — Download the tool
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
 
-Use this when SQS projects must spread across **several** SQC organizations — typically because SQS has more than one DevOps Platform configured, or because you want to split projects by team / business unit on the SQC side.
+Go to the [**Releases** page](https://github.com/sonar-solutions/sonar-migration-tool/releases) and download the binary that matches your operating system:
 
-Steps 1, 2, and 4 are identical to the single-org flow; the only difference is **between 2 and 3**: open `organizations.csv` and fill the target SQC org per row by hand.
-
-```bash
-# 1. Extract.
-sonar-migration-tool extract --config config.json
-
-# 2. Group by source organization. Produces migration-files/organizations.csv.
-sonar-migration-tool structure --config config.json
-
-# 2b. ── Manual step ──
-#     Open migration-files/organizations.csv and fill the
-#     sonarcloud_org_key column for every row. Use "SKIPPED" to leave
-#     an SQS org out of the migration entirely.
-
-# 3. Generate mappings (gates.csv, profiles.csv, groups.csv, templates.csv, portfolios.csv).
-sonar-migration-tool mappings --config config.json
-
-# 4. Migrate. Omit --default_organization — the per-row mapping wins.
-sonar-migration-tool migrate --config config.json
-```
-
-You can also edit the other mapping CSVs (`gates.csv`, `profiles.csv`, etc.) between steps 3 and 4 to rename or skip individual entities — the comment block at the top of each file explains its columns.
-
----
-
-## Configuration file & top-level CLI options
-
-`extract`, `structure`, `mappings`, `migrate`, `reset`, and `predictive-report` all read the same JSON config file. The recommended shape is one top-level block of defaults plus a `source` sub-block (consumed by `extract`) and a `target` sub-block (consumed by `migrate` / `reset`). Each command silently ignores the block that isn't its own.
-
-**Minimal example** ([`examples/config.minimal.example.json`](examples/config.minimal.example.json)):
-
-```jsonc
-{
-  "source": {
-    "url":   "https://sonarqube.example.com",
-    "token": "squ_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  },
-  "target": {
-    "url":   "https://sonarcloud.io/",
-    "token": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-    "enterprise_key": "your-enterprise"
-  }
-}
-```
-
-**Complete example** ([`examples/config.unified.example.json`](examples/config.unified.example.json)) carries every supported field with its default. Use it as a starting template and delete what you don't need.
-
-### Top-level fields (all optional)
-
-| Field | Default | Description |
-|---|---|---|
-| `concurrency` | `10` | Default max parallel HTTP calls. |
-| `timeout` | `60` | Default HTTP request timeout in seconds. |
-| `export_directory` | `./migration-files` | Root directory for extract / migrate output. |
-
-### Common CLI flags
-
-Every command accepts these:
-
-| Flag | Description |
+| OS | File |
 |---|---|
-| `-c, --config <path>` | JSON config file. |
-| `--export_directory <dir>` | Override the config's `export_directory`. |
-| `--debug` | Verbose request/response logging. |
+| macOS (Apple Silicon) | `sonar-migration-tool_darwin_arm64.tar.gz` |
+| macOS (Intel) | `sonar-migration-tool_darwin_amd64.tar.gz` |
+| Linux | `sonar-migration-tool_linux_amd64.tar.gz` |
+| Windows | `sonar-migration-tool_windows_amd64.zip` |
 
-A JSON Schema for editor autocomplete lives at [`schemas/config.schema.json`](schemas/config.schema.json) — wire it into your editor through `.vscode/settings.json` or add a `"$schema"` pointer at the top of your config.
+Extract the archive. On macOS and Linux, make the binary executable:
 
-For the complete field list (mTLS, per-task resume, edition tuning, etc.) see [docs/ADVANCED-CONFIG.md](docs/ADVANCED-CONFIG.md).
+```bash
+chmod +x sonar-migration-tool
+```
+
+You can now run it from the same folder:
+
+```bash
+./sonar-migration-tool --help
+```
 
 ---
 
-## Migration steps in detail
+## Step 2 — Open a terminal
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
 
-The diagram below shows the four-step pipeline. Steps 2 and 3 only produce / read CSV files locally — they make no API calls.
+You'll type one command and the tool does the rest. Open the right app for your OS:
 
-```
-┌───────────┐   ┌───────────┐   ┌──────────┐   ┌─────────┐
-│  EXTRACT  │──►│ STRUCTURE │──►│ MAPPINGS │──►│ MIGRATE │
-│ (SQS API) │   │  (local)  │   │ (local)  │   │(SQC API)│
-└───────────┘   └───────────┘   └──────────┘   └─────────┘
-```
+- **macOS** — open **Terminal** (find it in Applications → Utilities, or press `⌘ Space` and type "Terminal").
+- **Linux** — open your distro's terminal application.
+- **Windows** — open **PowerShell** (press the Windows key and type "PowerShell").
 
-### 1. `extract`
+---
 
-Pulls every relevant configuration object off the SonarQube Server instance into JSONL files under `<export_directory>/<extract-id>/`. Idempotent — re-running with the same `extract_id` resumes from the last completed task.
+## Step 3 — Run the migration
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
+
+The tool ships with several commands. Pick the workflow that matches your situation.
+
+### Migrating one project (or just a few)
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
+
+Use `transfer`. It runs the whole migration in a single command — extracting from SonarQube Server, mapping the configuration, importing source code and issues, and pushing everything to SonarQube Cloud — then writes a PDF summary you can hand to your team.
 
 ```bash
-sonar-migration-tool extract --config config.json
+./sonar-migration-tool transfer \
+  --sq-url https://sonarqube.example.com \
+  --sq-token sqp_xxx \
+  --project-key my-project \
+  --sc-token squ_xxx \
+  --sc-org my-org \
+  --include-scan-history
 ```
 
-Selected flags:
+Or use a **config file** to keep tokens out of your shell history:
 
-| Flag | Description |
+```bash
+cp examples/config-transfer.example.json my-config.json
+# Edit my-config.json with your SonarQube Server and SonarQube Cloud credentials
+./sonar-migration-tool transfer -c my-config.json
+```
+
+Add `--sc-url` to target a different SonarQube Cloud instance (e.g. `--sc-url https://sc-staging.io` for staging).
+
+Full reference, more examples, and the config-file format:
+👉 **[Using `transfer` — Transfer One Project](docs/TRANSFER.md)**
+
+### Migrating many projects (or many SonarQube Server instances)
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
+
+Use `migrate` together with the underlying `extract` / `structure` / `mappings` commands. This gives you a chance to review and edit the mapping CSVs between phases — useful when projects need to land in different SonarQube Cloud organizations, or when you want to re-run individual steps after a failure.
+
+```bash
+./sonar-migration-tool extract <SQ_URL> <SQ_TOKEN>
+# → edit organizations.csv to set sonarcloud_org_key per row
+./sonar-migration-tool structure
+./sonar-migration-tool mappings
+./sonar-migration-tool migrate <SC_TOKEN> <SC_ENTERPRISE_KEY>
+```
+
+Or use a **config file** for extract and migrate:
+
+```bash
+cp examples/config.unified.example.json my-config.json
+# Edit my-config.json with your source (SonarQube Server) and target (SonarQube Cloud) credentials
+./sonar-migration-tool extract --config my-config.json
+./sonar-migration-tool structure --config my-config.json
+./sonar-migration-tool mappings --config my-config.json
+./sonar-migration-tool migrate --config my-config.json
+```
+
+Full reference, flags, multi-server migration, and resume support:
+👉 **[Using `migrate` — Migrate All Projects](docs/MIGRATE.md)**
+
+### Want a guided experience?
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
+
+If you'd rather not pick phases yourself, run the interactive wizard — it asks you for the values it needs and runs the right commands for you:
+
+```bash
+./sonar-migration-tool wizard
+```
+
+If you're not sure which path fits, start with `transfer`. You can always re-run with `migrate` for more control.
+
+---
+
+## Step 4 — Verify in SonarQube Cloud
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
+
+Once the command finishes:
+
+1. Log in to [sonarcloud.io](https://sonarcloud.io).
+2. Open the target organization.
+3. Spot-check that your project(s) are listed and the quality gate and quality profile are correct.
+4. If you used `--include-scan-history`, verify that issues, hotspots, and their creation dates match the source. You can also run `./sonar-migration-tool regtest` for automated verification.
+5. **Re-scan your projects in CI** to seed ongoing analysis. If you did *not* use `--include-scan-history`, this first scan will be the baseline for all issue tracking.
+6. Update your CI/CD pipeline to point at SonarQube Cloud (`SONAR_TOKEN` and `SONAR_HOST_URL`).
+
+For the full post-migration checklist, see [After you migrate](docs/MIGRATE.md#after-you-migrate) in the MIGRATE guide.
+
+---
+
+## Prefer a visual interface?
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
+
+If you'd rather click through the migration in a browser instead of typing commands, run the GUI:
+
+```bash
+./sonar-migration-tool gui
+```
+
+It opens the same workflow in your default browser with progress bars, an event log, and CSV viewers for the mapping files.
+
+---
+
+## Something went wrong?
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
+
+Most errors fall into a few common buckets — see [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for the full list.
+
+The single best first step is to look at the request log:
+
+```
+files/<run_id>/requests.log
+```
+
+It shows every API call the tool made and how the server responded.
+
+---
+
+## All commands
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
+
+| Command | Purpose |
 |---|---|
-| `--extract_id <id>` | Resume a previous extract. |
-| `--target_task <task>` | Run a single task (with its dependencies). |
-| `--include_scan_history` | Also pull full issue / source / SCM-blame data so `migrate` can re-create historical scans. |
-
-For multiple source SQS servers run `extract` once per server (different `extract_id`s). `structure` aggregates all of them.
-
-### 2. `structure`
-
-Walks every extract directory in `<export_directory>` and produces `organizations.csv` — one row per SQS organization the tool discovered.
-
-```bash
-sonar-migration-tool structure --config config.json
-```
-
-When the config file targets a single SonarCloud organization, the `sonarcloud_org_key` column is pre-filled. Otherwise leave it blank and edit before running `mappings`.
-
-### 3. `mappings`
-
-Produces the per-entity mapping CSVs based on `organizations.csv`:
-
-- `gates.csv` — quality gates
-- `profiles.csv` — quality profiles
-- `groups.csv` — groups
-- `templates.csv` — permission templates
-- `portfolios.csv` — portfolios
-
-```bash
-sonar-migration-tool mappings --config config.json
-```
-
-Each file has columns to rename, skip (`SKIPPED`), or merge entities on the SQC side. Inspect them before running `migrate`.
-
-### 4. `migrate`
-
-Reads every CSV and the extract data, then applies the configuration to SonarQube Cloud.
-
-```bash
-sonar-migration-tool migrate --config config.json
-```
-
-Selected flags:
-
-| Flag | Description |
-|---|---|
-| `--run_id <id>` | Resume a partially-completed migrate run. |
-| `--target_task <task>` | Run a single migration task (with its dependencies). |
-| `--default_organization <key>` | SQC org used for every project when `organizations.csv` has no per-row mapping. |
-| `--skip_profiles` | Skip quality profile migration (useful for second-pass runs). |
-| `--include_scan_history` | Replay extracted scan history into SQC projects. |
-
-`migrate` writes a JSONL audit trail per task, a `requests.log` (every API call), and `migration_summary.pdf` (final human-readable report) under `<export_directory>/<run_id>/`.
+| `transfer` | One-command end-to-end migration (extract → structure → mappings → migrate → PDF report) |
+| `extract` | Extract data from a SonarQube Server instance |
+| `structure` | Group extracted projects into organizations |
+| `mappings` | Generate entity mapping CSVs |
+| `migrate` | Push configuration and data to SonarQube Cloud |
+| `wizard` | Interactive guided migration (terminal) |
+| `gui` | Browser-based guided migration |
+| `report` | Generate a migration or maturity report |
+| `predictive-report` | Generate a pre-migration PDF summary (no Cloud API calls) |
+| `regtest` | Exhaustive post-migration regression verification |
+| `reset` | Delete all migrated entities from a SonarQube Cloud organization |
 
 ---
 
-## Single-project transfer
+## Want to go deeper?
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
 
-Use `transfer` when you only need to move **one** project end-to-end in a single command — useful for proof-of-concept runs, one-off migrations, or moving a stray project that was missed by the bulk run. It chains `extract → structure → mappings → migrate` internally for that single key.
-
-```bash
-sonar-migration-tool transfer \
-  --source-url   https://sonarqube.example.com \
-  --source-token sqp_xxx \
-  --project-key  my-project \
-  --target-token squ_xxx \
-  --default_organization my-sqc-org
-```
-
-Or with a config file (same shape as `extract` / `migrate`):
-
-```bash
-sonar-migration-tool transfer -c config.json --project-key my-project
-```
-
-```jsonc
-{
-  "source": { "url": "https://...", "token": "sqp_xxx" },
-  "target": { "token": "squ_xxx",  "default_organization": "my-sqc-org" }
-}
-```
-
-`transfer` produces the same `migration_summary.pdf` as the full pipeline, restricted to the single project.
-
-For the full reference — every flag, every config field, the order of operations — see [`docs/TRANSFER.md`](docs/TRANSFER.md).
-
----
-
-## Interactive wizard
-
-Prefer not to script anything? Run the wizard. It walks every step interactively and saves progress between steps so it can resume after an interruption.
-
-```bash
-sonar-migration-tool wizard --export_directory ./migration-files
-```
-
-The wizard covers the same four steps as the manual pipeline (extract → structure → org mapping → mappings → migrate) and additionally handles mTLS prompts and optional scan-history import. It's the recommended path for first-time users.
-
----
-
-## Browser-based UI
-
-The `gui` command starts a local HTTP server and opens the wizard in your default browser. Same workflow as the CLI wizard, plus inline CSV viewers, an event log, and a history view of past runs.
-
-```bash
-sonar-migration-tool gui --export_directory ./migration-files
-```
-
-| Flag | Description |
-|---|---|
-| `--export_directory <dir>` | Output directory (default `./migration-files`). |
-| `--addr <host:port>` | HTTP bind address (default `localhost:0` — auto-assign port). |
-| `--no-browser` | Don't automatically open the browser. |
-
----
-
-## Predictive report
-
-Generates the same PDF migration summary `migrate` produces, but **before** any SQC API call is made. It reads the output of `extract` and the user-edited mapping CSVs and predicts how the migration will go.
-
-```bash
-sonar-migration-tool predictive-report --config config.json
-```
-
-Output lands at `<export_directory>/predictive_migration_summary.pdf`. Two classes of outcomes can't be predicted ahead of time — SQC API errors and rate-limiting — so they don't appear in the Failed bucket.
-
----
-
-## Reset
-
-Wipes every project, portfolio, gate, profile, group, and permission template out of every organization in the target SQC enterprise. Used in test environments to start over from a clean slate.
-
-```bash
-sonar-migration-tool reset --config config.json
-```
-
-> **⚠️ Destructive.** Reset deletes content from your SonarQube Cloud enterprise. Always confirm `target.enterprise_key` and `target.url` in your config before running this.
-
----
-
-## Post-migration checklist
-
-1. **Verify the report**: open `migration_summary.pdf` and confirm every section ends in "Perfect" or "Near Perfect" — anything "Failed" or "Partial" needs follow-up.
-2. **Confirm projects appear in SonarQube Cloud** and are linked to the right repositories.
-3. **Confirm quality gates and quality profiles** are assigned to the right projects.
-4. **Re-scan all projects** — historical scan data does not transfer unless `--include_scan_history` was used.
-5. **Update CI/CD pipelines** to point to SonarQube Cloud — change `SONAR_TOKEN` to an SQC token and `SONAR_HOST_URL` to `https://sonarcloud.io/`.
-
----
-
-## Further reading
-
-- [`docs/ADVANCED-CONFIG.md`](docs/ADVANCED-CONFIG.md) — every config field and CLI flag in detail.
-- [`docs/BUILD.md`](docs/BUILD.md) — building from source, running with `go run`, contributing.
-- [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) — common errors and how to recover.
-- [`docs/MIGRATE.md`](docs/MIGRATE.md) — deep dive on the four-phase migration pipeline.
-- [`docs/TRANSFER.md`](docs/TRANSFER.md) — deep dive on the single-command `transfer` workflow.
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — internals: packages, task graph, JSONL schemas.
-- [`docs/SECURITY.md`](docs/SECURITY.md) — token handling, mTLS, audit trail.
+- 📘 [Architecture overview](docs/ARCHITECTURE.md) — how the tool is built.
+- ⚙️ [Configuration file format](docs/CONFIG.md) — use a JSON file instead of CLI flags.
+- 🔐 [Security best practices](docs/SECURITY.md) — keeping your tokens safe.
+- 🧪 [Regression testing protocol](docs/REGRESSION-TESTING.md) — verify changes against live SonarQube + SonarQube Cloud.
+- 🐛 [CloudVoyager delta audit](docs/CLOUDVOYAGER-DELTA.md) — known behavior differences from the reference implementation.
 
 ---
 
 ## License
+<!-- updated: 2026-06-04_01:13:00.000 by Claude -->
 
-See [LICENSE](LICENSE).
+See [LICENSE](LICENSE) for details.

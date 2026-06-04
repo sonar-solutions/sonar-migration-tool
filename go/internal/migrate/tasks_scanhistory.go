@@ -202,12 +202,15 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 	extracted = append(extracted, extIssuesToExtracted(extIssues)...)
 	scanreport.BackdateChangesets(extracted, changesetsByKey, now)
 
+	projectVersion := resolveProjectVersion(e, input.ServerURL, input.ServerKey, input.Branch)
+
 	metadata := scanreport.BuildMetadata(scanreport.MetadataInput{
 		AnalysisDate:   now,
 		OrgKey:         input.OrgKey,
 		ProjectKey:     input.CloudKey,
 		BranchName:     targetBranch,
 		BranchType:     pb.Metadata_BRANCH,
+		ProjectVersion: projectVersion,
 		QProfiles:      qprofiles,
 		FileCountByExt: countFilesByExt(components),
 	}, root.Ref)
@@ -232,6 +235,7 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 
 	e.Logger.Info("report packaged",
 		"project", input.CloudKey, "sourceBranch", input.Branch, "targetBranch", targetBranch,
+		"projectVersion", projectVersion,
 		"zipSizeBytes", len(zipBytes),
 		"zipSizeMB", fmt.Sprintf("%.1f", float64(len(zipBytes))/(1024*1024)),
 		"components", len(fileComps),
@@ -242,10 +246,11 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 	)
 
 	cfg := scanreport.SubmitConfig{
-		CloudURL:   e.CloudURL,
-		ProjectKey: input.CloudKey,
-		OrgKey:     input.OrgKey,
-		BranchName: targetBranch,
+		CloudURL:       e.CloudURL,
+		ProjectKey:     input.CloudKey,
+		OrgKey:         input.OrgKey,
+		BranchName:     targetBranch,
+		ProjectVersion: projectVersion,
 	}
 
 	result, err := scanreport.SubmitReport(ctx, e.Raw.HTTPClient(), cfg, zipBytes)
@@ -600,6 +605,32 @@ var sonarCloudRuleRepos = map[string]bool{
 	"groovydre": true,
 	"json": true, "yaml": true,
 	"jcl": true,
+}
+
+// resolveProjectVersion reads the extracted project version for a specific
+// project+branch combination. Returns the version string, or empty if not found
+// (the caller's BuildMetadata defaults to "1.0.0").
+func resolveProjectVersion(e *Executor, serverURL, serverKey, branch string) string {
+	items, err := readExtractItems(e, "getProjectVersions")
+	if err != nil {
+		return ""
+	}
+	for _, item := range items {
+		if item.ServerURL != serverURL {
+			continue
+		}
+		if extractField(item.Data, "projectKey") != serverKey {
+			continue
+		}
+		if extractField(item.Data, "branch") != branch {
+			continue
+		}
+		version := extractField(item.Data, "version")
+		if version != "" && version != "not provided" {
+			return version
+		}
+	}
+	return ""
 }
 
 func loadExtractedActiveRules(e *Executor, serverURL, serverKey string) []scanreport.ActiveRuleInput {
