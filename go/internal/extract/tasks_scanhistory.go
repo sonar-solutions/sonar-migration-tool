@@ -50,6 +50,12 @@ func scanHistoryTasks() []TaskDef {
 			Dependencies: []string{"getProjectComponentTree"},
 			Run:          projectSCMDataTask(),
 		},
+		{
+			Name:         "getProjectVersions",
+			Editions:     AllEditions,
+			Dependencies: []string{"getProjects", "getBranches"},
+			Run:          projectVersionsTask(),
+		},
 	}
 }
 
@@ -279,6 +285,43 @@ func fetchSCMData(ctx context.Context, e *Executor, item json.RawMessage, w *Chu
 		"projectKey": extractField(item, "projectKey"),
 		"serverUrl":  e.ServerURL,
 	}))
+}
+
+// projectVersionsTask extracts the current project version per branch via
+// /api/navigation/component. This matches how CloudVoyager resolves the
+// source project version for each branch during transfer.
+func projectVersionsTask() func(ctx context.Context, e *Executor) error {
+	return func(ctx context.Context, e *Executor) error {
+		return forEachProjectBranch(ctx, e, "getProjectVersions",
+			func(ctx context.Context, projectKey, branch string, w *ChunkWriter) error {
+				params := url.Values{
+					"component": {projectKey},
+				}
+				if branch != "" {
+					params.Set("branch", branch)
+				}
+				raw, err := e.Raw.Get(ctx, "api/navigation/component", params)
+				if err != nil {
+					if isNonFatalHTTPErr(err) {
+						e.Logger.Debug("getProjectVersions skipped", "project", projectKey, "branch", branch, "err", err)
+						return nil
+					}
+					return err
+				}
+				version := extractField(raw, "version")
+				record := map[string]any{
+					"projectKey": projectKey,
+					"branch":     branch,
+					"version":    version,
+					"serverUrl":  e.ServerURL,
+				}
+				b, err := json.Marshal(record)
+				if err != nil {
+					return err
+				}
+				return w.WriteOne(b)
+			})
+	}
 }
 
 // forEachProjectBranch iterates over all projects and their branches,

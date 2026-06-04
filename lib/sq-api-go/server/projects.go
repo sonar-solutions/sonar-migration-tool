@@ -41,6 +41,7 @@ func (p *ProjectsClient) GetDetails(ctx context.Context, component string) (*typ
 		Qualifier:  result.Qualifier,
 		Visibility: result.Visibility,
 		Tags:       result.Tags,
+		Version:    result.Version,
 	}, nil
 }
 
