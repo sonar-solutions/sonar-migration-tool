@@ -15,12 +15,13 @@ type Option func(*clientConfig)
 
 // clientConfig holds optional Client configuration assembled from Option values.
 type clientConfig struct {
-	tlsConfig   *tls.Config
-	certErr     error // deferred cert loading error, reported on first request
-	maxConns    int
-	timeoutSecs int
-	retryLogFn  RetryLogFunc
-	debugLogFn  DebugLogFunc
+	tlsConfig      *tls.Config
+	certErr        error // deferred cert loading error, reported on first request
+	maxConns       int
+	timeoutSecs    int
+	retryLogFn     RetryLogFunc
+	debugLogFn     DebugLogFunc
+	rateLimitObsFn RateLimitObserver
 }
 
 // DebugLogFunc is invoked once per request/response pair with the verbatim
@@ -99,5 +100,16 @@ func WithRetryLogger(fn RetryLogFunc) Option {
 func WithDebugLogger(fn DebugLogFunc) Option {
 	return func(cfg *clientConfig) {
 		cfg.debugLogFn = fn
+	}
+}
+
+// WithRateLimitObserver installs a callback that fires once per observed
+// HTTP 429 response. The migration tool uses this to count rate-limit
+// hits per classification, sum cumulative pause time, and capture the
+// first event of each kind for the PDF report. The callback is invoked
+// from arbitrary goroutines and must be safe for concurrent use.
+func WithRateLimitObserver(fn RateLimitObserver) Option {
+	return func(cfg *clientConfig) {
+		cfg.rateLimitObsFn = fn
 	}
 }
