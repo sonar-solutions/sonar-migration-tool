@@ -6,6 +6,7 @@ package structure
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -93,7 +94,15 @@ func ReadExtractData(directory string, mapping ExtractMapping, key string) ([]Ex
 	return items, nil
 }
 
-// readTaskDir reads all JSONL files from a task directory.
+// readTaskDir reads all JSONL files from a task directory. A failure
+// on a single file is logged as a warning and the file is skipped —
+// the remaining files still contribute their records (#314). Aborting
+// on the first per-file error used to silently throw away the entire
+// task's data, which caused #312 (a single oversize source-code
+// record disabling project-data migration across the whole run).
+//
+// Returns an error only when the task directory itself can't be
+// listed; per-file failures are visible via slog warnings.
 func readTaskDir(dir string) ([]json.RawMessage, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -104,9 +113,17 @@ func readTaskDir(dir string) ([]json.RawMessage, error) {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
 			continue
 		}
-		items, err := common.ReadJSONLFile(filepath.Join(dir, entry.Name()))
+		path := filepath.Join(dir, entry.Name())
+		items, err := common.ReadJSONLFile(path)
 		if err != nil {
-			return nil, err
+			slog.Warn("readTaskDir: skipping unreadable JSONL file (records from other files in this task are still loaded)",
+				"file", path, "err", err)
+			// Keep whatever the partial read returned before the
+			// error — ReadJSONLFile returns the records it parsed
+			// up to the failure point, which is better than nothing
+			// for callers that downstream process per-record.
+			all = append(all, items...)
+			continue
 		}
 		all = append(all, items...)
 	}

@@ -246,3 +246,45 @@ func TestGenerateHashID(t *testing.T) {
 		t.Errorf("expected UUID length 36, got %d: %q", len(h1), h1)
 	}
 }
+
+// Issue #314: readTaskDir must keep going when a single JSONL file
+// in the task dir fails to parse. Previously it returned (nil, err)
+// on the first failure, which ReadExtractData then turned into a
+// silent skip of the entire task. With the resilient version,
+// well-formed files still contribute their records and the bad file
+// only produces a warning.
+func TestReadTaskDirSkipsUnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	// Two files: one well-formed, one with an unreadable line (binary
+	// garbage that bufio.Reader.ReadBytes will read fine but consumer
+	// can later choke on — for this test we just need NotExist on one
+	// path to force an error from ReadJSONLFile via a non-jsonl
+	// extension would be skipped, so use a permission flip instead).
+	good := filepath.Join(dir, "good.jsonl")
+	if err := os.WriteFile(good, []byte(`{"k":"v1"}`+"\n"+`{"k":"v2"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(dir, "bad.jsonl")
+	if err := os.WriteFile(bad, []byte(`{"k":"v3"}`+"\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(bad, 0o644) })
+
+	got, err := readTaskDir(dir)
+	if err != nil {
+		t.Fatalf("readTaskDir should not error on a per-file failure: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 records from the readable file, got %d", len(got))
+	}
+}
+
+// When the task directory itself doesn't exist (e.g. extract didn't
+// run the task), readTaskDir still returns an error so ReadExtractData
+// can `continue` past that task — same as before.
+func TestReadTaskDirMissingDirReturnsError(t *testing.T) {
+	_, err := readTaskDir(filepath.Join(t.TempDir(), "does-not-exist"))
+	if err == nil {
+		t.Error("expected error for missing dir")
+	}
+}
