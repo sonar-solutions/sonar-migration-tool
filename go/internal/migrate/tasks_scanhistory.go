@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -328,18 +327,6 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 	zipBytes, err := scanreport.PackageReport(reportData)
 	if err != nil {
 		return nil, fmt.Errorf("packaging report: %w", err)
-	}
-
-	// TEMP instrumentation: dump the generated report for diffing against
-	// CloudVoyager's known-good report. No-op unless SMT_DUMP_REPORT_DIR is set.
-	if dir := os.Getenv("SMT_DUMP_REPORT_DIR"); dir != "" {
-		fname := filepath.Join(dir, fmt.Sprintf("smt-report-%s-%s.zip",
-			strings.ReplaceAll(input.CloudKey, "/", "_"), targetBranch))
-		if werr := os.WriteFile(fname, zipBytes, 0o644); werr != nil {
-			e.Logger.Warn("report dump failed", "err", werr)
-		} else {
-			e.Logger.Info("report dumped", "path", fname)
-		}
 	}
 
 	e.Logger.Info("report packaged",

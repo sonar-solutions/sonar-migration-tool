@@ -39,7 +39,7 @@ On success, a PDF migration summary is written into the export directory.
 ---
 
 ## What gets migrated
-<!-- updated: 2026-06-05_10:50:51 -->
+<!-- updated: 2026-06-05_12:26:41 -->
 
 `transfer` migrates a **project-scoped** slice, not the whole instance.
 
@@ -64,7 +64,9 @@ On success, a PDF migration summary is written into the export directory.
 
 > **Note on prerequisites.** A few global entities are created on the target only because the project depends on them — for example, the groups referenced by the project's group permissions, and the migration user/permissions used to perform the migration. These are created as needed so the project's own configuration resolves correctly.
 
-> **Note on metadata for externally imported issues.** External issues are carried over to the target as part of the scan-history import. Their triage *metadata* sync is best-effort: it relies on matching issues by rule key, file, and line, and external rule-key formats are not guaranteed to match across server and cloud. The issues themselves transfer; some external-issue triage state may not.
+> **Note on issue counts.** The target issue count is normally lower than the SonarQube Server total because issues that are **CLOSED** or resolved as **FIXED** have no SonarQube Cloud counterpart and are intentionally skipped (the scanner report only recreates active findings). Open issues plus triaged ones (won't-fix / false-positive / accepted) and all externally-imported issues are migrated. Security Hotspots transfer in full.
+
+> **Known limitation — non-main branches.** Scan-history import currently succeeds for the project's **main branch**. Importing **non-main branches** can fail during SonarQube Cloud Compute Engine processing; those branches are skipped (non-fatal) and the transfer still completes. The main-branch issues and hotspots are unaffected.
 
 ---
 
