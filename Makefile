@@ -1,4 +1,4 @@
-.PHONY: build clean test
+.PHONY: build clean test install-hooks
 
 # Build the Go binary.
 build:
@@ -11,3 +11,7 @@ test:
 # Clean build artifacts.
 clean:
 	rm -f go/sonar-migration-tool
+
+# Install git hooks (pre-commit secret scan via gitleaks).
+install-hooks:
+	sh scripts/install-git-hooks.sh
