@@ -75,9 +75,8 @@ func RegisterAll() []TaskDef {
 // migrateProjectDataTasks lists every task that imports or syncs
 // per-project data after the configuration migration finishes — the
 // scan-history import plus the trailing issue + hotspot metadata
-// syncs. All three are gated by --include-scan-history (only run
-// when extracted data is available) AND by --skip-project-data-
-// migration (operator opt-out, #303).
+// syncs. All three run by default; the operator opts out via
+// --skip-project-data-migration (#303).
 var migrateProjectDataTasks = map[string]bool{
 	"importScanHistory":   true,
 	"syncHotspotMetadata": true,
@@ -106,7 +105,26 @@ var migrateIssueSyncTasks = map[string]bool{
 // importScanHistory AND the two trailing sync tasks together.
 func MigrateTargetTasks(reg map[string]*TaskDef, targetTask string, skipProfiles, includeScanHistory, skipIssueSync, skipProjectDataMigration bool, targetTasks []string) []string {
 	if len(targetTasks) > 0 {
-		return slices.Clone(targetTasks)
+		// Filter the explicit list against the skip gates so transfer's
+		// project-scoped target list still honors --skip-project-data-
+		// migration / --skip-issue-sync. Without this the transfer
+		// command would always run importScanHistory + the syncs even
+		// when the operator opted out, because the explicit list
+		// bypassed isExcludedTask. The other gates (--skip_profiles,
+		// scan-history-without-flag) don't apply to transfer's curated
+		// list, so we restrict the filter to the project-data and
+		// issue-sync membership maps.
+		out := make([]string, 0, len(targetTasks))
+		for _, name := range targetTasks {
+			if skipProjectDataMigration && migrateProjectDataTasks[name] {
+				continue
+			}
+			if skipIssueSync && migrateIssueSyncTasks[name] {
+				continue
+			}
+			out = append(out, name)
+		}
+		return out
 	}
 	if targetTask != "" {
 		return []string{targetTask}

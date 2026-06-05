@@ -61,7 +61,6 @@ The CLI flags `--skip-issue-sync` and `--skip-project-data-migration` on `migrat
 | `cert_password` | | Client-side mTLS password (optional). |
 | `target_task` | | Stop extract at a specific task (dependencies still run). |
 | `extract_id` | | Reuse an existing extract directory ID instead of generating a new one — resume after a failure. |
-| `include_scan_history` | | When true, pull full issue / source / SCM-blame data so `migrate` can replay history. |
 | `enterprise_key` / `organization_key` / `edition` | | Provisional — accepted but ignored today; reserved for future SQC-to-SQC migration. |
 
 ---
@@ -80,7 +79,6 @@ The CLI flags `--skip-issue-sync` and `--skip-project-data-migration` on `migrat
 | `target_task` | | Stop migrate at a specific task. |
 | `default_organization` | | SonarCloud org applied to every project when `organizations.csv` has no per-row mapping. Ignored (with a WARN) when any row already carries a `sonarcloud_org_key`. CLI `--default_organization` wins. |
 | `skip_profiles` | | Skip quality profile migration. |
-| `include_scan_history` | | Import scan history into the destination projects. |
 | `exclude_branches` | | Array of glob patterns (Go `filepath.Match` syntax) for non-main branches to skip during scan history import. The main branch is never excluded regardless of patterns. Example: `["feature/*", "release/*"]`. |
 | `organization_key` | | Provisional — accepted but ignored today. |
 
@@ -105,7 +103,7 @@ sonar-migration-tool extract [url] [token] [flags]
 | `--target_task <task>` | Run a specific task (with its dependencies). |
 | `--concurrency <n>` | Max concurrent requests. |
 | `--timeout <s>` | Request timeout in seconds. |
-| `--include_scan_history` | Pull full issue / source / SCM-blame data. |
+| `--skip-project-data-migration` | Skip the issue / source / SCM-blame extract (extracted by default). |
 | `--exclude_branches <pattern>` | Glob pattern for non-main branches to skip during scan history import. Repeatable (pass multiple times for multiple patterns). Main branch is never excluded. |
 | `--pem_file_path <path>` | mTLS PEM file. |
 | `--key_file_path <path>` | mTLS key file. |
@@ -139,7 +137,6 @@ sonar-migration-tool migrate [token] [enterprise_key] [flags]
 | `--run_id <id>` | Resume a failed migration. |
 | `--target_task <task>` | Run a specific migration task (with its dependencies). |
 | `--skip_profiles` | Skip quality profile migration / provisioning. |
-| `--include_scan_history` | Import scan history into SQC projects. |
 | `--skip-issue-sync` | Skip the final per-issue / per-hotspot metadata sync (#299). One-way: setting this on the CLI forces the sync off, overriding the `skip-issue-sync` config field. |
 | `--skip-project-data-migration` | Skip the entire project-data migration: `importScanHistory` plus the trailing sync pair. Implies `--skip-issue-sync`. One-way override of the `skip-project-data-migration` config field. Issue #303. |
 | `--exclude_branches <pattern>` | Glob pattern for non-main branches to skip during scan history import. Repeatable. Main branch is never excluded. |
@@ -191,7 +188,6 @@ file.
 | `--pem_file_path <path>` | `source.pem_file_path` | Client mTLS PEM file. |
 | `--key_file_path <path>` | `source.key_file_path` | Client mTLS key file. |
 | `--cert_password <pw>` | `source.cert_password` | Client mTLS password. |
-| `--include-scan-history` | `include_scan_history` | Extract + import full scan history. |
 | `--skip-issue-sync` | top-level `skip-issue-sync` | Skip the final per-issue / per-hotspot metadata sync (#299). |
 | `--skip-project-data-migration` | top-level `skip-project-data-migration` | Skip the entire project-data migration (importScanHistory + trailing syncs). #303. |
 | `--exclude-branches <pattern>` | `target.exclude_branches` | Glob pattern for non-main branches to skip during scan history import. Repeatable. Main branch is never excluded. |

@@ -117,15 +117,15 @@ func TestMigrateTargetTasksSkipIssueSync(t *testing.T) {
 	}
 }
 
-// SkipIssueSync without --include_scan_history is a no-op for the two
-// sync tasks — they were already excluded by the scan-history gate.
+// SkipIssueSync when IncludeScanHistory is false is a no-op for the
+// two sync tasks — they were already excluded by the scan-history gate.
 // The flag must not accidentally let them through.
 func TestMigrateTargetTasksSkipIssueSyncWithoutScanHistory(t *testing.T) {
 	reg := BuildMigrateRegistry(RegisterAll())
 	targets := MigrateTargetTasks(reg, "", false, false, true, false, nil)
 	for _, name := range targets {
 		if name == "syncIssueMetadata" || name == "syncHotspotMetadata" {
-			t.Errorf("scan-history-gated task %q must stay excluded without --include_scan_history", name)
+			t.Errorf("scan-history-gated task %q must stay excluded when scan history is off", name)
 		}
 	}
 }
@@ -222,8 +222,7 @@ func TestExtractAnyStr(t *testing.T) {
 }
 
 // --skip-project-data-migration must drop importScanHistory along
-// with the two trailing sync tasks, even when --include-scan-history
-// is explicitly set. #303.
+// with the two trailing sync tasks. #303.
 func TestMigrateTargetTasksSkipProjectDataMigration(t *testing.T) {
 	reg := BuildMigrateRegistry(RegisterAll())
 	targets := MigrateTargetTasks(reg, "", false, true /*includeScanHistory*/, false /*skipIssueSync*/, true /*skipProjectDataMigration*/, nil)
@@ -235,9 +234,9 @@ func TestMigrateTargetTasksSkipProjectDataMigration(t *testing.T) {
 	}
 }
 
-// Without --skip-project-data-migration but with --include-scan-history,
-// all three project-data tasks should run. Regression guard so the
-// new gate doesn't accidentally always exclude.
+// Without --skip-project-data-migration, all three project-data
+// tasks should run. Regression guard so the skip gate doesn't
+// accidentally always exclude.
 func TestMigrateTargetTasksProjectDataMigrationEnabledByDefault(t *testing.T) {
 	reg := BuildMigrateRegistry(RegisterAll())
 	targets := MigrateTargetTasks(reg, "", false, true /*includeScanHistory*/, false /*skipIssueSync*/, false /*skipProjectDataMigration*/, nil)
@@ -248,6 +247,46 @@ func TestMigrateTargetTasksProjectDataMigrationEnabledByDefault(t *testing.T) {
 	for _, name := range []string{"importScanHistory", "syncIssueMetadata", "syncHotspotMetadata"} {
 		if !got[name] {
 			t.Errorf("expected %q in the plan when project data migration is enabled", name)
+		}
+	}
+}
+
+// Explicit TargetTasks lists (used by transfer for project-scoped
+// migration) must still respect --skip-project-data-migration —
+// otherwise the operator's opt-out is silently bypassed.
+func TestMigrateTargetTasksExplicitListHonorsSkipProjectDataMigration(t *testing.T) {
+	reg := BuildMigrateRegistry(RegisterAll())
+	explicit := []string{
+		"setProjectGates",
+		"importScanHistory",
+		"syncIssueMetadata",
+		"syncHotspotMetadata",
+	}
+	got := MigrateTargetTasks(reg, "", false, true, false, true /*skipProjectDataMigration*/, explicit)
+	// setProjectGates is kept; the three project-data tasks are dropped.
+	if len(got) != 1 || got[0] != "setProjectGates" {
+		t.Errorf("expected only setProjectGates to survive, got %v", got)
+	}
+}
+
+// Same explicit list with --skip-issue-sync (and project data on)
+// must drop only the trailing pair; importScanHistory stays.
+func TestMigrateTargetTasksExplicitListHonorsSkipIssueSync(t *testing.T) {
+	reg := BuildMigrateRegistry(RegisterAll())
+	explicit := []string{
+		"setProjectGates",
+		"importScanHistory",
+		"syncIssueMetadata",
+		"syncHotspotMetadata",
+	}
+	got := MigrateTargetTasks(reg, "", false, true, true /*skipIssueSync*/, false, explicit)
+	want := map[string]bool{"setProjectGates": true, "importScanHistory": true}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d tasks, got %v", len(want), got)
+	}
+	for _, n := range got {
+		if !want[n] {
+			t.Errorf("unexpected task %q in result", n)
 		}
 	}
 }
