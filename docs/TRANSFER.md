@@ -25,7 +25,7 @@ If any of these sound like you, jump to [MIGRATE.md](MIGRATE.md) instead:
 ---
 
 ## What it does
-<!-- updated: 2026-06-05_10:50:51 -->
+<!-- updated: 2026-06-05_14:00:00 -->
 
 Behind the scenes, `transfer` runs the same four phases as the manual workflow, in order:
 
@@ -34,7 +34,7 @@ Behind the scenes, `transfer` runs the same four phases as the manual workflow, 
 3. **Mappings** — generates the per-entity mapping CSVs (gates, profiles, groups, templates, portfolios).
 4. **Migrate** — applies the **project-scoped** subset to SonarQube Cloud: it runs only the tasks needed for the project, its quality gate and profiles, its permissions, and its issue/hotspot history. Their dependencies are resolved automatically; global/instance-wide tasks are skipped.
 
-On success, a PDF migration summary is written into the export directory.
+On completion, a migration summary is written into the export directory as both `migration_summary.pdf` and `migration_summary.md`, alongside the run instrumentation files (`run_meta.json`, `run_events.jsonl`). These are written even when the run fails, so the summary can explain the failure.
 
 ---
 
@@ -173,9 +173,13 @@ CLI flags override values from the config file when both are provided.
 ---
 
 ## Output
+<!-- updated: 2026-06-05_14:00:00 -->
 
 - **Intermediate files** — written to `--export_dir` (default `./migration-files/`). Same files as the manual workflow: `organizations.csv`, `gates.csv`, `profiles.csv`, `groups.csv`, `templates.csv`, `portfolios.csv`.
-- **PDF summary** — written to the export directory on successful completion.
+- **`migration_summary.pdf`** — PDF migration summary, written to the export directory on completion.
+- **`migration_summary.md`** — Markdown rendering of the same summary, written alongside the PDF on completion.
+- **`run_meta.json`** — per-phase / per-task timing and `overall_status` (`success` | `partial` | `failed`) for the run, written to the run directory on completion (including failed runs, so the summary can explain the failure).
+- **`run_events.jsonl`** — JSON Lines stream of run events (one record per line) mirrored from the logger by the tee slog handler; the summary collector parses these to build the report.
 - **Stdout** — every command prints `See sonar-migration-tool output results in <directory>` when it finishes so you always know where to look.
 
 For a full description of every output file, see the [Output Files Reference](MIGRATE.md#output-files-reference) in MIGRATE.md.

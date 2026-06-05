@@ -217,7 +217,7 @@ All four pipelines implement the `Pipeline` interface; compile-time checks (`var
 **V2 groups note:** The `/api/v2/authorizations/groups` response omits `membersCount`. The `id` field is a UUID string (incompatible with `Group.ID int`, left zero); `managed` has no `Group` field and is discarded; `default` IS captured and propagated to `Group.Default`. The standard-API fallback is triggered by any V2 error (not just 404), intentionally ensuring callers get groups even when the V2 endpoint is temporarily unavailable.
 
 ## Transfer Command (Single-Project Migration)
-<!-- updated: 2026-06-04_01:14:00.000 by Claude -->
+<!-- updated: 2026-06-05_14:00:00 -->
 
 `go/cmd/transfer.go` provides a single-command migration path that chains the four
 manual phases automatically so users never touch a CSV file. Flag names are defined
@@ -259,11 +259,46 @@ are migrated.
 2. `structure.RunStructure(dir, defaultOrg)` — pre-populates `sonarcloud_org_key` in organizations.csv
 3. `structure.RunMappings(dir)` — generates gates/profiles/groups/templates CSVs
 4. `migrate.RunMigrate` — pushes everything to SonarQube Cloud
-5. `summary.GeneratePDFReport` — writes a PDF summary to the run directory
+5. `summary.GenerateReports` — collects run instrumentation once and writes **both** `migration_summary.pdf` and `migration_summary.md` to the run directory. (`summary.GeneratePDFReport` is retained as a back-compat wrapper that returns only the PDF path.)
 
 `--enterprise_key` is optional and defaults to `--default_organization`. Set it explicitly
 only when the SonarCloud enterprise key differs from the organization key (typically only
 needed for portfolio migration in large Enterprise deployments).
+
+### Run Instrumentation & Reporting
+<!-- updated: 2026-06-05_14:00:00 -->
+
+The migrate engine instruments every run so the summary report can explain what happened —
+including when the run fails.
+
+- **Tee slog handler → `run_events.jsonl`** — a `slog.Handler` is teed onto the default
+  logger so that, in addition to the normal console/`requests.log` output, every log record
+  is mirrored into `run_events.jsonl` in the run directory. The file is JSON Lines: one
+  object per line (written with a `json.Encoder`), each shaped as
+  `{time:RFC3339Nano, level:INFO|WARN|ERROR, message:string, attrs:object}` where `attrs`
+  is the flattened set of slog attributes for that record. The summary collector parses
+  these events back out (matching on known `message` strings and attribute keys) to
+  reconstruct per-branch packaging, CE submissions, the create-analysis handshake, retries,
+  skipped branches, and quality-gate metric remaps.
+- **Per-phase / per-task timing → `run_meta.json`** — the engine records the wall-clock
+  duration of each phase and each task as it executes, then writes a single
+  `run_meta.json` object (via `json.MarshalIndent`, two-space indent) to the run directory.
+  It carries `started_at` / `completed_at` (RFC3339), an `overall_status`
+  (`success` | `partial` | `failed`), a `phases` array (`{index, tasks, duration_seconds}`),
+  and a `tasks` array (`{phase, name, duration_seconds, ok, err}`).
+- **Failed runs still report** — `run_meta.json` is written on **every** run, not only
+  successful ones. When the migration fails, the engine still emits `run_meta.json` with
+  `overall_status=failed` (and per-task `ok:false` / `err` fields populated), so
+  `GenerateReports` can render a `migration_summary.{pdf,md}` that explains the failure
+  instead of producing nothing. This satisfies SPEC-022 NFR-6 (graceful degradation).
+
+The reporting types live in two packages. `package migrate` (file `eventlog.go`) defines the
+on-disk JSON shapes (`LogEvent`, `PhaseTiming`, `TaskTiming`, `RunMeta`) with JSON struct
+tags matching the field names above. `package summary` (file `types.go`) defines the
+in-memory aggregation appended to `MigrationSummary` (timing, failure rows, a warning ledger
+covering retries / branch skips / gate-condition skips / metric remaps, per-branch stats, and
+throughput totals), and `generate.go` exposes `GenerateReports(runDir, outputDir, exportDir)`
+which collects once and renders both the PDF and Markdown outputs.
 
 ## Version Detection
 <!-- updated: 2026-06-04_01:14:00.000 by Claude -->

@@ -259,16 +259,24 @@ Read-only comparison between SonarQube Server and SonarQube Cloud to validate mi
 - Per-project verification report with match percentages
 
 #### Comprehensive Reporting Suite (SPEC-022)
+<!-- updated: 2026-06-05_14:00:00 -->
 
 Multi-format reporting system for migration documentation.
 
+**Partially shipped.** A consolidated `migration_summary.{pdf,md}` plus machine-readable run
+instrumentation (`run_meta.json`, `run_events.jsonl`) now ships from the migrate engine,
+delivering a first cut of several SPEC-022 functional requirements. The remaining FRs (the
+fully separate per-report formats, Quality Profile Diff, Server Info Reference, and the
+level-segregated log files) are still unshipped.
+
 **What it generates:**
-- **Migration Report**: Per-project transfer status, issue/hotspot sync statistics, error details (JSON, Markdown, Text, PDF)
-- **Executive Summary**: High-level success rates, total counts, elapsed time, throughput (Markdown, PDF)
-- **Performance Report**: Per-stage timing breakdowns, concurrency utilization, rate limit impact (Markdown, PDF)
-- **Quality Profile Diff Report**: Rule comparison between Server and Cloud per language
-- **Server Info Reference Export**: System info, plugin versions, global settings
-- **Structured Logging**: Per-run log directories with level-segregated log files
+- **Migration Report**: Per-project transfer status, issue/hotspot sync statistics, error details (JSON, Markdown, Text, PDF) — _planned (FR-1); the consolidated `migration_summary.{pdf,md}` covers part of this today._
+- **Executive Summary (FR-2)**: High-level success rates, total counts, elapsed time, throughput (Markdown, PDF) — **PARTIALLY shipped** via `migration_summary.{pdf,md}` (overall status, branch/throughput totals, elapsed time) backed by `run_meta.json`.
+- **Performance Report (FR-3)**: Per-stage timing breakdowns, concurrency utilization, rate limit impact (Markdown, PDF) — **PARTIALLY shipped**: per-phase/per-task timings are captured in `run_meta.json` and surfaced in `migration_summary.{pdf,md}`; concurrency-utilization and rate-limit-impact analysis are still unshipped.
+- **Markdown output (FR-5)**: Human-readable Markdown rendering — **PARTIALLY shipped** via `migration_summary.md` (written alongside the PDF by `summary.GenerateReports`); per-report Markdown for the dedicated report types is still unshipped.
+- **Quality Profile Diff Report**: Rule comparison between Server and Cloud per language — _not yet shipped._
+- **Server Info Reference Export**: System info, plugin versions, global settings — _not yet shipped._
+- **Structured Logging**: Per-run log directories with level-segregated log files — _not yet shipped as four separate per-level files; a tee slog handler currently mirrors all events into a single `run_events.jsonl` stream._
 
 #### Sync Metadata Command (SPEC-024)
 
