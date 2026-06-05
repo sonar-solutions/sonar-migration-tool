@@ -71,6 +71,7 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 		GeneratedAt: time.Now(),
 		Sections:    sections,
 		Limitations: collectLimitations(runDir, exportDir, extractMapping),
+		RateLimit:   collectRateLimitReport(runDir, failuresByType),
 	}
 
 	// Fold in migrate-engine runtime telemetry (run_meta.json /
@@ -235,17 +236,17 @@ func collectGlobalSettingMappingLimitations(exportDir string, mapping structure.
 // list is deliberately small and explicit so a setting that merely
 // happens to start with "sonar.security" doesn't trip the heuristic.
 var sastCustomizationKeys = map[string]bool{
-	"sonar.security.config.javasecurity":       true,
-	"sonar.security.config.phpsecurity":        true,
-	"sonar.security.config.pythonsecurity":     true,
+	"sonar.security.config.javasecurity":                     true,
+	"sonar.security.config.phpsecurity":                      true,
+	"sonar.security.config.pythonsecurity":                   true,
 	"sonar.security.config.roslyn.sonaranalyzer.security.cs": true,
-	"sonar.security.config.jssecurity":         true,
-	"sonar.security.config.tssecurity":         true,
-	"sonar.security.sources.javasecurity":      true,
-	"sonar.security.sources.phpsecurity":       true,
-	"sonar.security.sources.pythonsecurity":    true,
-	"sonar.security.sources.jssecurity":        true,
-	"sonar.security.sources.tssecurity":        true,
+	"sonar.security.config.jssecurity":                       true,
+	"sonar.security.config.tssecurity":                       true,
+	"sonar.security.sources.javasecurity":                    true,
+	"sonar.security.sources.phpsecurity":                     true,
+	"sonar.security.sources.pythonsecurity":                  true,
+	"sonar.security.sources.jssecurity":                      true,
+	"sonar.security.sources.tssecurity":                      true,
 }
 
 // collectSASTCustomizationLimitation scans server-level and project-

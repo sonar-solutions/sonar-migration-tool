@@ -115,6 +115,10 @@ func RenderPDF(summary *MigrationSummary) ([]byte, error) {
 	pdf.AddPage()
 	renderTitlePage(pdf, summary)
 
+	if summary.RateLimit != nil {
+		renderRateLimitWarning(pdf, summary.RateLimit)
+	}
+
 	for _, section := range summary.Sections {
 		if summary.OmitSections[section.Name] {
 			continue
@@ -499,7 +503,9 @@ var sectionsWithoutOrganization = map[string]bool{
 }
 
 // renderUnifiedTable renders the per-section table:
-//   Name | Organization | Outcome (colored) | Details
+//
+//	Name | Organization | Outcome (colored) | Details
+//
 // For sections in sectionsWithoutOrganization (and for the predictive
 // report, #240, where org mapping isn't meaningful), the Organization
 // column is dropped — producing a 3-column table: Name | Outcome |
@@ -563,14 +569,14 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section, predictive bool) {
 	// not balloon vertically. Multi-line details (typically metric mapping
 	// notes) also drop to a smaller 6pt font so the per-line cost stays low.
 	const (
-		singleLineH       = 6.0
+		singleLineH = 6.0
 		// wrappedLineH at 3.0mm was too tight for the 8pt body font
 		// used in the Name column: descenders on g/p/y/j were clipped
 		// for long wrapping setting keys (issue #207, example
 		// sonar.java.ignoreUnnamedModuleForSplitPackage). 4.0mm gives
 		// 8pt enough leading while staying readable for the 6pt
 		// multi-line details column.
-		wrappedLineH = 4.0
+		wrappedLineH      = 4.0
 		bodyFontSize      = 8.0
 		multiLineFontSize = 6.0
 	)

@@ -128,9 +128,13 @@ func buildTransport(cfg *clientConfig, token string, version float64) http.Round
 	}
 
 	retry := &retryTransport{
-		inner:   base,
-		backoff: defaultBackoff,
-		logFn:   cfg.retryLogFn,
+		inner:         base,
+		backoff:       defaultBackoff,
+		sqcBackoff:    sqc429Backoff,
+		nonSQCBackoff: nonSQC429Backoff,
+		logFn:         cfg.retryLogFn,
+		observer:      cfg.rateLimitObsFn,
+		gate:          &rateLimitGate{},
 	}
 
 	var rt http.RoundTripper = &authTransport{

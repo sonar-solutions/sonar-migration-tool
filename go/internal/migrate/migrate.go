@@ -107,7 +107,20 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) (runIDOut string, retErr
 			"method", method, "endpoint", url,
 			"status", status, "attempt", attempt, "maxAttempts", total)
 	}
-	clientOpts := []sqapi.Option{sqapi.WithRetryLogger(retryLog)}
+	rateLimitTracker := NewRateLimitTracker()
+	rateLimitObs := func(event sqapi.RateLimitEvent) {
+		if rateLimitTracker.Observe(event) {
+			logger.Warn("rate limiting detected",
+				"kind", event.Kind.String(),
+				"retryAfter", event.RetryAfter,
+				"waitChosen", event.WaitChosen,
+				"bodySnippet", event.BodySnippet)
+		}
+	}
+	clientOpts := []sqapi.Option{
+		sqapi.WithRetryLogger(retryLog),
+		sqapi.WithRateLimitObserver(rateLimitObs),
+	}
 	if cfg.Debug {
 		clientOpts = append(clientOpts, sqapi.WithDebugLogger(common.NewHTTPDebugLogger(logger)))
 	}
@@ -164,6 +177,12 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) (runIDOut string, retErr
 		}
 		if err := writeRunEvents(runDir, collector); err != nil {
 			logger.Warn("writing run events", "err", err)
+		}
+	}()
+
+	defer func() {
+		if writeErr := rateLimitTracker.WriteJSON(filepath.Join(runDir, RateLimitEventsFile)); writeErr != nil {
+			logger.Warn("failed to write rate-limit events artefact", "err", writeErr)
 		}
 	}()
 

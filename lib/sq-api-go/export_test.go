@@ -8,6 +8,7 @@
 package sqapi
 
 import (
+	"context"
 	"crypto/tls"
 	"net/http"
 	"time"
@@ -51,3 +52,55 @@ func ApplyWithRetryLogger(fn RetryLogFunc) *clientConfig {
 	WithRetryLogger(fn)(cfg)
 	return cfg
 }
+
+// Classify429 exposes classify429 for tests.
+func Classify429(headers http.Header, body []byte) RateLimitKind {
+	return classify429(headers, body)
+}
+
+// ParseRetryAfterHeader exposes parseRetryAfter for tests.
+func ParseRetryAfterHeader(headers http.Header) time.Duration {
+	return parseRetryAfter(headers)
+}
+
+// RetryTransportConfig lets tests build a retry transport with every
+// behavior toggle exposed — separate 5xx / SQC-429 / non-SQC-429
+// schedules plus an optional observer and a freshly-allocated shared
+// gate.
+type RetryTransportConfig struct {
+	Inner         http.RoundTripper
+	Backoff       []time.Duration
+	SQCBackoff    []time.Duration
+	NonSQCBackoff []time.Duration
+	Logger        RetryLogFunc
+	Observer      RateLimitObserver
+}
+
+// NewRetryTransportFull constructs a retryTransport using cfg.
+func NewRetryTransportFull(cfg RetryTransportConfig) http.RoundTripper {
+	return &retryTransport{
+		inner:         cfg.Inner,
+		backoff:       cfg.Backoff,
+		sqcBackoff:    cfg.SQCBackoff,
+		nonSQCBackoff: cfg.NonSQCBackoff,
+		logFn:         cfg.Logger,
+		observer:      cfg.Observer,
+		gate:          &rateLimitGate{},
+	}
+}
+
+// NewRateLimitGate returns a freshly-allocated rate-limit gate for
+// testing the gate primitive in isolation.
+func NewRateLimitGate() *RateLimitGate {
+	return &RateLimitGate{inner: &rateLimitGate{}}
+}
+
+// RateLimitGate is a test wrapper around the unexported gate so tests
+// can drive WaitIfBlocked / Extend without depending on the retry
+// transport.
+type RateLimitGate struct {
+	inner *rateLimitGate
+}
+
+func (g *RateLimitGate) WaitIfBlocked(ctx context.Context)    { g.inner.waitIfBlocked(ctx) }
+func (g *RateLimitGate) Extend(until time.Time) time.Duration { return g.inner.extend(until) }

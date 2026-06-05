@@ -48,6 +48,36 @@ type MigrationSummary struct {
 	Warnings      WarningLedger
 	Branches      []BranchStat
 	Throughput    ThroughputStats
+
+	// RateLimit is populated only when API rate limiting materially
+	// impacted the run (one or more tasks failed on 429, total pause
+	// exceeded the impact threshold, or any non-SQC 429 was observed).
+	// Nil for clean runs, which renders the report unchanged.
+	RateLimit *RateLimitReport
+}
+
+// RateLimitReport summarises 429 hits seen during the run for inclusion
+// in the orange callout box rendered between the executive summary and
+// the per-section tables.
+//
+// Counts are broken out by classification so the warning text can
+// distinguish between SonarQube Cloud's documented application rate
+// limit (recoverable via pause-and-resume) and non-standard 429s
+// (Cloudflare-managed limits, WAF blocks, or unknown upstreams) that
+// may require operator action.
+type RateLimitReport struct {
+	TotalHits              int
+	SQCHits                int
+	CloudflareHits         int
+	UnknownHits            int
+	CumulativePauseSeconds float64
+	CausedTaskFailure      bool
+	// FirstBodySnippet and FirstHeadersSummary capture the first
+	// non-SQC event observed (Cloudflare or unknown). Empty when the
+	// only observed events were SQC application limits — for those
+	// the body and headers add no operator-actionable signal.
+	FirstBodySnippet    string
+	FirstHeadersSummary string
 }
 
 // PhaseTiming captures the wall-clock duration of one migration phase.
@@ -149,9 +179,9 @@ type ThroughputStats struct {
 // from issues #224 and #227:
 //   - Succeeded   → green  (perfect-fidelity migration)
 //   - NearPerfect → yellow (migrated with a known close-equivalent substitution,
-//                   e.g. a metric mapping from #143)
+//     e.g. a metric mapping from #143)
 //   - Partial     → orange (created on SQC but a follow-up configuration step
-//                   was incomplete, or a feature was dropped)
+//     was incomplete, or a feature was dropped)
 //   - Failed      → red    (create call itself failed)
 //   - Skipped     → grey   (deliberately skipped by configuration)
 type Section struct {
@@ -166,7 +196,7 @@ type Section struct {
 // EntityItem represents a single entity in the report.
 type EntityItem struct {
 	Name         string
-	Language     string   // populated for Quality Profiles only; empty otherwise
+	Language     string // populated for Quality Profiles only; empty otherwise
 	Organization string
 	Detail       string   // cloud key for successes, scan history status, skip reason
 	ErrorMessage string   // failures only
