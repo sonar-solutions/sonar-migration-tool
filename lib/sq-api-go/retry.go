@@ -5,6 +5,7 @@
 package sqapi
 
 import (
+	"context"
 	"io"
 	"math/rand/v2"
 	"net/http"
@@ -76,12 +77,15 @@ type rateLimitGate struct {
 	blocked time.Time
 }
 
-func (g *rateLimitGate) waitIfBlocked() {
+func (g *rateLimitGate) waitIfBlocked(ctx context.Context) {
 	g.mu.Lock()
 	until := g.blocked
 	g.mu.Unlock()
 	if d := time.Until(until); d > 0 {
-		time.Sleep(d)
+		select {
+		case <-ctx.Done():
+		case <-time.After(d):
+		}
 	}
 }
 
@@ -119,7 +123,7 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	)
 
 	for attempt := 0; ; attempt++ {
-		t.waitOnGate()
+		t.waitOnGate(req.Context())
 
 		resp, err = t.inner.RoundTrip(req)
 		if !shouldRetry(resp, err) {
@@ -139,7 +143,11 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if rl.isSonarRateLimit() {
 			t.extendGate(time.Now().Add(wait))
 		}
-		time.Sleep(jitter(wait))
+		select {
+		case <-req.Context().Done():
+			return resp, req.Context().Err()
+		case <-time.After(jitter(wait)):
+		}
 	}
 }
 
@@ -258,9 +266,9 @@ func clampRetryAfter(server, scheduled time.Duration) time.Duration {
 	return d
 }
 
-func (t *retryTransport) waitOnGate() {
+func (t *retryTransport) waitOnGate(ctx context.Context) {
 	if t.gate != nil {
-		t.gate.waitIfBlocked()
+		t.gate.waitIfBlocked(ctx)
 	}
 }
 
