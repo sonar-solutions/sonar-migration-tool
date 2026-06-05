@@ -22,6 +22,36 @@ import (
 
 // --- Pure utility function tests ---
 
+func TestDedupActiveRules(t *testing.T) {
+	// After remapping, multiple source profiles for one language share a
+	// single SonarCloud profile key, producing duplicate (repo,key,qProfileKey)
+	// triples. The CE rejects a profile that activates the same rule twice, so
+	// dedup must keep exactly one per triple while preserving distinct rules.
+	in := []scanreport.ActiveRuleInput{
+		{RuleRepo: "python", RuleKey: "S100", QProfileKey: "qpPy", Language: "py"}, // from "Sonar way"
+		{RuleRepo: "python", RuleKey: "S100", QProfileKey: "qpPy", Language: "py"}, // dup from "Olivier Way"
+		{RuleRepo: "python", RuleKey: "S100", QProfileKey: "qpPy", Language: "py"}, // dup x3
+		{RuleRepo: "python", RuleKey: "S200", QProfileKey: "qpPy", Language: "py"}, // distinct rule
+		{RuleRepo: "docker", RuleKey: "S100", QProfileKey: "qpDk", Language: "docker"}, // distinct repo+profile
+	}
+	out := dedupActiveRules(in)
+	if len(out) != 3 {
+		t.Fatalf("expected 3 distinct active rules, got %d: %+v", len(out), out)
+	}
+	seen := map[string]bool{}
+	for _, r := range out {
+		k := r.RuleRepo + "|" + r.RuleKey + "|" + r.QProfileKey
+		if seen[k] {
+			t.Errorf("duplicate survived dedup: %s", k)
+		}
+		seen[k] = true
+	}
+	// First occurrence preserved.
+	if out[0].RuleKey != "S100" || out[1].RuleKey != "S200" || out[2].RuleRepo != "docker" {
+		t.Errorf("order/first-occurrence not preserved: %+v", out)
+	}
+}
+
 func TestSplitRule(t *testing.T) {
 	tests := []struct {
 		input    string

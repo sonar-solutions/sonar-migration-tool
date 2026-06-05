@@ -1,6 +1,9 @@
 # Using `transfer` — Transfer One Project
+<!-- updated: 2026-06-05_10:50:51 -->
 
-`transfer` is the **single-command** path. It chains the four phases of a migration — **extract → structure → mappings → migrate** — into one call, then writes a PDF summary on completion. Use it when you have one project (or a small, well-known set of projects) to move across.
+`transfer` is the **single-command**, **project-scoped** path. It chains the four phases of a migration — **extract → structure → mappings → migrate** — into one call, then writes a PDF summary on completion. Use it when you have one project (or a small, well-known set of projects) to move across.
+
+Unlike a full `migrate`, `transfer` only touches the **specified project** and the entities it actually uses — its quality gate, its quality profiles, its permissions and project settings, and its complete issue and Security Hotspot history (including externally imported issues). Instance-wide entities such as portfolios, global settings, permission templates, and default gate/profile selection are **not** modified. See [What gets migrated](#what-gets-migrated) below.
 
 If you need fine-grained control, want to review the intermediate files between phases, or are migrating many projects across multiple SonarQube Server instances, see [Using `migrate`](MIGRATE.md) instead.
 
@@ -22,15 +25,46 @@ If any of these sound like you, jump to [MIGRATE.md](MIGRATE.md) instead:
 ---
 
 ## What it does
+<!-- updated: 2026-06-05_10:50:51 -->
 
 Behind the scenes, `transfer` runs the same four phases as the manual workflow, in order:
 
-1. **Extract** — connects to SonarQube Server and pulls the project's configuration.
+1. **Extract** — connects to SonarQube Server and pulls the project's configuration **and its full issue/hotspot scan history** (scan history is always included for `transfer`).
 2. **Structure** — assembles the extracted data into the project + org structure.
 3. **Mappings** — generates the per-entity mapping CSVs (gates, profiles, groups, templates, portfolios).
-4. **Migrate** — applies everything to SonarQube Cloud.
+4. **Migrate** — applies the **project-scoped** subset to SonarQube Cloud: it runs only the tasks needed for the project, its quality gate and profiles, its permissions, and its issue/hotspot history. Their dependencies are resolved automatically; global/instance-wide tasks are skipped.
 
 On success, a PDF migration summary is written into the export directory.
+
+---
+
+## What gets migrated
+<!-- updated: 2026-06-05_10:50:51 -->
+
+`transfer` migrates a **project-scoped** slice, not the whole instance.
+
+**Included:**
+
+- The specified **project** (created in the target organization).
+- The **quality gate** the project uses, with its conditions.
+- The **quality profiles** the project uses, with their rules restored (and any parent relationships).
+- The project's **permissions** (group permissions), **settings**, **tags**, **links**, **webhooks**, and **new code period**.
+- The project's complete **issue history** — both native SonarQube issues and **externally imported issues** (from third-party analyzers) — replayed via scan-history import, with triage state (status, resolution, assignee, comments, tags) synced afterward.
+- The project's **Security Hotspots**, with their review status and comments synced.
+
+**Not modified** (use the full [`migrate`](MIGRATE.md) command for these):
+
+- Portfolios.
+- Global settings, global webhooks, and the global new code period.
+- Permission templates and default-template assignment.
+- Organization-level and profile-level group permissions.
+- Default quality gate / default quality profile selection.
+- Rule tag and rule description updates.
+- ALM / DevOps platform repository bindings.
+
+> **Note on prerequisites.** A few global entities are created on the target only because the project depends on them — for example, the groups referenced by the project's group permissions, and the migration user/permissions used to perform the migration. These are created as needed so the project's own configuration resolves correctly.
+
+> **Note on metadata for externally imported issues.** External issues are carried over to the target as part of the scan-history import. Their triage *metadata* sync is best-effort: it relies on matching issues by rule key, file, and line, and external rule-key formats are not guaranteed to match across server and cloud. The issues themselves transfer; some external-issue triage state may not.
 
 ---
 
@@ -63,13 +97,14 @@ Minimal form:
 }
 ```
 
-Full form (pass `--project-key` on the CLI to scope to a single project):
+Full form:
 
 ```json
 {
   "concurrency": 25,
   "timeout": 60,
   "export_directory": "./migration-files",
+  "project_key": "my-project",
   "source": {
     "url": "https://sonarqube.example.com",
     "token": "sqp_xxx",
@@ -117,7 +152,7 @@ Omit `--project-key` to transfer **every** project visible to the token (in whic
 | `-c, --config` | — | Path to a JSON configuration file (see [ADVANCED-CONFIG.md](ADVANCED-CONFIG.md)) |
 | `--source-url` | `source.url` | SonarQube Server URL |
 | `--source-token` | `source.token` | SonarQube Server token |
-| `--project-key` | — | Project key to transfer. Omit to transfer every project visible to the token. |
+| `--project-key` | `project_key` | Project key to transfer. Omit to transfer every project visible to the token. |
 | `--target-url` | `target.url` | SonarQube Cloud URL (default: `https://sonarcloud.io/`) |
 | `--target-token` | `target.token` | SonarQube Cloud token |
 | `--default_organization` | `target.default_organization` | SonarQube Cloud organization key |
@@ -128,7 +163,7 @@ Omit `--project-key` to transfer **every** project visible to the token (in whic
 | `--pem_file_path` | `source.pem_file_path` | Client mTLS PEM file for the source server |
 | `--key_file_path` | `source.key_file_path` | Client mTLS key file for the source server |
 | `--cert_password` | `source.cert_password` | Password for the source server mTLS client certificate |
-| `--include-scan-history` | `include_scan_history` | Extract and import full issue/hotspot scan history. Significantly slower and larger. |
+| `--include-scan-history` | `include_scan_history` | Accepted for compatibility but has **no effect** for `transfer` — issue/hotspot scan history is **always** extracted and imported. |
 | `--exclude-branches` | `target.exclude_branches` | Glob patterns for non-main branches to skip during scan history import. Repeatable. Main branch is never excluded. |
 
 CLI flags override values from the config file when both are provided.
@@ -146,10 +181,11 @@ For a full description of every output file, see the [Output Files Reference](MI
 ---
 
 ## After the transfer
+<!-- updated: 2026-06-05_10:50:51 -->
 
 1. Log in to SonarQube Cloud and confirm the project appears under the target organization.
 2. Spot-check that the quality gate and quality profile are present.
-3. If you did **not** pass `--include-scan-history`, re-scan the project in CI to seed historical data.
+3. Spot-check that issues and hotspots came across (compare counts against the source). Scan history is always imported, so a fresh re-scan is not required to seed historical data — though you should still run a normal analysis once your pipeline is repointed.
 4. Update your CI/CD pipeline to point at SonarQube Cloud (`SONAR_TOKEN`, `SONAR_HOST_URL`).
 
 For more on post-migration steps, see the [After you migrate](MIGRATE.md#after-you-migrate) section in MIGRATE.md.

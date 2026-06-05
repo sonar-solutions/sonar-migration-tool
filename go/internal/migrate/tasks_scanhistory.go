@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -179,6 +180,7 @@ func importAndRecordBranch(ctx context.Context, e *Executor, bctx branchImportCo
 		ServerKey:    bctx.ServerKey,
 		Branch:       branch.Name,
 		TargetBranch: targetBranch,
+		IsMain:       branch.IsMain,
 	})
 	if err != nil {
 		logAPIWarn(e.Logger, "scan history import failed", err, "project", bctx.CloudKey, "branch", branch.Name)
@@ -206,6 +208,7 @@ type importBranchInput struct {
 	ServerKey    string
 	Branch       string // SQ branch name — used to filter extracted data
 	TargetBranch string // SC branch name — used in protobuf metadata and CE submit
+	IsMain       bool   // main/default branch — suppresses branch characteristics on submit
 }
 
 type importResult struct {
@@ -259,12 +262,21 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 
 	qprofiles := buildProjectQProfiles(projectLangs, scProfileByLang)
 	remapActiveRuleProfiles(activeRules, scProfileByLang)
+	// Remapping collapses every source profile for a language onto a single
+	// SonarCloud profile key, so a rule activated in more than one source
+	// profile (e.g. "Sonar way" + "Olivier Way" for py) becomes a duplicate
+	// (repo, ruleKey, qProfileKey). SonarCloud's CE rejects a report whose
+	// activerules.pb activates the same rule twice in a profile, so dedup
+	// here — exactly once per rule, mirroring CloudVoyager's output.
+	activeRules = dedupActiveRules(activeRules)
+
+	now := time.Now()
 
 	root, fileComps, cr := scanreport.BuildComponents(input.CloudKey, components)
 	pbIssues := scanreport.BuildIssues(issues, cr)
 	pbExtIssues := scanreport.BuildExternalIssues(extIssues, cr)
 	pbAdHocRules := scanreport.BuildAdHocRules(adHocRules)
-	pbActiveRules := scanreport.BuildActiveRules(activeRules)
+	pbActiveRules := scanreport.BuildActiveRules(activeRules, now.UnixMilli())
 
 	pbSources := make(map[int32]string)
 	for _, s := range sources {
@@ -273,7 +285,6 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 		}
 	}
 
-	now := time.Now()
 	changesets := buildChangesetMap(cr, components, pbSources, now)
 
 	// Backdate changesets so each issue gets its original SonarQube creation date.
@@ -319,6 +330,18 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 		return nil, fmt.Errorf("packaging report: %w", err)
 	}
 
+	// TEMP instrumentation: dump the generated report for diffing against
+	// CloudVoyager's known-good report. No-op unless SMT_DUMP_REPORT_DIR is set.
+	if dir := os.Getenv("SMT_DUMP_REPORT_DIR"); dir != "" {
+		fname := filepath.Join(dir, fmt.Sprintf("smt-report-%s-%s.zip",
+			strings.ReplaceAll(input.CloudKey, "/", "_"), targetBranch))
+		if werr := os.WriteFile(fname, zipBytes, 0o644); werr != nil {
+			e.Logger.Warn("report dump failed", "err", werr)
+		} else {
+			e.Logger.Info("report dumped", "path", fname)
+		}
+	}
+
 	e.Logger.Info("report packaged",
 		"project", input.CloudKey, "sourceBranch", input.Branch, "targetBranch", targetBranch,
 		"projectVersion", projectVersion,
@@ -337,6 +360,7 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 		OrgKey:         input.OrgKey,
 		BranchName:     targetBranch,
 		ProjectVersion: projectVersion,
+		IsMain:         input.IsMain,
 	}
 
 	result, err := scanreport.SubmitReport(ctx, e.Raw.HTTPClient(), cfg, zipBytes)
@@ -581,26 +605,64 @@ func classifyExternalIssue(data json.RawMessage) (scanreport.ExternalIssueInput,
 		return scanreport.ExternalIssueInput{}, scanreport.AdHocRuleInput{}, false
 	}
 	engineID := strings.TrimPrefix(repo, "external_")
+	issueType := extractField(data, "type")
+	severity := extractField(data, "severity")
+	cleanCode := extractField(data, "cleanCodeAttribute")
+	effort := extractField(data, "effort")
+	if effort == "" {
+		effort = extractField(data, "debt")
+	}
+	impacts := extractImpactInputs(data, "impacts")
 	return scanreport.ExternalIssueInput{
-		EngineID:     engineID,
-		RuleID:       key,
-		Message:      extractField(data, "message"),
-		Severity:     extractField(data, "severity"),
-		Type:         extractField(data, "type"),
-		StartLine:    extractInt32(data, "textRange", "startLine"),
-		EndLine:      extractInt32(data, "textRange", "endLine"),
-		StartOff:     extractInt32(data, "textRange", "startOffset"),
-		EndOff:       extractInt32(data, "textRange", "endOffset"),
-		Component:    extractField(data, "component"),
-		CreationDate: parseISODate(extractField(data, "creationDate")),
-	}, scanreport.AdHocRuleInput{
-		EngineID:    engineID,
-		RuleID:      key,
-		Name:        key,
-		Description: fmt.Sprintf("Rule from %s plugin", engineID),
-		Severity:    extractField(data, "severity"),
-		Type:        extractField(data, "type"),
-	}, true
+			EngineID:           engineID,
+			RuleID:             key,
+			Message:            extractField(data, "message"),
+			Severity:           severity,
+			Type:               issueType,
+			StartLine:          extractInt32(data, "textRange", "startLine"),
+			EndLine:            extractInt32(data, "textRange", "endLine"),
+			StartOff:           extractInt32(data, "textRange", "startOffset"),
+			EndOff:             extractInt32(data, "textRange", "endOffset"),
+			Component:          extractField(data, "component"),
+			CreationDate:       parseISODate(extractField(data, "creationDate")),
+			Effort:             effort,
+			CleanCodeAttribute: cleanCode,
+			Impacts:            impacts,
+		}, scanreport.AdHocRuleInput{
+			EngineID:           engineID,
+			RuleID:             key,
+			Name:               key,
+			Description:        fmt.Sprintf("Rule from %s plugin", engineID),
+			Severity:           severity,
+			Type:               issueType,
+			CleanCodeAttribute: cleanCode,
+			Impacts:            impacts,
+		}, true
+}
+
+// extractImpactInputs parses an MQR "impacts" array (e.g. from
+// api/issues/search) into ImpactInput pairs. Returns nil when absent.
+func extractImpactInputs(data json.RawMessage, field string) []scanreport.ImpactInput {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(data, &obj) != nil {
+		return nil
+	}
+	raw, ok := obj[field]
+	if !ok {
+		return nil
+	}
+	var arr []struct {
+		SoftwareQuality string `json:"softwareQuality"`
+		Severity        string `json:"severity"`
+	}
+	if json.Unmarshal(raw, &arr) != nil {
+		return nil
+	}
+	out := make([]scanreport.ImpactInput, 0, len(arr))
+	for _, im := range arr {
+		out = append(out, scanreport.ImpactInput{SoftwareQuality: im.SoftwareQuality, Severity: im.Severity})
+	}
+	return out
 }
 
 // loadExtractedHotspots loads hotspots from the extract and converts them
@@ -634,8 +696,19 @@ func loadExtractedHotspots(e *Executor, serverURL, serverKey, branch string) []s
 			ruleKey = extractNestedRuleKey(item.Data)
 		}
 		repo, key := splitRule(ruleKey)
-		line := extractInt32Field(item.Data, "line")
 		severity := mapVulnProbToSeverity(extractField(item.Data, "vulnerabilityProbability"))
+		// Prefer the full textRange (with column offsets) so the report
+		// matches CloudVoyager / the real scanner; fall back to the bare
+		// line when no textRange is present.
+		startLine := extractInt32(item.Data, "textRange", "startLine")
+		endLine := extractInt32(item.Data, "textRange", "endLine")
+		startOff := extractInt32(item.Data, "textRange", "startOffset")
+		endOff := extractInt32(item.Data, "textRange", "endOffset")
+		if startLine == 0 {
+			line := extractInt32Field(item.Data, "line")
+			startLine = line
+			endLine = line
+		}
 		hotspots = append(hotspots, scanreport.IssueInput{
 			Key:          extractField(item.Data, "key"),
 			CreationDate: parseISODate(extractField(item.Data, "creationDate")),
@@ -643,8 +716,10 @@ func loadExtractedHotspots(e *Executor, serverURL, serverKey, branch string) []s
 			RuleKey:      key,
 			Message:      extractField(item.Data, "message"),
 			Severity:     severity,
-			StartLine:    line,
-			EndLine:      line,
+			StartLine:    startLine,
+			EndLine:      endLine,
+			StartOff:     startOff,
+			EndOff:       endOff,
 			Component:    extractField(item.Data, "component"),
 		})
 	}
@@ -750,7 +825,7 @@ var sonarCloudRuleRepos = map[string]bool{
 	"dart": true, "rust": true,
 	"ansible": true, "githubactions": true,
 	"groovydre": true,
-	"json": true, "yaml": true,
+	"json":      true, "yaml": true,
 	"jcl": true,
 }
 
@@ -878,6 +953,25 @@ func remapActiveRuleProfiles(rules []scanreport.ActiveRuleInput, scProfileByLang
 			rules[i].QProfileKey = scP.Key
 		}
 	}
+}
+
+// dedupActiveRules removes duplicate active rules keyed by
+// (RuleRepo, RuleKey, QProfileKey), keeping the first occurrence. After
+// remapActiveRuleProfiles, multiple source profiles for a language share one
+// SonarCloud profile key, so the same rule can appear more than once. The CE
+// rejects a report that activates the same rule twice in a profile.
+func dedupActiveRules(rules []scanreport.ActiveRuleInput) []scanreport.ActiveRuleInput {
+	seen := make(map[string]bool, len(rules))
+	out := make([]scanreport.ActiveRuleInput, 0, len(rules))
+	for _, r := range rules {
+		k := r.RuleRepo + "|" + r.RuleKey + "|" + r.QProfileKey
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, r)
+	}
+	return out
 }
 
 func buildChangesetMap(cr *scanreport.ComponentRef, components []scanreport.ComponentInput, pbSources map[int32]string, date time.Time) map[int32]*pb.Changesets {
