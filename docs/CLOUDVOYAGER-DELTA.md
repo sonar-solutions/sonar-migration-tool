@@ -297,10 +297,22 @@ or absent after migration — only live scans will populate them.
 
 ---
 
-### BUG-17: Non-main branches accepted by the CE but not persisted on SonarCloud
-<!-- updated: 2026-06-05_13:45:00 -->
+### ~~BUG-17: Non-main branches accepted by the CE but not persisted on SonarCloud~~ **[FIXED]**
+<!-- updated: 2026-06-05_19:15:00 -->
 
-**Status**: OPEN — strongly evidenced to be a **limitation of the report-injection approach on SonarCloud**, not a code bug fixable by tweaking the report alone.
+**Status**: **FIXED** — branch `fix/issue-104-migrate-multiple-branches`. Root cause: the tool POSTed the report straight to `/api/ce/submit`, but a real SonarCloud scanner first performs a server-side **"Create analysis" handshake** that anchors the branch row and returns an `analysisUuid`, which it stamps into the report's `metadata.analysis_uuid` (proto **field 19**). The CE binds an uploaded report to a branch **solely** via that `analysis_uuid`; our reports omitted it (our vendored proto even *reserved* field 19), so the CE processed the report (task SUCCESS) but never created the branch.
+
+**Fix** (captured from the real scanner via mitmproxy + confirmed by a live `201`):
+- `scanner-report.proto`: un-reserved field 19 → `string analysis_uuid = 19;` (regenerated).
+- `submit.go`: added `PreCreateAnalysis(ctx, client, AnalysisConfig)` → `POST {APIURL}/analysis/analyses` (the api host, **no `/api/v2` prefix**; Bearer; JSON `{organizationKey, projectKey, projectVersion, branchName, targetBranchName, branchType}`) → returns `{"id": <analysisUuid>, ...}`.
+- `tasks_scanhistory.go` `buildBranchReport`: for **non-main** branches, calls the handshake (via `e.RawAPI.HTTPClient()` + `e.APIURL`) with **`branchType:"long"`** and stamps the returned `analysisUuid` into the metadata. The main branch needs no handshake. `/api/ce/submit` is unchanged (still `branchType=LONG`).
+- **`branchType:"long"` for every migrated branch** so they are long-lived and keep full issue history — SonarCloud auto-prunes *short-lived* branches after ~30 days.
+
+**Live verification** (SC staging, `open-digital-society-1_okorach-oss_sonar-tools`): non-main branches now **persist as LONG with full issue history** — `release-3.x` 1511 issues, `reduce-tech-debt` 1290, `my-test` 831 (all `type=LONG`); previously 0 / not listed. `develop` + `feat/add-ruff-linting` are gracefully skipped (source purged — see BUG-18).
+
+The historical analysis below concluded this was an unfixable injection limitation — that was **wrong**; the missing piece was the create-analysis handshake.
+
+~~(historical) **Status**: OPEN — strongly evidenced to be a **limitation of the report-injection approach on SonarCloud**, not a code bug fixable by tweaking the report alone.~~
 
 **Symptom**: After the BUG-03 completion, a non-main branch report POSTed to `/api/ce/submit` with `characteristic=branch=<name>` + `characteristic=branchType=LONG` and metadata `reference_branch_name=<main>` returns CE task **SUCCESS**, but the branch never materializes:
 - `/api/project_branches/list` shows only the main branch.

@@ -18,6 +18,51 @@ import (
 	"testing"
 )
 
+func TestPreCreateAnalysis(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "uuid-123", "branchId": "b-1", "branchType": "long", "referenceBranchName": "main",
+		})
+	}))
+	defer srv.Close()
+
+	res, err := PreCreateAnalysis(context.Background(), srv.Client(), AnalysisConfig{
+		APIURL: srv.URL, OrgKey: "org", ProjectKey: "proj",
+		ProjectVersion: "1.0", BranchName: "release-x", TargetBranch: "main",
+	})
+	if err != nil {
+		t.Fatalf("PreCreateAnalysis: %v", err)
+	}
+	if gotPath != "/analysis/analyses" {
+		t.Errorf("path: want /analysis/analyses, got %s", gotPath)
+	}
+	if res.AnalysisUUID != "uuid-123" {
+		t.Errorf("analysis uuid: want uuid-123, got %q", res.AnalysisUUID)
+	}
+	if gotBody["organizationKey"] != "org" || gotBody["projectKey"] != "proj" ||
+		gotBody["branchName"] != "release-x" || gotBody["targetBranchName"] != "main" {
+		t.Errorf("request body wrong: %v", gotBody)
+	}
+}
+
+func TestPreCreateAnalysisErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+	}))
+	defer srv.Close()
+	if _, err := PreCreateAnalysis(context.Background(), srv.Client(), AnalysisConfig{
+		APIURL: srv.URL, OrgKey: "o", ProjectKey: "p", BranchName: "b",
+	}); err == nil {
+		t.Error("expected error on 403, got nil")
+	}
+}
+
 type submitCapture struct {
 	contentType string
 	fields      map[string]string

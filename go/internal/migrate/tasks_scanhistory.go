@@ -390,6 +390,37 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 
 	projectVersion := resolveProjectVersion(e, input.ServerURL, input.ServerKey, input.Branch)
 
+	// For non-main branches, perform the SonarCloud "Create analysis" handshake.
+	// It anchors the branch row server-side and returns an analysis id that we
+	// stamp into the report metadata (analysis_uuid, field 19), so the CE binds
+	// this report to the pre-created branch. Without it, the CE accepts the
+	// report (task SUCCESS) but never creates the branch. The main branch needs
+	// no handshake — its first analysis establishes it.
+	var analysisUUID string
+	if !input.IsMain {
+		res, hErr := scanreport.PreCreateAnalysis(ctx, e.RawAPI.HTTPClient(), scanreport.AnalysisConfig{
+			APIURL:         e.APIURL,
+			OrgKey:         input.OrgKey,
+			ProjectKey:     input.CloudKey,
+			ProjectVersion: projectVersion,
+			BranchName:     targetBranch,
+			TargetBranch:   input.ReferenceBranch,
+			// Migrate every non-main branch as a long-lived branch so it keeps
+			// its full issue history (matches SonarQube Server, where all
+			// branches are long-lived). Without this, branches whose names don't
+			// match the target's long-lived-branch regex would be created as
+			// short-lived (PR-like, auto-deleted, no overall-code history).
+			BranchType: "long",
+		})
+		if hErr != nil {
+			return nil, nil, fmt.Errorf("create-analysis handshake (branch %s): %w", input.Branch, hErr)
+		}
+		analysisUUID = res.AnalysisUUID
+		e.Logger.Info("analysis pre-created (branch anchored on target)",
+			"project", input.CloudKey, "branch", targetBranch,
+			"analysisUuid", analysisUUID, "branchType", res.BranchType, "referenceBranch", res.ReferenceBranchName)
+	}
+
 	reportData := &scanreport.ReportData{
 		Metadata: scanreport.BuildMetadata(scanreport.MetadataInput{
 			AnalysisDate:        now,
@@ -401,6 +432,7 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 			ProjectVersion:      projectVersion,
 			QProfiles:           qprofiles,
 			FileCountByExt:      countFilesByExt(components),
+			AnalysisUUID:        analysisUUID,
 		}, root.Ref),
 		RootComponent:  root,
 		FileComponents: fileComps,

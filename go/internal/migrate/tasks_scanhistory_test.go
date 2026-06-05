@@ -746,6 +746,12 @@ func TestBuildSCProfileMapNoCloud(t *testing.T) {
 func newCEMockServer() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/analysis/analyses": // create-analysis handshake (non-main branches)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{
+				"id": "analysis-test-uuid", "branchId": "branch-uuid",
+				"branchType": "long", "referenceBranchName": "main",
+			})
 		case "/api/ce/submit":
 			json.NewEncoder(w).Encode(map[string]any{"taskId": "AX-test-123"})
 		case "/api/ce/task":
@@ -768,13 +774,18 @@ func TestImportBranch(t *testing.T) {
 	e := newScanHistoryExecutor(t, dir)
 	e.CloudURL = srv.URL + "/"
 	e.Raw = common.NewRawClient(srv.Client(), srv.URL+"/")
+	// Non-main branch import now performs the create-analysis handshake against
+	// the API host; point it at the same mock server.
+	e.APIURL = srv.URL + "/"
+	e.RawAPI = common.NewRawClient(srv.Client(), srv.URL+"/")
 
 	input := importBranchInput{
-		CloudKey:  "cloud-proj1",
-		OrgKey:    "cloud-org1",
-		ServerURL: testServerURL,
-		ServerKey: "proj1",
-		Branch:    "main",
+		CloudKey:        "cloud-proj1",
+		OrgKey:          "cloud-org1",
+		ServerURL:       testServerURL,
+		ServerKey:       "proj1",
+		Branch:          "main",
+		ReferenceBranch: "master",
 	}
 
 	result, err := importBranch(context.Background(), e, input)
