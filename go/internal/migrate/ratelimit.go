@@ -85,7 +85,11 @@ func (t *RateLimitTracker) Observe(event sqapi.RateLimitEvent) (firstOfKind bool
 	}
 
 	waitSec := event.WaitChosen.Seconds()
-	t.state.CumulativePauseSeconds += waitSec
+	// CumulativePauseSeconds is gate-deduplicated wall-clock pause —
+	// summing per-request WaitChosen would inflate by N when N concurrent
+	// workers park on the same gate window. WallClockAdded carries the
+	// already-deduplicated contribution from the transport.
+	t.state.CumulativePauseSeconds += event.WallClockAdded.Seconds()
 	if waitSec > t.state.LongestPauseSeconds {
 		t.state.LongestPauseSeconds = waitSec
 	}

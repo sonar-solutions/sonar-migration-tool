@@ -243,20 +243,32 @@ const (
 // function does not gate on its argument; nil is a programmer error.
 //
 // Layout: full-width box, light amber border, amber bold heading on
-// the first line, black body text wrapping below.
+// the first line, black body text wrapping below. The body is
+// pre-measured under the body font so the page-break check reserves
+// exactly the space the wrapped text needs — otherwise long bodies
+// (notably the non-SQC variant with a 160-char snippet) auto-break
+// mid-MultiCell and the border rectangle is drawn across the page
+// boundary.
 func renderRateLimitWarning(pdf *fpdf.Fpdf, r *RateLimitReport) {
 	pdf.Ln(4)
 	pageW, _ := pdf.GetPageSize()
 	left, _, right, _ := pdf.GetMargins()
 	boxW := pageW - left - right
+	innerW := boxW - 2*rateLimitBoxPadding
 
 	body := sanitizeForPDF(rateLimitMessage(r))
 
-	checkPageBreak(pdf, rateLimitHeadingLineH+rateLimitBodyLineH*4+rateLimitBoxPadding*2)
+	pdf.SetFont(pdfFontFamilyBody, "", rateLimitBodyFontPt)
+	bodyLines := pdf.SplitLines([]byte(body), innerW)
+	bodyLineCount := len(bodyLines)
+	if bodyLineCount < 1 {
+		bodyLineCount = 1
+	}
+	boxHeight := rateLimitHeadingLineH + rateLimitBodyLineH*float64(bodyLineCount) + rateLimitBoxPadding*2
+	checkPageBreak(pdf, boxHeight)
 
 	startY := pdf.GetY()
 	innerX := left + rateLimitBoxPadding
-	innerW := boxW - 2*rateLimitBoxPadding
 
 	pdf.SetXY(innerX, startY+rateLimitBoxPadding)
 	setColor(pdf, colorAmber)

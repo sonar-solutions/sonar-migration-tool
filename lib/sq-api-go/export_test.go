@@ -8,6 +8,7 @@
 package sqapi
 
 import (
+	"context"
 	"crypto/tls"
 	"net/http"
 	"time"
@@ -101,5 +102,5 @@ type RateLimitGate struct {
 	inner *rateLimitGate
 }
 
-func (g *RateLimitGate) WaitIfBlocked()         { g.inner.waitIfBlocked() }
-func (g *RateLimitGate) Extend(until time.Time) { g.inner.extend(until) }
+func (g *RateLimitGate) WaitIfBlocked(ctx context.Context)    { g.inner.waitIfBlocked(ctx) }
+func (g *RateLimitGate) Extend(until time.Time) time.Duration { return g.inner.extend(until) }

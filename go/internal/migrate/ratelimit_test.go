@@ -47,9 +47,12 @@ func TestTrackerObserveFirstOfKind(t *testing.T) {
 func TestTrackerAccumulatesPause(t *testing.T) {
 	tracker := migrate.NewRateLimitTracker()
 	now := time.Now()
-	tracker.Observe(sqapi.RateLimitEvent{Kind: sqapi.KindSQCRateLimit, WaitChosen: 5 * time.Second, ObservedAt: now})
-	tracker.Observe(sqapi.RateLimitEvent{Kind: sqapi.KindSQCRateLimit, WaitChosen: 15 * time.Second, ObservedAt: now.Add(10 * time.Second)})
-	tracker.Observe(sqapi.RateLimitEvent{Kind: sqapi.KindSQCRateLimit, WaitChosen: 7 * time.Second, ObservedAt: now.Add(20 * time.Second)})
+	// CumulativePauseSeconds sums WallClockAdded (gate-deduplicated),
+	// not WaitChosen — three sequential SQC events each extending the
+	// gate contribute the full delta each time.
+	tracker.Observe(sqapi.RateLimitEvent{Kind: sqapi.KindSQCRateLimit, WaitChosen: 5 * time.Second, WallClockAdded: 5 * time.Second, ObservedAt: now})
+	tracker.Observe(sqapi.RateLimitEvent{Kind: sqapi.KindSQCRateLimit, WaitChosen: 15 * time.Second, WallClockAdded: 15 * time.Second, ObservedAt: now.Add(10 * time.Second)})
+	tracker.Observe(sqapi.RateLimitEvent{Kind: sqapi.KindSQCRateLimit, WaitChosen: 7 * time.Second, WallClockAdded: 7 * time.Second, ObservedAt: now.Add(20 * time.Second)})
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, migrate.RateLimitEventsFile)
@@ -64,6 +67,45 @@ func TestTrackerAccumulatesPause(t *testing.T) {
 	assert.Equal(t, 3, state.Counts[sqapi.KindSQCRateLimit.String()])
 	assert.InDelta(t, 27.0, state.CumulativePauseSeconds, 0.001)
 	assert.InDelta(t, 15.0, state.LongestPauseSeconds, 0.001)
+}
+
+// TestTrackerCumulativePauseDeduped verifies that concurrent SQC events
+// parking on a shared gate window do not inflate CumulativePauseSeconds.
+// Each request still reports its full WaitChosen (used for
+// LongestPauseSeconds), but only one event per window contributes the
+// full wall-clock pause via WallClockAdded.
+func TestTrackerCumulativePauseDeduped(t *testing.T) {
+	tracker := migrate.NewRateLimitTracker()
+	now := time.Now()
+	// 20 concurrent workers each chose to wait 60s; only the leading
+	// 429 actually added 60s of wall-clock pause to the migration.
+	for i := 0; i < 20; i++ {
+		wallClock := time.Duration(0)
+		if i == 0 {
+			wallClock = 60 * time.Second
+		}
+		tracker.Observe(sqapi.RateLimitEvent{
+			Kind:           sqapi.KindSQCRateLimit,
+			WaitChosen:     60 * time.Second,
+			WallClockAdded: wallClock,
+			ObservedAt:     now,
+		})
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, migrate.RateLimitEventsFile)
+	require.NoError(t, tracker.WriteJSON(path))
+
+	var state migrate.RateLimitState
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &state))
+
+	assert.Equal(t, 20, state.Total, "all events counted")
+	assert.InDelta(t, 60.0, state.CumulativePauseSeconds, 0.001,
+		"CumulativePauseSeconds must reflect wall-clock pause (60s), not 20x60s")
+	assert.InDelta(t, 60.0, state.LongestPauseSeconds, 0.001,
+		"LongestPauseSeconds reflects the largest single WaitChosen")
 }
 
 func TestTrackerWriteJSONSkipsCleanRun(t *testing.T) {

@@ -89,12 +89,32 @@ func (g *rateLimitGate) waitIfBlocked(ctx context.Context) {
 	}
 }
 
-func (g *rateLimitGate) extend(until time.Time) {
+// extend pushes the gate's deadline out to `until` (no-op if `until` is
+// not later than the current deadline) and returns the wall-clock
+// duration this call adds beyond what was already pending. When several
+// concurrent requests park on the same window, only the first one
+// reports the full wait; subsequent extends with the same or earlier
+// deadlines return 0. When a new 429 arrives after the previous window
+// expired, the prior unpaused gap is excluded from the returned delta.
+// Callers use this to record wall-clock pause time accurately rather
+// than summing per-request waits, which would over-count under high
+// concurrency.
+func (g *rateLimitGate) extend(until time.Time) (added time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	now := time.Now()
+	effectivePrev := g.blocked
+	if effectivePrev.Before(now) {
+		effectivePrev = now
+	}
 	if until.After(g.blocked) {
 		g.blocked = until
 	}
+	added = g.blocked.Sub(effectivePrev)
+	if added < 0 {
+		added = 0
+	}
+	return added
 }
 
 // retryTransport is an http.RoundTripper that retries failed requests
@@ -134,15 +154,21 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		drainAndClose(resp)
 
 		wait, total, more := t.nextWait(rl, attempt)
-		t.fireObserver(rl, chosenWaitOrZero(wait, more))
+		chosenWait := chosenWaitOrZero(wait, more)
+		wallClockAdded := time.Duration(0)
+		if more {
+			if rl.isSonarRateLimit() {
+				wallClockAdded = t.extendGate(time.Now().Add(wait))
+			} else {
+				wallClockAdded = chosenWait
+			}
+		}
+		t.fireObserver(rl, chosenWait, wallClockAdded)
 		if !more {
 			return resp, err
 		}
 
 		t.logAttempt(req, resp, attempt, total)
-		if rl.isSonarRateLimit() {
-			t.extendGate(time.Now().Add(wait))
-		}
 		select {
 		case <-req.Context().Done():
 			return resp, req.Context().Err()
@@ -272,10 +298,11 @@ func (t *retryTransport) waitOnGate(ctx context.Context) {
 	}
 }
 
-func (t *retryTransport) extendGate(until time.Time) {
-	if t.gate != nil {
-		t.gate.extend(until)
+func (t *retryTransport) extendGate(until time.Time) time.Duration {
+	if t.gate == nil {
+		return 0
 	}
+	return t.gate.extend(until)
 }
 
 func (t *retryTransport) logAttempt(req *http.Request, resp *http.Response, attempt, total int) {
@@ -290,19 +317,22 @@ func (t *retryTransport) logAttempt(req *http.Request, resp *http.Response, atte
 }
 
 // fireObserver delivers the rate-limit event to the configured callback.
-// Called from observeRateLimit so subsequent body draining and retry
-// decisions don't race with observer-side accounting.
-func (t *retryTransport) fireObserver(rl rateLimitInfo, wait time.Duration) {
+// wait is what this request will sleep; wallClockAdded is the
+// gate-deduplicated wall-clock pause this event actually contributed
+// (equals wait for non-gated 429s, 0 for piggy-back gated waits, or the
+// delta beyond the prior window for an extending gated wait).
+func (t *retryTransport) fireObserver(rl rateLimitInfo, wait, wallClockAdded time.Duration) {
 	if t.observer == nil || !rl.is429 {
 		return
 	}
 	t.observer(RateLimitEvent{
-		Kind:        rl.kind,
-		RetryAfter:  rl.retryAfter,
-		WaitChosen:  wait,
-		BodySnippet: snapshotBody(rl.body),
-		Headers:     snapshotHeaders(rl.headers),
-		ObservedAt:  time.Now(),
+		Kind:           rl.kind,
+		RetryAfter:     rl.retryAfter,
+		WaitChosen:     wait,
+		WallClockAdded: wallClockAdded,
+		BodySnippet:    snapshotBody(rl.body),
+		Headers:        snapshotHeaders(rl.headers),
+		ObservedAt:     time.Now(),
 	})
 }
 

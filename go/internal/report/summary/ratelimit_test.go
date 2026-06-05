@@ -206,3 +206,36 @@ func TestRenderRateLimitWarningProducesContent(t *testing.T) {
 	require.NoError(t, pdf.Output(&buf))
 	assert.Greater(t, buf.Len(), 1000, "PDF must be non-trivial after rendering the warning")
 }
+
+// TestRenderRateLimitWarningNearPageBottomBreaksCleanly verifies that
+// when the warning is rendered near the bottom of a page, the entire
+// box (including a long non-SQC body that wraps to many lines) moves to
+// a fresh page rather than being drawn with its border spanning the
+// page break.
+func TestRenderRateLimitWarningNearPageBottomBreaksCleanly(t *testing.T) {
+	pdf := fpdf.New("P", "mm", "Letter", "")
+	pdf.SetAutoPageBreak(true, 20)
+	registerUnicodeFont(pdf)
+	pdf.AddPage()
+
+	_, pageH := pdf.GetPageSize()
+	// Park the cursor near the bottom so the old "reserve 4 lines"
+	// constant would fit-and-overflow, while a long-body box correctly
+	// computed should push to a new page.
+	pdf.SetY(pageH - 40)
+	startPage := pdf.PageNo()
+
+	report := &RateLimitReport{
+		TotalHits:           1,
+		CloudflareHits:      1,
+		FirstBodySnippet:    strings.Repeat("Cloudflare 1015 Error Encountered ", 8),
+		FirstHeadersSummary: "CF-Ray: abc; Retry-After: 60",
+	}
+	renderRateLimitWarning(pdf, report)
+
+	assert.Greater(t, pdf.PageNo(), startPage,
+		"long body near page bottom must trigger a page break before drawing the box")
+
+	var buf bytes.Buffer
+	require.NoError(t, pdf.Output(&buf), "rendering must produce a valid PDF")
+}

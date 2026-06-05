@@ -5,6 +5,7 @@
 package sqapi_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -216,7 +217,7 @@ func TestRateLimitGateExtend(t *testing.T) {
 	gate.Extend(time.Now().Add(50 * time.Millisecond))
 
 	start := time.Now()
-	gate.WaitIfBlocked()
+	gate.WaitIfBlocked(context.Background())
 	elapsed := time.Since(start)
 
 	assert.GreaterOrEqual(t, elapsed, 40*time.Millisecond,
@@ -231,7 +232,7 @@ func TestRateLimitGateExtendDoesNotShorten(t *testing.T) {
 	gate.Extend(time.Now().Add(10 * time.Millisecond)) // earlier — ignored
 
 	start := time.Now()
-	gate.WaitIfBlocked()
+	gate.WaitIfBlocked(context.Background())
 	elapsed := time.Since(start)
 
 	assert.GreaterOrEqual(t, elapsed, 80*time.Millisecond,
@@ -249,7 +250,7 @@ func TestRateLimitGateConcurrent(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			start := time.Now()
-			gate.WaitIfBlocked()
+			gate.WaitIfBlocked(context.Background())
 			elapsed[idx] = time.Since(start)
 		}(i)
 	}
@@ -259,4 +260,65 @@ func TestRateLimitGateConcurrent(t *testing.T) {
 		assert.GreaterOrEqual(t, d, 60*time.Millisecond,
 			"goroutine %d should have waited on the gate", i)
 	}
+}
+
+// TestRateLimitGateExtendReturnsAddedDelta verifies that extend reports
+// the wall-clock pause it actually contributed. The first extend returns
+// the full wait; subsequent piggy-back extends to the same or earlier
+// deadline return zero; later-extending calls return only the delta
+// beyond the prior deadline.
+func TestRateLimitGateExtendReturnsAddedDelta(t *testing.T) {
+	gate := sqapi.NewRateLimitGate()
+
+	first := gate.Extend(time.Now().Add(60 * time.Second))
+	assert.InDelta(t, 60*time.Second, first, float64(time.Second),
+		"first extend should return the full pause")
+
+	piggy := gate.Extend(time.Now().Add(60 * time.Second))
+	assert.LessOrEqual(t, piggy, 100*time.Millisecond,
+		"piggy-back extend to same deadline should add near-zero")
+
+	earlier := gate.Extend(time.Now().Add(30 * time.Second))
+	assert.Equal(t, time.Duration(0), earlier,
+		"extend to an earlier deadline should add zero")
+
+	longer := gate.Extend(time.Now().Add(90 * time.Second))
+	assert.InDelta(t, 30*time.Second, longer, float64(time.Second),
+		"extending past the current deadline should add only the delta")
+}
+
+// TestRateLimitGateExtendAfterWindowExpired verifies that a new extend
+// arriving after the previous window has ended counts only the new
+// pause, not the gap of unpaused time in between.
+func TestRateLimitGateExtendAfterWindowExpired(t *testing.T) {
+	gate := sqapi.NewRateLimitGate()
+	gate.Extend(time.Now().Add(20 * time.Millisecond))
+	time.Sleep(40 * time.Millisecond) // let the window expire
+
+	added := gate.Extend(time.Now().Add(50 * time.Millisecond))
+	assert.GreaterOrEqual(t, added, 40*time.Millisecond,
+		"new window after expiry should report its own pause")
+	assert.LessOrEqual(t, added, 60*time.Millisecond,
+		"new window after expiry should exclude the unpaused gap")
+}
+
+// TestRateLimitGateContextCancellation verifies that WaitIfBlocked aborts
+// promptly when the caller's context is cancelled, instead of blocking
+// for the full remaining duration of the gate.
+func TestRateLimitGateContextCancellation(t *testing.T) {
+	gate := sqapi.NewRateLimitGate()
+	gate.Extend(time.Now().Add(5 * time.Second))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	gate.WaitIfBlocked(ctx)
+	elapsed := time.Since(start)
+
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"WaitIfBlocked must return promptly when context is cancelled")
 }

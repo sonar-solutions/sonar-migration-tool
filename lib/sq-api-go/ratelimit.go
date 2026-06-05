@@ -57,9 +57,18 @@ type RateLimitEvent struct {
 	Kind        RateLimitKind
 	RetryAfter  time.Duration // 0 if no Retry-After header was present
 	WaitChosen  time.Duration // duration the transport will sleep before retrying; 0 if no retry
-	BodySnippet string        // truncated to bodySnippetMax bytes
-	Headers     map[string]string
-	ObservedAt  time.Time
+	// WallClockAdded is the gate-deduplicated wall-clock pause this
+	// event actually contributes to the migration. For SQC 429s that
+	// share the rate-limit gate, only the first (or extending) event of
+	// a window reports the full pause; piggy-back events report 0. For
+	// non-gated 429s (Cloudflare/unknown) this equals WaitChosen. Use
+	// this — not WaitChosen — when summing total pause time, otherwise
+	// concurrent workers parking on the same gate window will inflate
+	// the total by N×.
+	WallClockAdded time.Duration
+	BodySnippet    string // truncated to bodySnippetMax bytes
+	Headers        map[string]string
+	ObservedAt     time.Time
 }
 
 // RateLimitObserver is invoked once per observed 429. Implementations
