@@ -52,7 +52,7 @@ func init() {
 	f.Int("timeout", 0, "Number of seconds before a request will timeout")
 	f.String("extract_id", "", "ID of an extract to resume in case of failures")
 	f.String("target_task", "", "Target task to complete; all dependent tasks will be included")
-	f.Bool("skip-project-data-migration", false, "Skip extracting project data (issues, hotspots, source code, SCM blame). Defaults to false — project data is extracted by default. #303.")
+	f.Bool(flagSkipProjectDataMigration, false, "Skip extracting project data (issues, hotspots, source code, SCM blame). Defaults to false — project data is extracted by default. #303.")
 }
 
 func buildExtractConfig(cmd *cobra.Command, args []string) (extract.ExtractConfig, error) {
@@ -91,8 +91,8 @@ func buildExtractConfig(cmd *cobra.Command, args []string) (extract.ExtractConfi
 	// SkipProjectDataMigration (CLI --skip-project-data-migration or
 	// config "skip-project-data-migration": true). CLI flag wins over
 	// config; one-way (passing the flag forces opt-out).
-	if cmd.Flags().Changed("skip-project-data-migration") {
-		v, _ := cmd.Flags().GetBool("skip-project-data-migration")
+	if cmd.Flags().Changed(flagSkipProjectDataMigration) {
+		v, _ := cmd.Flags().GetBool(flagSkipProjectDataMigration)
 		if v {
 			cfg.SkipProjectDataMigration = true
 		}
