@@ -1,0 +1,2 @@
+Help me do this. 
+FULLY and exhaustively, use claude code dynamic workflow / workflows and agent swarms and subagents to discover how much you can parallelize your work and then use those again to run that maximum parallelization work. Ultracode all the way for every turn.   
