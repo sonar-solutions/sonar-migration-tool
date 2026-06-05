@@ -45,7 +45,11 @@ message Metadata {
   string projectVersion = 16;
   string buildString = 17;
   string target_branch_name = 18;
-  reserved 19;
+  // analysis_uuid links the uploaded report to the analysis/branch pre-created
+  // by the SonarCloud "Create analysis" handshake (POST {api-host}/analysis/analyses).
+  // Without it, /api/ce/submit processes the report (CE SUCCESS) but no branch row
+  // is created. The cloud scanner_report.proto defines field 19 as analysis_uuid.
+  string analysis_uuid = 19;
   reserved 20;
   string new_code_reference_branch = 21;
   map<string, int32> analyzed_indexed_file_count_per_type = 22;

@@ -19,6 +19,8 @@ import (
 	"time"
 )
 
+const headerContentType = "Content-Type"
+
 // SubmitConfig holds the parameters for submitting a scanner report.
 type SubmitConfig struct {
 	CloudURL       string // e.g. "https://sonarcloud.io/"
@@ -40,6 +42,92 @@ type SubmitResult struct {
 	TaskID string
 }
 
+// AnalysisConfig holds parameters for the SonarCloud "Create analysis" handshake.
+type AnalysisConfig struct {
+	APIURL         string // v2 API host, e.g. "https://api.sonarcloud.io/"
+	OrgKey         string
+	ProjectKey     string
+	ProjectVersion string
+	BranchName     string
+	TargetBranch   string // reference/main branch on the target
+	// BranchType requests an explicit branch type ("long"/"short"). For
+	// migration we send "long" so every migrated branch is a long-lived branch
+	// that keeps its full issue history (SonarQube Server branches are all
+	// long-lived). Empty lets the server classify by the long-lived-branch regex.
+	BranchType string
+}
+
+// AnalysisResult holds the response of the create-analysis handshake.
+type AnalysisResult struct {
+	AnalysisUUID        string `json:"id"`
+	BranchID            string `json:"branchId"`
+	BranchType          string `json:"branchType"`
+	ReferenceBranchName string `json:"referenceBranchName"`
+}
+
+// PreCreateAnalysis performs the SonarCloud "Create analysis" handshake that a
+// real scanner runs before uploading the report: POST {APIURL}/analysis/analyses.
+// It creates/anchors the branch row server-side and returns an analysis id that
+// must be stamped into the report metadata (analysis_uuid, field 19). Without
+// this handshake a non-main branch report is accepted by the CE (task SUCCESS)
+// but no branch is ever created. Captured from the real scanner's traffic; the
+// client must inject the Bearer token (use the SonarCloud API client's HTTPClient).
+func PreCreateAnalysis(ctx context.Context, client *http.Client, cfg AnalysisConfig) (*AnalysisResult, error) {
+	version := cfg.ProjectVersion
+	if version == "" {
+		version = "not provided"
+	}
+	bodyMap := map[string]string{
+		"organizationKey": cfg.OrgKey,
+		"projectKey":      cfg.ProjectKey,
+		"projectVersion":  version,
+	}
+	if cfg.BranchName != "" {
+		bodyMap["branchName"] = cfg.BranchName
+	}
+	if cfg.TargetBranch != "" {
+		bodyMap["targetBranchName"] = cfg.TargetBranch
+	}
+	if cfg.BranchType != "" {
+		bodyMap["branchType"] = cfg.BranchType
+	}
+	body, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, err
+	}
+
+	// {APIURL}/analysis/analyses — NOTE: no "/api/v2" prefix on the api host.
+	submitURL := strings.TrimRight(cfg.APIURL, "/") + "/analysis/analyses"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, submitURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(headerContentType, "application/json; charset=utf-8")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("POST analysis/analyses: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading create-analysis response: %w", err)
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("create-analysis HTTP %d: %s", resp.StatusCode, truncateStr(string(respBody), 300))
+	}
+
+	var result AnalysisResult
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("parsing create-analysis response: %w", err)
+	}
+	if result.AnalysisUUID == "" {
+		return nil, fmt.Errorf("create-analysis: no analysis id in response: %s", truncateStr(string(respBody), 200))
+	}
+	return &result, nil
+}
+
 // SubmitReport uploads a scanner report ZIP to the SonarCloud Compute Engine.
 func SubmitReport(ctx context.Context, client *http.Client, cfg SubmitConfig, reportZIP []byte) (*SubmitResult, error) {
 	body, contentType, err := buildMultipartForm(cfg, reportZIP)
@@ -52,7 +140,7 @@ func SubmitReport(ctx context.Context, client *http.Client, cfg SubmitConfig, re
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
-	req.Header.Set("Content-Type", contentType)
+	req.Header.Set(headerContentType, contentType)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -144,7 +232,7 @@ func buildMultipartForm(cfg SubmitConfig, reportZIP []byte) (*bytes.Buffer, stri
 	// report file
 	h := make(textproto.MIMEHeader)
 	h.Set("Content-Disposition", `form-data; name="report"; filename="scanner-report.zip"`)
-	h.Set("Content-Type", "application/zip")
+	h.Set(headerContentType, "application/zip")
 	part, err := w.CreatePart(h)
 	if err != nil {
 		return nil, "", err

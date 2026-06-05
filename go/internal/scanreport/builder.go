@@ -62,6 +62,10 @@ type MetadataInput struct {
 	ProjectVersion      string
 	QProfiles           []QProfileInfo
 	FileCountByExt      map[string]int32
+	// AnalysisUUID is the id returned by the SonarCloud "Create analysis"
+	// handshake; it binds this report to the pre-created analysis/branch row
+	// (metadata field 19). Empty for the main branch (no handshake needed).
+	AnalysisUUID string
 }
 
 // BuildMetadata constructs the Metadata protobuf message.
@@ -107,6 +111,7 @@ func BuildMetadata(input MetadataInput, rootRef int32) *pb.Metadata {
 		ProjectVersion:                  input.ProjectVersion,
 		QprofilesPerLanguage:            qprofiles,
 		AnalyzedIndexedFileCountPerType: fileCounts,
+		AnalysisUuid:                    input.AnalysisUUID,
 	}
 }
 
