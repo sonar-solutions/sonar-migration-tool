@@ -103,7 +103,7 @@ func runGrantMigrationUserProjectPermissions(ctx context.Context, e *Executor) e
 		return nil
 	}
 
-	counter := NewTaskCounter("grantMigrationUserProjectPermissions")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "grantMigrationUserProjectPermissions", "createProjects",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -128,12 +128,11 @@ func runGrantMigrationUserProjectPermissions(ctx context.Context, e *Executor) e
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
 func runCreateMigrationGroups(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("createMigrationGroups")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "createMigrationGroups", "generateOrganizationMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -169,7 +168,6 @@ func runCreateMigrationGroups(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -184,7 +182,7 @@ func runAddMigrationUserToMigrationGroups(ctx context.Context, e *Executor) erro
 		return nil
 	}
 
-	counter := NewTaskCounter("addMigrationUserToMigrationGroups")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "addMigrationUserToMigrationGroups", "createMigrationGroups",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -199,12 +197,11 @@ func runAddMigrationUserToMigrationGroups(ctx context.Context, e *Executor) erro
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
 func runAddMigrationGroupToTemplates(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("addMigrationGroupToTemplates")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "addMigrationGroupToTemplates", "createPermissionTemplates",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			templateID := extractField(item, "cloud_template_id")
@@ -232,7 +229,6 @@ func runAddMigrationGroupToTemplates(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -240,7 +236,7 @@ func runSetOrgGroupPermissions(ctx context.Context, e *Executor) error {
 	// Build org lookup.
 	orgKeys := buildServerOrgLookup(e)
 
-	counter := NewTaskCounter("setOrgGroupPermissions")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachExtractItem(ctx, e, "setOrgGroupPermissions", "getGroups",
 		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			name := extractField(item.Data, "name")
@@ -255,7 +251,6 @@ func runSetOrgGroupPermissions(ctx context.Context, e *Executor) error {
 			_ = w.WriteOne(item.Data)
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -295,7 +290,7 @@ func runSetProfileGroupPermissions(ctx context.Context, e *Executor) error {
 		})
 	}
 
-	counter := NewTaskCounter("setProfileGroupPermissions")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachExtractItem(ctx, e, "setProfileGroupPermissions", "getProfileGroups",
 		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			profileKey := extractField(item.Data, "profileKey")
@@ -319,7 +314,6 @@ func runSetProfileGroupPermissions(ctx context.Context, e *Executor) error {
 			_ = w.WriteOne(item.Data)
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -395,7 +389,7 @@ func runSetTemplateGroupPermissions(ctx context.Context, e *Executor) error {
 	applied := make(map[triple]bool)
 	var appliedMu sync.Mutex
 
-	counter := NewTaskCounter("setTemplateGroupPermissions")
+	counter := TaskCounterFromContext(ctx)
 
 	apply := func(ctx context.Context, srvURL string, data json.RawMessage) {
 		srcTemplateID := extractField(data, "templateId")
@@ -448,10 +442,8 @@ func runSetTemplateGroupPermissions(ctx context.Context, e *Executor) error {
 				apply(ctx, item.ServerURL, item.Data)
 				return nil
 			}); err != nil {
-			counter.LogSummary(e.Logger)
 			return err
 		}
 	}
-	counter.LogSummary(e.Logger)
 	return nil
 }

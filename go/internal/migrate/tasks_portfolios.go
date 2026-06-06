@@ -87,7 +87,7 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 	// /api/project_branches/list. Required by SQC's PATCH endpoint when
 	// selection is "projects".
 	branchIDByCloudKey := map[string]string{}
-	counter := NewTaskCounter("configurePortfolios")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "configurePortfolios", "createPortfolios",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			selectionMode := strings.ToUpper(extractField(item, "selection_mode"))
@@ -174,7 +174,6 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 

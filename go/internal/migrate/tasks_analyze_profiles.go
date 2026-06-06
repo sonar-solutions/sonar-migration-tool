@@ -20,7 +20,7 @@ import (
 // No SonarQube Cloud API calls are made — this task is a pure
 // re-read of extract data, so it's safe to re-run.
 func runAnalyzeProfileRules(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("analyzeProfileRules")
+	counter := TaskCounterFromContext(ctx)
 
 	// Pre-load extract data once and index it.
 	activeByProfile := indexExtractByServerAndField(e, "getActiveProfileRules", "profileKey")
@@ -58,7 +58,6 @@ func runAnalyzeProfileRules(ctx context.Context, e *Executor) error {
 			counter.Success()
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	sqapi "github.com/sonar-solutions/sq-api-go"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
@@ -310,17 +311,45 @@ func NewTaskCounter(task string) *TaskCounter {
 	return &TaskCounter{task: task}
 }
 
+// taskCounterCtxKey scopes the per-task counter inside the task's
+// context (#333). runPhase injects a fresh counter so the merged
+// "task summary" log can be emitted from a single place after the
+// task returns.
+type taskCounterCtxKey struct{}
+
+// WithTaskCounter returns a child context carrying the given counter.
+func WithTaskCounter(ctx context.Context, c *TaskCounter) context.Context {
+	return context.WithValue(ctx, taskCounterCtxKey{}, c)
+}
+
+// TaskCounterFromContext returns the counter injected by runPhase, or
+// a throwaway counter if none is present (so tests and ad-hoc Run
+// invocations that bypass runPhase still compile and run).
+func TaskCounterFromContext(ctx context.Context) *TaskCounter {
+	if c, ok := ctx.Value(taskCounterCtxKey{}).(*TaskCounter); ok && c != nil {
+		return c
+	}
+	return NewTaskCounter("")
+}
+
 // Success increments the success count.
 func (c *TaskCounter) Success() { c.succeeded.Add(1) }
 
 // Fail increments the failure count.
 func (c *TaskCounter) Fail() { c.failed.Add(1) }
 
-// LogSummary logs the final counts. Only logs if there were any operations.
-func (c *TaskCounter) LogSummary(logger *slog.Logger) {
+// LogSummary emits the end-of-task INFO log. When the counter saw at
+// least one Success/Fail it logs a "task summary" line that carries
+// both the counts and the elapsed duration (#333 — merged from the
+// previously-separate "Task X: Duration ..." line). When the counter
+// is empty (setup-style tasks that don't track per-item outcomes), it
+// falls back to the plain duration line so every task still ends with
+// exactly one closing log entry.
+func (c *TaskCounter) LogSummary(logger *slog.Logger, duration time.Duration) {
 	s, f := c.succeeded.Load(), c.failed.Load()
 	total := s + f
 	if total == 0 {
+		common.LogTaskDuration(logger, c.task, duration)
 		return
 	}
 	logger.Info("task summary",
@@ -328,6 +357,7 @@ func (c *TaskCounter) LogSummary(logger *slog.Logger) {
 		"succeeded", s,
 		"failed", f,
 		"total", total,
+		"duration", common.FormatHMSMillis(duration),
 	)
 }
 

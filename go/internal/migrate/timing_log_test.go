@@ -45,6 +45,55 @@ func TestRunPhaseEmitsTaskDurationLog(t *testing.T) {
 	}
 }
 
+// #333: when the injected counter records Success / Fail, runPhase
+// emits one combined "task summary" line carrying counts + duration
+// instead of the previous separate summary + duration pair.
+func TestRunPhaseEmitsMergedSummaryWhenCounterRecorded(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	registry := map[string]*TaskDef{
+		"countingTask": {
+			Name: "countingTask",
+			Run: func(ctx context.Context, _ *Executor) error {
+				c := TaskCounterFromContext(ctx)
+				c.Success()
+				c.Success()
+				c.Fail()
+				return nil
+			},
+		},
+	}
+
+	e := &Executor{
+		Sem:    make(chan struct{}, 4),
+		Logger: logger,
+	}
+	tm := &RunTimings{}
+
+	if err := runPhase(context.Background(), e, []string{"countingTask"}, registry, 1, tm); err != nil {
+		t.Fatalf("runPhase: %v", err)
+	}
+
+	out := buf.String()
+	if !regexp.MustCompile(`msg="task summary"`).MatchString(out) {
+		t.Errorf("expected merged task summary line, got:\n%s", out)
+	}
+	if !regexp.MustCompile(`task=countingTask`).MatchString(out) {
+		t.Errorf("expected task=countingTask attr, got:\n%s", out)
+	}
+	if !regexp.MustCompile(`succeeded=2 failed=1 total=3`).MatchString(out) {
+		t.Errorf("expected counts in merged line, got:\n%s", out)
+	}
+	if !regexp.MustCompile(`duration=\d{2}:\d{2}:\d{2}\.\d{3}`).MatchString(out) {
+		t.Errorf("expected duration attr in merged line, got:\n%s", out)
+	}
+	// Exactly one closing log entry — no "Task ...: Duration" line.
+	if regexp.MustCompile(`Task countingTask: Duration`).MatchString(out) {
+		t.Errorf("merged summary should suppress the separate duration line, got:\n%s", out)
+	}
+}
+
 // On failure the task still gets a closing duration line — the
 // log bookend must not depend on success.
 func TestRunPhaseEmitsTaskDurationLogOnFailure(t *testing.T) {

@@ -59,7 +59,7 @@ func configureTasks() []TaskDef {
 }
 
 func runSetProfileParent(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("setProfileParent")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItemFiltered(ctx, e, "setProfileParent", "createProfiles",
 		func(item json.RawMessage) bool {
 			return extractField(item, "parent_name") != ""
@@ -79,12 +79,11 @@ func runSetProfileParent(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
 func runRestoreProfiles(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("restoreProfiles")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "restoreProfiles", "getProfileBackups",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -116,7 +115,6 @@ func runRestoreProfiles(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -126,7 +124,7 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 	// conditions were either remapped to a close SQC equivalent (#143) or
 	// dropped because no SQC equivalent exists.
 	notesW, _ := e.Store.Writer("addGateConditions.notes")
-	counter := NewTaskCounter("addGateConditions")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "addGateConditions", "getGateConditions",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -256,7 +254,6 @@ func runAddGateConditions(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -339,7 +336,7 @@ func clearTargetGateConditions(ctx context.Context, e *Executor, counter *TaskCo
 }
 
 func runSetDefaultProfiles(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("setDefaultProfiles")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItemFiltered(ctx, e, "setDefaultProfiles", "createProfiles",
 		func(item json.RawMessage) bool {
 			return extractBool(item, "is_default")
@@ -358,12 +355,11 @@ func runSetDefaultProfiles(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
 func runSetDefaultGates(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("setDefaultGates")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItemFiltered(ctx, e, "setDefaultGates", "createGates",
 		func(item json.RawMessage) bool {
 			return extractBool(item, "is_default")
@@ -385,12 +381,11 @@ func runSetDefaultGates(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
 func runSetDefaultTemplates(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("setDefaultTemplates")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItemFiltered(ctx, e, "setDefaultTemplates", "createPermissionTemplates",
 		func(item json.RawMessage) bool {
 			return extractBool(item, "is_default")
@@ -408,6 +403,5 @@ func runSetDefaultTemplates(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
