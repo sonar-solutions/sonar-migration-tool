@@ -16,7 +16,6 @@ import (
 
 	sqapi "github.com/sonar-solutions/sq-api-go"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
-	"golang.org/x/sync/errgroup"
 )
 
 // issueMetadataSyncTasks returns the task definition for synchronising
@@ -364,33 +363,20 @@ func syncProjectIssues(ctx context.Context, e *Executor, cloudKey, orgKey, serve
 		"actionable", len(actionable),
 	)
 
-	// Per-project progress over actionable issues only (#300) —
-	// every 20 synced. The "Issue sync:" label produces lines like
-	// "Issue sync: 40/557 - 7%".
-	prog := newProgressLoggerWithInterval(e.Logger, "Issue sync:", len(actionable), 20)
-
-	// 6. Sync pairs with bounded concurrency.
+	// 6. Sync pairs with bounded concurrency, emitting a per-
+	// project "Issue sync: N/M - X%" line every 20 completions
+	// (#300). The shared runProjectSyncLoop handles the errgroup,
+	// the semaphore bound, and the progress logger.
 	//
 	// RACE-CONDITION SAFETY:
 	//   - actionable slice is read-only during this phase.
 	//   - Each goroutine receives exactly ONE issuePair by value.
 	//   - counter uses atomic operations (existing pattern).
 	//   - No shared mutable state is accessed.
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(cap(e.Sem))
-	for _, pair := range actionable {
-		g.Go(func() error {
-			if gctx.Err() != nil {
-				return gctx.Err()
-			}
+	runProjectSyncLoop(ctx, e, actionable, "Issue sync:", 20,
+		func(gctx context.Context, pair issuePair) {
 			syncOnePair(gctx, e, pair, counter)
-			prog.Increment()
-			return nil
 		})
-	}
-	if err := g.Wait(); err != nil {
-		return err
-	}
 
 	return nil
 }

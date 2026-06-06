@@ -429,6 +429,33 @@ func newProgressLoggerWithInterval(logger *slog.Logger, task string, total int, 
 	return &progressLogger{task: task, total: total, logger: logger, interval: interval}
 }
 
+// runProjectSyncLoop applies fn concurrently to every item in items,
+// bounded by e.Sem, emitting a "<label> n/total - x%" progress line
+// every `interval` completions (#300). Per-item errors are not
+// propagated — the caller's `apply` is responsible for logging and
+// counter bookkeeping. Used by syncProjectIssues / syncProjectHotspots
+// to share the actionable-pair iteration shape exactly.
+func runProjectSyncLoop[T any](
+	ctx context.Context, e *Executor,
+	items []T, label string, interval int64,
+	apply func(ctx context.Context, item T),
+) {
+	prog := newProgressLoggerWithInterval(e.Logger, label, len(items), interval)
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
+	for _, item := range items {
+		g.Go(func() error {
+			if gctx.Err() != nil {
+				return nil
+			}
+			apply(gctx, item)
+			prog.Increment()
+			return nil
+		})
+	}
+	_ = g.Wait()
+}
+
 func (p *progressLogger) Increment() {
 	if p.interval <= 0 {
 		return

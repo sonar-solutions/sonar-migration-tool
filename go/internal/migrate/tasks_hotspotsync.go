@@ -15,7 +15,6 @@ import (
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 	"github.com/sonar-solutions/sq-api-go/types"
-	"golang.org/x/sync/errgroup"
 )
 
 // hotspotMetadataSyncTasks returns the task definitions for syncing hotspot
@@ -214,23 +213,17 @@ func syncProjectHotspots(ctx context.Context, e *Executor, input syncHotspotInpu
 		return syncHotspotResult{Skipped: int64(allCount)}, nil
 	}
 
-	// Per-project progress over actionable hotspots only (#300) —
-	// every 10 synced. buildHotspotPairs already filters to the
-	// actionable set, so len(matchedPairs) is the right denominator.
-	prog := newProgressLoggerWithInterval(e.Logger, "Hotspot sync:", len(matchedPairs), 10)
-
-	// Sync pairs concurrently with bounded parallelism.
+	// Sync pairs concurrently with bounded parallelism, emitting a
+	// per-project "Hotspot sync: N/M - X%" line every 10 completions
+	// (#300). buildHotspotPairs already filters to the actionable
+	// set, so len(matchedPairs) is the right denominator. The shared
+	// runProjectSyncLoop handles the errgroup, the semaphore bound,
+	// and the progress logger.
+	//
 	// matchedPairs is fully built BEFORE launching goroutines. Each goroutine
 	// operates on exactly ONE pair -- no cross-pair sharing, no race conditions.
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(cap(e.Sem))
-
-	for i := range matchedPairs {
-		pair := matchedPairs[i]
-		g.Go(func() error {
-			if gctx.Err() != nil {
-				return nil
-			}
+	runProjectSyncLoop(ctx, e, matchedPairs, "Hotspot sync:", 10,
+		func(gctx context.Context, pair hotspotPair) {
 			if err := syncOneHotspot(gctx, e, pair); err != nil {
 				counter.Fail()
 				logAPIWarn(e.Logger, "syncHotspotMetadata: hotspot sync failed", err,
@@ -238,11 +231,7 @@ func syncProjectHotspots(ctx context.Context, e *Executor, input syncHotspotInpu
 			} else {
 				counter.Success()
 			}
-			prog.Increment()
-			return nil
 		})
-	}
-	g.Wait() //nolint:errcheck // goroutines always return nil; errors are per-pair
 
 	return syncHotspotResult{
 		Synced:  counter.succeeded.Load(),

@@ -459,6 +459,77 @@ func TestProgressLoggerHonoursPerTaskInterval(t *testing.T) {
 	}
 }
 
+// #300: runProjectSyncLoop applies fn to every item concurrently and
+// emits a "<label>: N/M - X%" progress line every `interval`
+// completions, including a final 100% line at the end of the batch.
+func TestRunProjectSyncLoop(t *testing.T) {
+	t.Run("issue sync cadence at every 20", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		e := &Executor{Sem: make(chan struct{}, 4), Logger: logger}
+
+		items := make([]int, 40)
+		var applied atomic.Int64
+		runProjectSyncLoop(context.Background(), e, items, "Issue sync:", 20,
+			func(_ context.Context, _ int) { applied.Add(1) })
+
+		if applied.Load() != 40 {
+			t.Errorf("want apply called 40 times, got %d", applied.Load())
+		}
+		out := buf.String()
+		if !strings.Contains(out, "Issue sync: 20/40 - 50%") {
+			t.Errorf("missing mid-batch progress line, got:\n%s", out)
+		}
+		if !strings.Contains(out, "Issue sync: 40/40 - 100%") {
+			t.Errorf("missing final 100%% line, got:\n%s", out)
+		}
+	})
+
+	t.Run("hotspot sync cadence at every 10", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		e := &Executor{Sem: make(chan struct{}, 4), Logger: logger}
+
+		items := make([]int, 30)
+		runProjectSyncLoop(context.Background(), e, items, "Hotspot sync:", 10,
+			func(_ context.Context, _ int) {})
+
+		out := buf.String()
+		if !strings.Contains(out, "Hotspot sync: 10/30 - 33%") {
+			t.Errorf("missing first cadence line, got:\n%s", out)
+		}
+		if !strings.Contains(out, "Hotspot sync: 30/30 - 100%") {
+			t.Errorf("missing final 100%% line, got:\n%s", out)
+		}
+	})
+
+	t.Run("cancelled context short-circuits remaining work", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		e := &Executor{Sem: make(chan struct{}, 1), Logger: logger}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // pre-cancel so every goroutine sees gctx.Err() != nil
+
+		items := make([]int, 5)
+		var applied atomic.Int64
+		runProjectSyncLoop(ctx, e, items, "Issue sync:", 20,
+			func(_ context.Context, _ int) { applied.Add(1) })
+
+		if applied.Load() != 0 {
+			t.Errorf("cancelled ctx: want 0 apply calls, got %d", applied.Load())
+		}
+	})
+
+	t.Run("empty input does not panic", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		e := &Executor{Sem: make(chan struct{}, 4), Logger: logger}
+		runProjectSyncLoop(context.Background(), e, []int{}, "Issue sync:", 20,
+			func(_ context.Context, _ int) { t.Fatal("apply should not be called") })
+	})
+}
+
 // #300: newProgressLoggerWithInterval honours its explicit interval
 // and caps it at total so a small batch still emits a final 100%
 // line via the (n == total) branch in Increment.
