@@ -459,6 +459,126 @@ func TestProgressLoggerHonoursPerTaskInterval(t *testing.T) {
 	}
 }
 
+// #300: runProjectSyncLoop applies fn to every item concurrently and
+// emits a "<label>: N/M - X%" progress line every `interval`
+// completions, including a final 100% line at the end of the batch.
+func TestRunProjectSyncLoop(t *testing.T) {
+	t.Run("issue sync cadence at every 20", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		e := &Executor{Sem: make(chan struct{}, 4), Logger: logger}
+
+		items := make([]int, 40)
+		var applied atomic.Int64
+		runProjectSyncLoop(context.Background(), e, items, "Issue sync:", 20,
+			func(_ context.Context, _ int) { applied.Add(1) })
+
+		if applied.Load() != 40 {
+			t.Errorf("want apply called 40 times, got %d", applied.Load())
+		}
+		out := buf.String()
+		if !strings.Contains(out, "Issue sync: 20/40 - 50%") {
+			t.Errorf("missing mid-batch progress line, got:\n%s", out)
+		}
+		if !strings.Contains(out, "Issue sync: 40/40 - 100%") {
+			t.Errorf("missing final 100%% line, got:\n%s", out)
+		}
+	})
+
+	t.Run("hotspot sync cadence at every 10", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		e := &Executor{Sem: make(chan struct{}, 4), Logger: logger}
+
+		items := make([]int, 30)
+		runProjectSyncLoop(context.Background(), e, items, "Hotspot sync:", 10,
+			func(_ context.Context, _ int) {})
+
+		out := buf.String()
+		if !strings.Contains(out, "Hotspot sync: 10/30 - 33%") {
+			t.Errorf("missing first cadence line, got:\n%s", out)
+		}
+		if !strings.Contains(out, "Hotspot sync: 30/30 - 100%") {
+			t.Errorf("missing final 100%% line, got:\n%s", out)
+		}
+	})
+
+	t.Run("cancelled context short-circuits remaining work", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		e := &Executor{Sem: make(chan struct{}, 1), Logger: logger}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // pre-cancel so every goroutine sees gctx.Err() != nil
+
+		items := make([]int, 5)
+		var applied atomic.Int64
+		runProjectSyncLoop(ctx, e, items, "Issue sync:", 20,
+			func(_ context.Context, _ int) { applied.Add(1) })
+
+		if applied.Load() != 0 {
+			t.Errorf("cancelled ctx: want 0 apply calls, got %d", applied.Load())
+		}
+	})
+
+	t.Run("empty input does not panic", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		e := &Executor{Sem: make(chan struct{}, 4), Logger: logger}
+		runProjectSyncLoop(context.Background(), e, []int{}, "Issue sync:", 20,
+			func(_ context.Context, _ int) { t.Fatal("apply should not be called") })
+	})
+}
+
+// #300: newProgressLoggerWithInterval honours its explicit interval
+// and caps it at total so a small batch still emits a final 100%
+// line via the (n == total) branch in Increment.
+func TestProgressLoggerWithExplicitInterval(t *testing.T) {
+	t.Run("interval honoured", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		prog := newProgressLoggerWithInterval(logger, "Issue sync:", 557, 20)
+		if prog.interval != 20 {
+			t.Errorf("interval: want 20, got %d", prog.interval)
+		}
+		for i := 0; i < 19; i++ {
+			prog.Increment()
+			if buf.Len() > 0 {
+				t.Fatalf("unexpected log at iteration %d", i)
+			}
+		}
+		prog.Increment() // 20th — first interval hit
+		if !strings.Contains(buf.String(), "Issue sync: 20/557 - 3%") {
+			t.Errorf("want first log to contain \"Issue sync: 20/557 - 3%%\", got: %s", buf.String())
+		}
+	})
+
+	t.Run("interval capped at total for small batches", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		// total=7 with interval=20 → cap to 7 so the final-item branch fires.
+		prog := newProgressLoggerWithInterval(logger, "Hotspot sync:", 7, 20)
+		if prog.interval != 7 {
+			t.Errorf("interval: want 7 (capped to total), got %d", prog.interval)
+		}
+		for i := 0; i < 7; i++ {
+			prog.Increment()
+		}
+		if !strings.Contains(buf.String(), "Hotspot sync: 7/7 - 100%") {
+			t.Errorf("want final 100%% line, got: %s", buf.String())
+		}
+	})
+
+	t.Run("non-positive interval normalised to 1", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		prog := newProgressLoggerWithInterval(logger, "test:", 5, 0)
+		if prog.interval != 1 {
+			t.Errorf("interval: want 1 (normalised), got %d", prog.interval)
+		}
+	})
+}
+
 // #326: tasks without a per-task override get the new 20-item default.
 // Small batches collapse to total so a short task still emits a final
 // "100%" line.

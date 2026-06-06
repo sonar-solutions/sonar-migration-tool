@@ -414,6 +414,48 @@ func newProgressLogger(logger *slog.Logger, task string, total int) *progressLog
 	return &progressLogger{task: task, total: total, logger: logger, interval: interval}
 }
 
+// newProgressLoggerWithInterval creates a progressLogger with an
+// explicit per-call interval, bypassing the global progressLogInterval
+// map. Used by inner-loop progress tracking (e.g., per-issue / per-
+// hotspot sync, #300) where the label is human-facing and shared by
+// many call sites, but the interval differs per metric.
+func newProgressLoggerWithInterval(logger *slog.Logger, task string, total int, interval int64) *progressLogger {
+	if interval <= 0 {
+		interval = 1
+	}
+	if int64(total) < interval {
+		interval = int64(total)
+	}
+	return &progressLogger{task: task, total: total, logger: logger, interval: interval}
+}
+
+// runProjectSyncLoop applies fn concurrently to every item in items,
+// bounded by e.Sem, emitting a "<label> n/total - x%" progress line
+// every `interval` completions (#300). Per-item errors are not
+// propagated — the caller's `apply` is responsible for logging and
+// counter bookkeeping. Used by syncProjectIssues / syncProjectHotspots
+// to share the actionable-pair iteration shape exactly.
+func runProjectSyncLoop[T any](
+	ctx context.Context, e *Executor,
+	items []T, label string, interval int64,
+	apply func(ctx context.Context, item T),
+) {
+	prog := newProgressLoggerWithInterval(e.Logger, label, len(items), interval)
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(cap(e.Sem))
+	for _, item := range items {
+		g.Go(func() error {
+			if gctx.Err() != nil {
+				return nil
+			}
+			apply(gctx, item)
+			prog.Increment()
+			return nil
+		})
+	}
+	_ = g.Wait()
+}
+
 func (p *progressLogger) Increment() {
 	if p.interval <= 0 {
 		return
