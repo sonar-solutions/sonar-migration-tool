@@ -139,16 +139,10 @@ var ProgressLogInterval = map[string]int64{
 func NewProgressLogger(logger *slog.Logger, task string, total int) *ProgressLogger {
 	// Default cadence is 20 items (#326 / #340).
 	interval := int64(20)
-	if int64(total) < interval {
-		interval = int64(total)
-	}
 	if explicit, ok := ProgressLogInterval[task]; ok && explicit > 0 {
 		interval = explicit
-		if int64(total) < interval {
-			interval = int64(total)
-		}
 	}
-	return &ProgressLogger{task: task, total: total, logger: logger, interval: interval}
+	return &ProgressLogger{task: task, total: total, logger: logger, interval: capAtTotal(interval, total)}
 }
 
 // NewProgressLoggerWithInterval creates a ProgressLogger with an
@@ -160,10 +154,19 @@ func NewProgressLoggerWithInterval(logger *slog.Logger, task string, total int, 
 	if interval <= 0 {
 		interval = 1
 	}
+	return &ProgressLogger{task: task, total: total, logger: logger, interval: capAtTotal(interval, total)}
+}
+
+// capAtTotal returns interval, but never larger than total. Both
+// constructors share this rule: a very small batch (total < interval)
+// must still emit its single end-of-task line via the n==total branch
+// in Increment, otherwise the operator would see no completion marker
+// at all.
+func capAtTotal(interval int64, total int) int64 {
 	if int64(total) < interval {
-		interval = int64(total)
+		return int64(total)
 	}
-	return &ProgressLogger{task: task, total: total, logger: logger, interval: interval}
+	return interval
 }
 
 // Increment records one completed item. When the running count hits
