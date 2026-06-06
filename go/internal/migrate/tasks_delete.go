@@ -188,11 +188,11 @@ func runDeleteProfiles(ctx context.Context, e *Executor) error {
 				logAPIWarn(e.Logger, "deleteProfiles: listing profiles failed", err, "org", orgKey)
 				return nil
 			}
-			e.Logger.Info("deleteProfiles: listed profiles",
+			e.Logger.Debug("deleteProfiles: listed profiles",
 				"org", orgKey, "count", len(profiles), "summary", summariseProfiles(profiles))
 			for _, p := range profiles {
 				if isBuiltInProfile(p) {
-					e.Logger.Info("deleteProfiles: keeping built-in profile",
+					e.Logger.Debug("deleteProfiles: keeping built-in profile",
 						"org", orgKey, "profile", p.Name, "language", p.Language)
 					continue
 				}
