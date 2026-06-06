@@ -232,11 +232,11 @@ func runDeleteGates(ctx context.Context, e *Executor) error {
 				logAPIWarn(e.Logger, "deleteGates: listing gates failed", err, "org", orgKey)
 				return nil
 			}
-			e.Logger.Info("deleteGates: listed gates",
+			e.Logger.Debug("deleteGates: listed gates",
 				"org", orgKey, "count", len(gates), "summary", summariseGates(gates))
 			for _, g := range gates {
 				if isBuiltInGate(g) {
-					e.Logger.Info("deleteGates: keeping built-in gate",
+					e.Logger.Debug("deleteGates: keeping built-in gate",
 						"org", orgKey, "gate", g.Name, "gate_id", g.ID)
 					continue
 				}
