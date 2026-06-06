@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/sonar-solutions/sq-api-go/cloud"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
@@ -85,8 +86,11 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 	failW, _ := e.Store.Writer("configurePortfolios.failures")
 	// Cache of cloud_project_key → main branch UUID, populated lazily via
 	// /api/project_branches/list. Required by SQC's PATCH endpoint when
-	// selection is "projects".
+	// selection is "projects". forEachMigrateItem fans the closure out
+	// concurrently across portfolios, so the cache is shared mutable
+	// state — guard reads and writes with branchIDMu (#308).
 	branchIDByCloudKey := map[string]string{}
+	var branchIDMu sync.Mutex
 	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "configurePortfolios", "createPortfolios",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
@@ -139,7 +143,7 @@ func runConfigurePortfolios(ctx context.Context, e *Executor) error {
 					recordPortfolioFailure(failW, portfolioID, name, msg)
 					return nil
 				}
-				refs, lookupErr := resolveProjectBranchRefs(ctx, e, branchIDByCloudKey, cloudKeys)
+				refs, lookupErr := resolveProjectBranchRefs(ctx, e, branchIDByCloudKey, &branchIDMu, cloudKeys)
 				if lookupErr != nil || len(refs) == 0 {
 					msg := "could not resolve main branch UUID for any MANUAL portfolio project"
 					if lookupErr != nil {
@@ -295,17 +299,27 @@ func recordPortfolioFailure(w *common.ChunkWriter, portfolioID, name, reason str
 // PATCH endpoint when selection is "projects". The cache is populated
 // lazily so repeated portfolios with overlapping projects share lookups.
 //
+// The caller is responsible for serialising access to the shared cache via
+// mu — runConfigurePortfolios fans this function out concurrently across
+// portfolios, so without the lock the lazy write produced a "concurrent
+// map writes" panic in production (#308). Two concurrent goroutines may
+// still both miss in cache for the same key and each issue an HTTP
+// lookup; the second's write simply overwrites the first with an
+// identical value, so the redundant call is wasted work, not corruption.
+//
 // If any individual lookup fails, it is logged at Warn level and the
 // project is skipped — the rest still get migrated. Returns an error only
 // when no UUIDs at all could be resolved (e.g. the endpoint is unreachable).
-func resolveProjectBranchRefs(ctx context.Context, e *Executor, cache map[string]string, cloudKeys []string) ([]cloud.PortfolioProjectRef, error) {
+func resolveProjectBranchRefs(ctx context.Context, e *Executor, cache map[string]string, mu *sync.Mutex, cloudKeys []string) ([]cloud.PortfolioProjectRef, error) {
 	refs := make([]cloud.PortfolioProjectRef, 0, len(cloudKeys))
 	var firstErr error
 	for _, key := range cloudKeys {
 		if key == "" {
 			continue
 		}
+		mu.Lock()
 		uuid, ok := cache[key]
+		mu.Unlock()
 		if !ok {
 			id, err := e.Cloud.Branches.MainBranchID(ctx, key)
 			if err != nil {
@@ -316,7 +330,9 @@ func resolveProjectBranchRefs(ctx context.Context, e *Executor, cache map[string
 				}
 				continue
 			}
+			mu.Lock()
 			cache[key] = id
+			mu.Unlock()
 			uuid = id
 		}
 		refs = append(refs, cloud.PortfolioProjectRef{BranchID: uuid})
