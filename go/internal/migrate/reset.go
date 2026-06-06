@@ -150,10 +150,12 @@ func runResetPhase(ctx context.Context, e *Executor, taskNames []string, registr
 		e.Logger.Info("running task", "task", name)
 		g.Go(func() error {
 			taskStart := time.Now()
-			err := def.Run(ctx, e)
-			// Per-task end-of-run timing line (#311), emitted on
-			// both success and failure paths.
-			common.LogTaskDuration(e.Logger, name, time.Since(taskStart))
+			counter := NewTaskCounter(name)
+			taskCtx := WithTaskCounter(ctx, counter)
+			err := def.Run(taskCtx, e)
+			// Single end-of-task INFO log carrying counts + duration
+			// (#311 + #333). Empty counter → plain duration line.
+			counter.LogSummary(e.Logger, time.Since(taskStart))
 			if err != nil {
 				return fmt.Errorf("task %s: %w", name, err)
 			}

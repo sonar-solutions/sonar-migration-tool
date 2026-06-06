@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	sqapi "github.com/sonar-solutions/sq-api-go"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
@@ -265,7 +266,8 @@ func TestTaskCounterFailAndSummary(t *testing.T) {
 	c.Success()
 	c.Success()
 	c.Fail()
-	c.LogSummary(logger)
+	// #333: LogSummary now carries duration alongside the counts.
+	c.LogSummary(logger, 54139*time.Millisecond)
 
 	output := buf.String()
 	if !strings.Contains(output, "succeeded=2") {
@@ -277,17 +279,32 @@ func TestTaskCounterFailAndSummary(t *testing.T) {
 	if !strings.Contains(output, "total=3") {
 		t.Errorf("expected total=3, got: %s", output)
 	}
+	if !strings.Contains(output, "duration=00:00:54.139") {
+		t.Errorf("expected duration=00:00:54.139 attribute, got: %s", output)
+	}
+	// The combined log must be a single "task summary" line — not two
+	// separate lines (the regression #333 patched).
+	if strings.Count(output, "\n") != 1 {
+		t.Errorf("expected exactly one log line, got: %s", output)
+	}
 }
 
+// #333: an empty counter (no Success/Fail recorded) falls back to the
+// plain "Task X: Duration ..." line so every task still emits exactly
+// one closing log entry.
 func TestTaskCounterEmptySummary(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	c := NewTaskCounter("empty")
-	c.LogSummary(logger)
+	c.LogSummary(logger, 250*time.Millisecond)
 
-	if buf.Len() > 0 {
-		t.Errorf("expected no output for empty counter, got: %s", buf.String())
+	output := buf.String()
+	if !strings.Contains(output, "Task empty: Duration 00:00:00.250") {
+		t.Errorf("expected standalone duration line, got: %s", output)
+	}
+	if strings.Contains(output, "succeeded=") {
+		t.Errorf("empty counter should not emit succeeded/failed attrs, got: %s", output)
 	}
 }
 

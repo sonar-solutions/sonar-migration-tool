@@ -517,7 +517,7 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 	// would race against — and potentially overwrite — those values.
 	overrideCovered := buildPerProjectOverrideCoverage(e)
 
-	counter := NewTaskCounter("setGlobalSettings")
+	counter := TaskCounterFromContext(ctx)
 	w, err := e.Store.Writer("setGlobalSettings")
 	if err != nil {
 		return err
@@ -632,7 +632,6 @@ func runSetGlobalSettings(ctx context.Context, e *Executor) error {
 		mu.Unlock()
 	}
 
-	counter.LogSummary(e.Logger)
 	return nil
 }
 

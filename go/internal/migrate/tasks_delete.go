@@ -146,7 +146,7 @@ func deleteTasks() []TaskDef {
 }
 
 func runDeleteProjects(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("deleteProjects")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "deleteProjects", "getCreatedProjects",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			key := extractField(item, "key")
@@ -164,7 +164,6 @@ func runDeleteProjects(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -176,7 +175,7 @@ func runDeleteProjects(ctx context.Context, e *Executor) error {
 // by the time this runs the built-in is the per-language default and
 // the previously-default custom profile is deletable.
 func runDeleteProfiles(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("deleteProfiles")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "deleteProfiles", "generateOrganizationMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -209,7 +208,6 @@ func runDeleteProfiles(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -221,7 +219,7 @@ func runDeleteProfiles(ctx context.Context, e *Executor) error {
 // runs the built-in Sonar way is the org's default and the
 // previously-default custom gate is destroyable.
 func runDeleteGates(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("deleteGates")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "deleteGates", "generateOrganizationMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -254,7 +252,6 @@ func runDeleteGates(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -269,7 +266,7 @@ func runDeleteGates(ctx context.Context, e *Executor) error {
 // everything the migration created, including the helper
 // migration-scanners / migration-viewers groups.
 func runDeleteGroups(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("deleteGroups")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "deleteGroups", "generateOrganizationMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -303,12 +300,11 @@ func runDeleteGroups(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
 func runDeleteTemplates(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("deleteTemplates")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "deleteTemplates", "createPermissionTemplates",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			templateID := extractField(item, "cloud_template_id")
@@ -325,12 +321,11 @@ func runDeleteTemplates(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
 func runDeletePortfolios(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("deletePortfolios")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "deletePortfolios", "createPortfolios",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			portfolioID := extractField(item, "cloud_portfolio_id")
@@ -346,7 +341,6 @@ func runDeletePortfolios(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -358,7 +352,7 @@ func runDeletePortfolios(ctx context.Context, e *Executor) error {
 // no upstream create*/generate* dependency is pulled into reset's
 // plan.
 func runResetGlobalSettings(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("resetGlobalSettings")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "resetGlobalSettings", "generateOrganizationMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -397,7 +391,6 @@ func runResetGlobalSettings(ctx context.Context, e *Executor) error {
 			counter.Success()
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -414,7 +407,7 @@ func runResetGlobalSettings(ctx context.Context, e *Executor) error {
 // non-built-in default, and posts /api/qualityprofiles/set_default
 // for that language + built-in profile name.
 func runResetDefaultProfiles(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("resetDefaultProfiles")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "resetDefaultProfiles", "generateOrganizationMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -468,7 +461,6 @@ func runResetDefaultProfiles(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -491,7 +483,7 @@ func summariseProfiles(profiles []types.QualityProfile) string {
 // the current default; without this step the custom default gate
 // survives reset. Issue #213.
 func runResetDefaultGates(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("resetDefaultGates")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "resetDefaultGates", "generateOrganizationMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -539,7 +531,6 @@ func runResetDefaultGates(ctx context.Context, e *Executor) error {
 			counter.Success()
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 

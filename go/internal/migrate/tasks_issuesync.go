@@ -273,7 +273,7 @@ func isExpectedTransitionError(err error) bool {
 // the issue metadata (transitions, comments, tags) from the SQS extract
 // to the corresponding Cloud issues.
 func runSyncIssueMetadata(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("syncIssueMetadata")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "syncIssueMetadata", "createProjects",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			cloudKey := extractField(item, "cloud_project_key")
@@ -285,7 +285,6 @@ func runSyncIssueMetadata(ctx context.Context, e *Executor) error {
 			}
 			return syncProjectIssues(ctx, e, cloudKey, orgKey, serverURL, serverKey, counter)
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 

@@ -199,9 +199,12 @@ type syncHotspotResult struct {
 }
 
 // syncProjectHotspots synchronises hotspot metadata for a single project.
+// A per-project counter is kept alongside the top-level task counter so each
+// project gets its own "task summary" line (#333 merge-format).
 func syncProjectHotspots(ctx context.Context, e *Executor, input syncHotspotInput) (syncHotspotResult, error) {
+	projStart := time.Now()
 	counter := NewTaskCounter("syncHotspotMetadata:" + input.CloudKey)
-	defer counter.LogSummary(e.Logger)
+	defer func() { counter.LogSummary(e.Logger, time.Since(projStart)) }()
 
 	matchedPairs, allCount, err := buildHotspotPairs(ctx, e, input)
 	if err != nil {

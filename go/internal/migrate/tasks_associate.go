@@ -156,7 +156,7 @@ func runSetProjectProfiles(ctx context.Context, e *Executor) error {
 		projectLookup[server+srcKey] = projTarget{cloudKey: cloudKey, orgKey: orgKey}
 	}
 
-	counter := NewTaskCounter("setProjectProfiles")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachExtractItem(ctx, e, "setProjectProfiles", "getProfileProjects",
 		func(ctx context.Context, ext structure.ExtractItem, w *common.ChunkWriter) error {
 			server := extractField(ext.Data, "serverUrl")
@@ -188,7 +188,6 @@ func runSetProjectProfiles(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -203,7 +202,7 @@ func runSetProjectGates(ctx context.Context, e *Executor) error {
 		gateLookup[orgKey+name] = id
 	}
 
-	counter := NewTaskCounter("setProjectGates")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "setProjectGates", "createProjects",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -226,7 +225,6 @@ func runSetProjectGates(ctx context.Context, e *Executor) error {
 			}
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -243,7 +241,7 @@ func runSetProjectGroupPermissions(ctx context.Context, e *Executor) error {
 		}
 	}
 
-	counter := NewTaskCounter("setProjectGroupPermissions")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachExtractItem(ctx, e, "setProjectGroupPermissions", "getProjectGroupsPermissions",
 		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			project := extractField(item.Data, "project")
@@ -254,7 +252,6 @@ func runSetProjectGroupPermissions(ctx context.Context, e *Executor) error {
 			applyGroupPermissions(ctx, e, item.Data, pm, w, counter)
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -346,7 +343,7 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 	var coveredMu sync.Mutex
 	covered := make(map[string]map[string]bool, len(projectKeyMap))
 
-	counter := NewTaskCounter("setProjectSettings")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachExtractItem(ctx, e, "setProjectSettings", "getProjectSettings",
 		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			// projectSettingsTask enriches each setting with "project": <key>
@@ -412,7 +409,6 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 			return nil
 		})
 	if err != nil {
-		counter.LogSummary(e.Logger)
 		return err
 	}
 
@@ -421,11 +417,9 @@ func runSetProjectSettings(ctx context.Context, e *Executor) error {
 	// settings) and #191 (external analyzer settings) — and any future
 	// global setting that has no SQC org-level counterpart.
 	if err := propagateGlobalsToProjects(ctx, e, projectKeyMap, defsByOrg, projectDefsByOrg, covered, counter); err != nil {
-		counter.LogSummary(e.Logger)
 		return err
 	}
 
-	counter.LogSummary(e.Logger)
 	return nil
 }
 
@@ -585,7 +579,7 @@ func runSetNewCodePeriods(ctx context.Context, e *Executor) error {
 	// SonarCloud built-in default (previous_version).
 	orgDefaultType, orgDefaultValue := projectScopeOrgDefaultNCD(e)
 
-	counter := NewTaskCounter("setNewCodePeriods")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachExtractItem(ctx, e, "setNewCodePeriods", "getNewCodePeriods",
 		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			projectKey := extractField(item.Data, "projectKey")
@@ -689,7 +683,6 @@ func runSetNewCodePeriods(ctx context.Context, e *Executor) error {
 			_ = w.WriteOne(item.Data)
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -813,7 +806,7 @@ func runSetGlobalNewCodePeriod(ctx context.Context, e *Executor) error {
 
 	orgItems, _ := e.Store.ReadAll("generateOrganizationMappings")
 	seen := make(map[string]struct{})
-	counter := NewTaskCounter("setGlobalNewCodePeriod")
+	counter := TaskCounterFromContext(ctx)
 
 	// Build per-org outcomes so the report's Global Settings section
 	// can render one row per (NCD, org) just like every other global
@@ -890,7 +883,6 @@ func runSetGlobalNewCodePeriod(ctx context.Context, e *Executor) error {
 			Detail: "Applied (" + ncdSummary + ")",
 		})
 	}
-	counter.LogSummary(e.Logger)
 
 	// Write a single record describing the migration so the report
 	// section picks it up. Using key="newCodePeriod" — a synthetic
@@ -923,7 +915,7 @@ func runSetProjectTags(ctx context.Context, e *Executor) error {
 		}
 	}
 
-	counter := NewTaskCounter("setProjectTags")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachExtractItem(ctx, e, "setProjectTags", "getProjectTags",
 		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			projectKey := extractField(item.Data, "projectKey")
@@ -947,7 +939,6 @@ func runSetProjectTags(ctx context.Context, e *Executor) error {
 			_ = w.WriteOne(item.Data)
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -1009,7 +1000,7 @@ func runSetProjectLinks(ctx context.Context, e *Executor) error {
 		return known[name+"\x00"+urlStr]
 	}
 
-	counter := NewTaskCounter("setProjectLinks")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachExtractItem(ctx, e, "setProjectLinks", "getProjectLinks",
 		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			projectKey := extractField(item.Data, "projectKey")
@@ -1069,7 +1060,6 @@ func runSetProjectLinks(ctx context.Context, e *Executor) error {
 			}))
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -1131,7 +1121,7 @@ func runSetProjectWebhooks(ctx context.Context, e *Executor) error {
 		return known[name+"\x00"+urlStr]
 	}
 
-	counter := NewTaskCounter("setProjectWebhooks")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachExtractItem(ctx, e, "setProjectWebhooks", "getProjectWebhooks",
 		func(ctx context.Context, item structure.ExtractItem, w *common.ChunkWriter) error {
 			projectKey := extractField(item.Data, "projectKey")
@@ -1172,7 +1162,6 @@ func runSetProjectWebhooks(ctx context.Context, e *Executor) error {
 			}))
 			return nil
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -1293,7 +1282,7 @@ func runSetGlobalWebhooks(ctx context.Context, e *Executor) error {
 		return known[name+"\x00"+urlStr]
 	}
 
-	counter := NewTaskCounter("setGlobalWebhooks")
+	counter := TaskCounterFromContext(ctx)
 	w, _ := e.Store.Writer("setGlobalWebhooks")
 	for _, hook := range webhooks {
 		name := extractField(hook.Data, "name")
@@ -1333,6 +1322,5 @@ func runSetGlobalWebhooks(ctx context.Context, e *Executor) error {
 			}
 		}
 	}
-	counter.LogSummary(e.Logger)
 	return nil
 }

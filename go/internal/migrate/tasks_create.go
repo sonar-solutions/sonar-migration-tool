@@ -53,7 +53,7 @@ func createTasks() []TaskDef {
 }
 
 func runCreateProjects(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("createProjects")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "createProjects", "generateProjectMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -119,12 +119,11 @@ func runCreateProjects(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
 func runCreateProfiles(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("createProfiles")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItemFiltered(ctx, e, "createProfiles", "generateProfileMappings",
 		func(item json.RawMessage) bool {
 			lang := extractField(item, "language")
@@ -167,12 +166,11 @@ func runCreateProfiles(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
 func runCreateGates(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("createGates")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "createGates", "generateGateMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -219,12 +217,11 @@ func runCreateGates(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
 func runCreateGroups(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("createGroups")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "createGroups", "generateGroupMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -270,12 +267,11 @@ func runCreateGroups(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
 func runCreatePermissionTemplates(ctx context.Context, e *Executor) error {
-	counter := NewTaskCounter("createPermissionTemplates")
+	counter := TaskCounterFromContext(ctx)
 	err := forEachMigrateItem(ctx, e, "createPermissionTemplates", "generateTemplateMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			orgKey := extractField(item, "sonarcloud_org_key")
@@ -320,7 +316,6 @@ func runCreatePermissionTemplates(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 
@@ -347,7 +342,7 @@ func runCreatePortfolios(ctx context.Context, e *Executor) error {
 	// generatePortfolioMappings + getPortfolioProjects join.
 	emptySourceKeys := buildEmptyPortfolioSet(e)
 
-	counter := NewTaskCounter("createPortfolios")
+	counter := TaskCounterFromContext(ctx)
 	err = forEachMigrateItem(ctx, e, "createPortfolios", "generatePortfolioMappings",
 		func(ctx context.Context, item json.RawMessage, w *common.ChunkWriter) error {
 			name := extractField(item, "name")
@@ -386,7 +381,6 @@ func runCreatePortfolios(ctx context.Context, e *Executor) error {
 			})
 			return w.WriteOne(result)
 		})
-	counter.LogSummary(e.Logger)
 	return err
 }
 

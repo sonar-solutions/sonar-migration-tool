@@ -276,7 +276,9 @@ func runPhase(ctx context.Context, e *Executor, taskNames []string, registry map
 		e.Logger.Info("running task", "task", name)
 		g.Go(func() error {
 			taskStart := time.Now()
-			runErr := def.Run(ctx, e)
+			counter := NewTaskCounter(name)
+			taskCtx := WithTaskCounter(ctx, counter)
+			runErr := def.Run(taskCtx, e)
 			elapsed := time.Since(taskStart)
 			tm.addTask(TaskTiming{
 				Phase:    phaseIdx,
@@ -285,10 +287,11 @@ func runPhase(ctx context.Context, e *Executor, taskNames []string, registry map
 				OK:       runErr == nil,
 				Err:      errString(runErr),
 			})
-			// Per-task end-of-run timing line (#311). Emitted on
-			// both success and failure paths so operators tailing
-			// the log always see a closing bookend.
-			common.LogTaskDuration(e.Logger, name, elapsed)
+			// Single end-of-task INFO log carrying counts + duration
+			// (#311 + #333). When the task didn't record any per-
+			// item outcomes the helper falls back to a plain
+			// duration line.
+			counter.LogSummary(e.Logger, elapsed)
 			if runErr != nil {
 				e.Logger.Error("task failed", "task", name, "err", runErr)
 				return fmt.Errorf("task %s: %w", name, runErr)
