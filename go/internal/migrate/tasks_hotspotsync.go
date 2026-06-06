@@ -214,6 +214,11 @@ func syncProjectHotspots(ctx context.Context, e *Executor, input syncHotspotInpu
 		return syncHotspotResult{Skipped: int64(allCount)}, nil
 	}
 
+	// Per-project progress over actionable hotspots only (#300) —
+	// every 10 synced. buildHotspotPairs already filters to the
+	// actionable set, so len(matchedPairs) is the right denominator.
+	prog := newProgressLoggerWithInterval(e.Logger, "Hotspot sync:", len(matchedPairs), 10)
+
 	// Sync pairs concurrently with bounded parallelism.
 	// matchedPairs is fully built BEFORE launching goroutines. Each goroutine
 	// operates on exactly ONE pair -- no cross-pair sharing, no race conditions.
@@ -233,6 +238,7 @@ func syncProjectHotspots(ctx context.Context, e *Executor, input syncHotspotInpu
 			} else {
 				counter.Success()
 			}
+			prog.Increment()
 			return nil
 		})
 	}

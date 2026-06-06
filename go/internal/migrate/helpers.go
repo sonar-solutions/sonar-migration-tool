@@ -414,6 +414,21 @@ func newProgressLogger(logger *slog.Logger, task string, total int) *progressLog
 	return &progressLogger{task: task, total: total, logger: logger, interval: interval}
 }
 
+// newProgressLoggerWithInterval creates a progressLogger with an
+// explicit per-call interval, bypassing the global progressLogInterval
+// map. Used by inner-loop progress tracking (e.g., per-issue / per-
+// hotspot sync, #300) where the label is human-facing and shared by
+// many call sites, but the interval differs per metric.
+func newProgressLoggerWithInterval(logger *slog.Logger, task string, total int, interval int64) *progressLogger {
+	if interval <= 0 {
+		interval = 1
+	}
+	if int64(total) < interval {
+		interval = int64(total)
+	}
+	return &progressLogger{task: task, total: total, logger: logger, interval: interval}
+}
+
 func (p *progressLogger) Increment() {
 	if p.interval <= 0 {
 		return

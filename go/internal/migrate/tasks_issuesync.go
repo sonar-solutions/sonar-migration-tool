@@ -364,6 +364,11 @@ func syncProjectIssues(ctx context.Context, e *Executor, cloudKey, orgKey, serve
 		"actionable", len(actionable),
 	)
 
+	// Per-project progress over actionable issues only (#300) —
+	// every 20 synced. The "Issue sync:" label produces lines like
+	// "Issue sync: 40/557 - 7%".
+	prog := newProgressLoggerWithInterval(e.Logger, "Issue sync:", len(actionable), 20)
+
 	// 6. Sync pairs with bounded concurrency.
 	//
 	// RACE-CONDITION SAFETY:
@@ -379,6 +384,7 @@ func syncProjectIssues(ctx context.Context, e *Executor, cloudKey, orgKey, serve
 				return gctx.Err()
 			}
 			syncOnePair(gctx, e, pair, counter)
+			prog.Increment()
 			return nil
 		})
 	}

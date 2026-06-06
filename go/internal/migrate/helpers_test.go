@@ -459,6 +459,55 @@ func TestProgressLoggerHonoursPerTaskInterval(t *testing.T) {
 	}
 }
 
+// #300: newProgressLoggerWithInterval honours its explicit interval
+// and caps it at total so a small batch still emits a final 100%
+// line via the (n == total) branch in Increment.
+func TestProgressLoggerWithExplicitInterval(t *testing.T) {
+	t.Run("interval honoured", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		prog := newProgressLoggerWithInterval(logger, "Issue sync:", 557, 20)
+		if prog.interval != 20 {
+			t.Errorf("interval: want 20, got %d", prog.interval)
+		}
+		for i := 0; i < 19; i++ {
+			prog.Increment()
+			if buf.Len() > 0 {
+				t.Fatalf("unexpected log at iteration %d", i)
+			}
+		}
+		prog.Increment() // 20th — first interval hit
+		if !strings.Contains(buf.String(), "Issue sync: 20/557 - 3%") {
+			t.Errorf("want first log to contain \"Issue sync: 20/557 - 3%%\", got: %s", buf.String())
+		}
+	})
+
+	t.Run("interval capped at total for small batches", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		// total=7 with interval=20 → cap to 7 so the final-item branch fires.
+		prog := newProgressLoggerWithInterval(logger, "Hotspot sync:", 7, 20)
+		if prog.interval != 7 {
+			t.Errorf("interval: want 7 (capped to total), got %d", prog.interval)
+		}
+		for i := 0; i < 7; i++ {
+			prog.Increment()
+		}
+		if !strings.Contains(buf.String(), "Hotspot sync: 7/7 - 100%") {
+			t.Errorf("want final 100%% line, got: %s", buf.String())
+		}
+	})
+
+	t.Run("non-positive interval normalised to 1", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		prog := newProgressLoggerWithInterval(logger, "test:", 5, 0)
+		if prog.interval != 1 {
+			t.Errorf("interval: want 1 (normalised), got %d", prog.interval)
+		}
+	})
+}
+
 // #326: tasks without a per-task override get the new 20-item default.
 // Small batches collapse to total so a short task still emits a final
 // "100%" line.
