@@ -420,7 +420,7 @@ func runResetDefaultProfiles(ctx context.Context, e *Executor) error {
 				logAPIWarn(e.Logger, "resetDefaultProfiles: listing profiles failed", err, "org", orgKey)
 				return nil
 			}
-			e.Logger.Info("resetDefaultProfiles: listed profiles",
+			e.Logger.Debug("resetDefaultProfiles: listed profiles",
 				"org", orgKey, "count", len(profiles), "summary", summariseProfiles(profiles))
 
 			// Languages whose current default is non-built-in.
@@ -496,7 +496,7 @@ func runResetDefaultGates(ctx context.Context, e *Executor) error {
 				logAPIWarn(e.Logger, "resetDefaultGates: listing gates failed", err, "org", orgKey)
 				return nil
 			}
-			e.Logger.Info("resetDefaultGates: listed gates",
+			e.Logger.Debug("resetDefaultGates: listed gates",
 				"org", orgKey, "count", len(gates), "summary", summariseGates(gates))
 
 			var builtIn *int
