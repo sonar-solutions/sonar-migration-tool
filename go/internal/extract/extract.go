@@ -95,11 +95,9 @@ func RunExtract(ctx context.Context, cfg ExtractConfig) ([]string, error) {
 
 	cmdStart := time.Now()
 	// End-of-command timing line (#311) — defer so it fires on every
-	// exit path. Logger is resolved at call time so initClient failures
-	// before slog.Default() install also surface the duration.
-	defer func() {
-		slog.Default().Info(fmt.Sprintf("Command extract: Duration %s", common.FormatHMSMillis(time.Since(cmdStart))))
-	}()
+	// exit path. Logger is slog.Default() so initClient failures
+	// before any per-run logger install still surface the duration.
+	defer common.LogCommandDuration(slog.Default(), "extract", cmdStart)
 
 	client, raw, version, edition, err := initClient(ctx, cfg)
 	if err != nil {
@@ -236,7 +234,7 @@ func runPhase(ctx context.Context, e *Executor, taskNames []string, registry map
 			err := def.Run(ctx, e)
 			// Per-task end-of-run timing line (#311), emitted on
 			// both success and failure paths.
-			e.Logger.Info(fmt.Sprintf("Task %s: Duration %s", name, common.FormatHMSMillis(time.Since(taskStart))))
+			common.LogTaskDuration(e.Logger, name, time.Since(taskStart))
 			if err != nil {
 				return fmt.Errorf("task %s: %w", name, err)
 			}

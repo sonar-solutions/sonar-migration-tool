@@ -50,9 +50,7 @@ func RunReset(ctx context.Context, cfg ResetConfig) error {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	// End-of-command timing line (#311). Defer so it fires on every
 	// exit path — success or any of the validate/plan/execute errors.
-	defer func() {
-		logger.Info(fmt.Sprintf("Command reset: Duration %s", common.FormatHMSMillis(time.Since(cmdStart))))
-	}()
+	defer common.LogCommandDuration(logger, "reset", cmdStart)
 
 	var clientOpts []sqapi.Option
 	if cfg.Debug {
@@ -155,7 +153,7 @@ func runResetPhase(ctx context.Context, e *Executor, taskNames []string, registr
 			err := def.Run(ctx, e)
 			// Per-task end-of-run timing line (#311), emitted on
 			// both success and failure paths.
-			e.Logger.Info(fmt.Sprintf("Task %s: Duration %s", name, common.FormatHMSMillis(time.Since(taskStart))))
+			common.LogTaskDuration(e.Logger, name, time.Since(taskStart))
 			if err != nil {
 				return fmt.Errorf("task %s: %w", name, err)
 			}

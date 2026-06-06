@@ -342,13 +342,10 @@ func validateTransferConfig(cfg transferConfig) error {
 }
 
 func runTransfer(cmd *cobra.Command, _ []string) error {
-	cmdStart := time.Now()
 	// End-of-command timing line (#311). The four wrapped sub-calls
 	// (extract / structure / mappings / migrate) each log their own
 	// "Command X" line; this one bookends the whole transfer.
-	defer func() {
-		slog.Default().Info(fmt.Sprintf("Command transfer: Duration %s", common.FormatHMSMillis(time.Since(cmdStart))))
-	}()
+	defer common.LogCommandDuration(slog.Default(), "transfer", time.Now())
 
 	cfg, err := resolveTransferConfig(cmd)
 	if err != nil {

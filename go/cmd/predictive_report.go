@@ -40,10 +40,7 @@ func init() {
 }
 
 func runPredictiveReport(cmd *cobra.Command, args []string) error {
-	cmdStart := time.Now()
-	defer func() {
-		slog.Default().Info(fmt.Sprintf("Command predictive-report: Duration %s", common.FormatHMSMillis(time.Since(cmdStart))))
-	}()
+	defer common.LogCommandDuration(slog.Default(), "predictive-report", time.Now())
 
 	exportDir, err := resolvePredictiveReportExportDir(cmd)
 	if err != nil {

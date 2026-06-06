@@ -24,10 +24,7 @@ The export directory can be supplied directly via --export_directory or
 read from the same JSON config file the extract / migrate commands use
 via --config (issue #275).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cmdStart := time.Now()
-		defer func() {
-			slog.Default().Info(fmt.Sprintf("Command mappings: Duration %s", common.FormatHMSMillis(time.Since(cmdStart))))
-		}()
+		defer common.LogCommandDuration(slog.Default(), "mappings", time.Now())
 
 		exportDir, err := resolveMappingsExportDir(cmd)
 		if err != nil {

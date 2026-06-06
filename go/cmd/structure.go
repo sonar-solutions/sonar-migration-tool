@@ -26,10 +26,7 @@ read from the same JSON config file the extract / migrate commands use
 via --config (issue #275). When --config defines exactly one SonarCloud
 organization, its key is pre-populated as sonarcloud_org_key.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cmdStart := time.Now()
-		defer func() {
-			slog.Default().Info(fmt.Sprintf("Command structure: Duration %s", common.FormatHMSMillis(time.Since(cmdStart))))
-		}()
+		defer common.LogCommandDuration(slog.Default(), "structure", time.Now())
 
 		exportDir, err := resolveStructureExportDir(cmd)
 		if err != nil {

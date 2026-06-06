@@ -180,7 +180,7 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) (runIDOut string, retErr
 		}
 		// End-of-command timing line (#311) — paired with the per-task
 		// lines from runPhase so operators get a complete duration view.
-		logger.Info(fmt.Sprintf("Command migrate: Duration %s", common.FormatHMSMillis(tm.CompletedAt.Sub(tm.StartedAt))))
+		common.LogCommandDuration(logger, "migrate", tm.StartedAt)
 	}()
 
 	defer func() {
@@ -288,7 +288,7 @@ func runPhase(ctx context.Context, e *Executor, taskNames []string, registry map
 			// Per-task end-of-run timing line (#311). Emitted on
 			// both success and failure paths so operators tailing
 			// the log always see a closing bookend.
-			e.Logger.Info(fmt.Sprintf("Task %s: Duration %s", name, common.FormatHMSMillis(elapsed)))
+			common.LogTaskDuration(e.Logger, name, elapsed)
 			if runErr != nil {
 				e.Logger.Error("task failed", "task", name, "err", runErr)
 				return fmt.Errorf("task %s: %w", name, runErr)
