@@ -60,14 +60,30 @@ type ProgressLogger struct {
 // off). Their tunings are preserved from #311 / #326 / #300 where
 // per-project work was measured separately and known to be slow.
 var ProgressLogInterval = map[string]int64{
-	// Very fast tasks (>~100 items/s).
-	"setOrgGroupPermissions": 1000,
-	"updateRuleDescriptions": 1000,
-	"updateRuleTags":         1000,
-	"getGateConditions":      1000,
-	// 50–100 items/s.
-	"getProfileBackups": 500,
-	"getProjectIds":     500,
+	// Very fast tasks (>~100 items/s) or short (<2 s) tasks where
+	// the only useful log is the final "100%" line — pinning to 1000
+	// lets the cap-to-total branch suppress mid-task chatter for
+	// typical ~78-project batches.
+	"setOrgGroupPermissions":  1000,
+	"updateRuleDescriptions":  1000,
+	"updateRuleTags":          1000,
+	"getGateConditions":       1000,
+	"getNewCodePeriods":       1000, // ~78 items in ~0.5 s
+	"getBranches":             1000, // ~78 items in ~1 s
+	"getAcceptedIssues":       1000, // ~78 items in ~0.8 s
+	"getProjectAnalyses":      1000, // ~78 items in ~1.5 s
+	"getProjectBindings":      1000, // ~78 items in ~1.7 s
+	"getProjectDetails":       1000, // ~78 items in ~1.6 s
+	"getProjectUsersScanners": 1000, // ~78 items in ~2.4 s
+	"getRuleDetails":          1000, // 8k rules in ~5 s (rule's 1000 ceiling)
+	// 50–100 items/s, or sub-2-s tasks with a smaller dep batch
+	// (profiles, portfolios, plugins) where a single closing log
+	// line is the right shape.
+	"getProfileBackups":     500,
+	"getProjectIds":         500,
+	"getActiveProfileRules": 500, // ~per-profile in ~1 s
+	"getPortfolioDetails":   500, // ~22 portfolios in ~1 s
+	"getPluginRules":        500, // ~per-plugin in ~1.8 s
 	// 20–50 items/s.
 	"createPortfolios":    200,
 	"setNewCodePeriods":   200,
