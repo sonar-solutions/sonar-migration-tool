@@ -93,6 +93,14 @@ func (e *Executor) SkippedProjectKeys() []string {
 func RunExtract(ctx context.Context, cfg ExtractConfig) ([]string, error) {
 	cfg.applyDefaults()
 
+	cmdStart := time.Now()
+	// End-of-command timing line (#311) — defer so it fires on every
+	// exit path. Logger is resolved at call time so initClient failures
+	// before slog.Default() install also surface the duration.
+	defer func() {
+		slog.Default().Info(fmt.Sprintf("Command extract: Duration %s", common.FormatHMSMillis(time.Since(cmdStart))))
+	}()
+
 	client, raw, version, edition, err := initClient(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -224,7 +232,12 @@ func runPhase(ctx context.Context, e *Executor, taskNames []string, registry map
 		def := registry[name]
 		e.Logger.Info("running task", "task", name)
 		g.Go(func() error {
-			if err := def.Run(ctx, e); err != nil {
+			taskStart := time.Now()
+			err := def.Run(ctx, e)
+			// Per-task end-of-run timing line (#311), emitted on
+			// both success and failure paths.
+			e.Logger.Info(fmt.Sprintf("Task %s: Duration %s", name, common.FormatHMSMillis(time.Since(taskStart))))
+			if err != nil {
 				return fmt.Errorf("task %s: %w", name, err)
 			}
 			return nil

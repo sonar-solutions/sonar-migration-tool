@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	sqapi "github.com/sonar-solutions/sq-api-go"
 	"github.com/sonar-solutions/sq-api-go/cloud"
@@ -35,6 +36,8 @@ type ResetConfig struct {
 func RunReset(ctx context.Context, cfg ResetConfig) error {
 	cfg.applyDefaults()
 
+	cmdStart := time.Now()
+
 	cloudURL := cfg.URL
 	apiURL := strings.Replace(cloudURL, "https://", "https://api.", 1)
 
@@ -45,6 +48,11 @@ func RunReset(ctx context.Context, cfg ResetConfig) error {
 		level = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	// End-of-command timing line (#311). Defer so it fires on every
+	// exit path — success or any of the validate/plan/execute errors.
+	defer func() {
+		logger.Info(fmt.Sprintf("Command reset: Duration %s", common.FormatHMSMillis(time.Since(cmdStart))))
+	}()
 
 	var clientOpts []sqapi.Option
 	if cfg.Debug {
@@ -143,7 +151,12 @@ func runResetPhase(ctx context.Context, e *Executor, taskNames []string, registr
 		def := registry[name]
 		e.Logger.Info("running task", "task", name)
 		g.Go(func() error {
-			if err := def.Run(ctx, e); err != nil {
+			taskStart := time.Now()
+			err := def.Run(ctx, e)
+			// Per-task end-of-run timing line (#311), emitted on
+			// both success and failure paths.
+			e.Logger.Info(fmt.Sprintf("Task %s: Duration %s", name, common.FormatHMSMillis(time.Since(taskStart))))
+			if err != nil {
 				return fmt.Errorf("task %s: %w", name, err)
 			}
 			return nil
