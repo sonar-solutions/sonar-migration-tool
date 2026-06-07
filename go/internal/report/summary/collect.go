@@ -916,17 +916,21 @@ func collectDroppedUserPermsBySection(exportDir string, mapping structure.Extrac
 			"project", projMap)
 	}
 
-	// Quality Profiles: getProfileUsers carries `profileKey` (source).
-	// Translate via createProfiles' (key → cloud_profile_key).
-	if profMap := buildSourceToCloudMap(store, "createProfiles", "key", "cloud_profile_key"); len(profMap) > 0 {
+	// Quality Profiles: getProfileUsers carries `profileKey` (the
+	// source profile's UUID). createProfiles writes the SAME value
+	// under the `source_profile_key` field — not `key`, which is
+	// reserved for use by the input mappings — so we translate via
+	// source_profile_key → cloud_profile_key.
+	if profMap := buildSourceToCloudMap(store, "createProfiles", "source_profile_key", "cloud_profile_key"); len(profMap) > 0 {
 		out["Quality Profiles"] = aggregateUserPermsByEntity(exportDir, mapping,
 			[]string{"getProfileUsers"}, "profileKey", profMap)
 	}
 
 	// Permission Templates: getTemplateUsersScanners +
-	// getTemplateUsersViewers both carry `templateId` (source).
-	// Translate via createPermissionTemplates' (id → cloud_template_id).
-	if tplMap := buildSourceToCloudMap(store, "createPermissionTemplates", "id", "cloud_template_id"); len(tplMap) > 0 {
+	// getTemplateUsersViewers both carry `templateId` (the source
+	// template's UUID). createPermissionTemplates writes the same
+	// value under `source_template_key`.
+	if tplMap := buildSourceToCloudMap(store, "createPermissionTemplates", "source_template_key", "cloud_template_id"); len(tplMap) > 0 {
 		out["Permission Templates"] = aggregateUserPermsByEntity(exportDir, mapping,
 			[]string{"getTemplateUsersScanners", "getTemplateUsersViewers"},
 			"templateId", tplMap)

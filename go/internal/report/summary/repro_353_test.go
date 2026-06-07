@@ -64,6 +64,47 @@ func TestCollectSummary_DroppedUserPerms(t *testing.T) {
 		{"project": "SrcProj1", "login": "bob"},
 	})
 
+	// ── Quality Profiles ────────────────────────────────────────
+	// createProfiles writes the source UUID under `source_profile_key`
+	// (NOT `key` — that's reserved for the input mapping). The
+	// user-perm extract carries the same UUID under `profileKey`.
+	// Regression: an earlier version of this PR keyed off `key` and
+	// produced no marker for the user's "Olivier Way" profile.
+	writeTaskJSONL(t, runDir, "createProfiles", []map[string]any{
+		{
+			"name":               "Olivier Way",
+			"language":           "py",
+			"source_profile_key": "uuid-olivier-way",
+			"cloud_profile_key":  "cloud_olivier_way",
+			"sonarcloud_org_key": "org1",
+		},
+	})
+	writeTaskJSONL(t, runDir, "generateProfileMappings", []map[string]any{
+		{"name": "Olivier Way", "language": "py", "sonarcloud_org_key": "org1"},
+	})
+	writeTaskJSONL(t, extractDir, "getProfileUsers", []map[string]any{
+		{"profileKey": "uuid-olivier-way", "login": "olivier"},
+	})
+
+	// ── Permission Templates ────────────────────────────────────
+	// Same shape — source UUID lives under `source_template_key`,
+	// extract carries it as `templateId`.
+	writeTaskJSONL(t, runDir, "createPermissionTemplates", []map[string]any{
+		{
+			"name":                 "Banking Template",
+			"source_template_key":  "uuid-banking-tpl",
+			"cloud_template_id":    "cloud_banking_tpl",
+			"sonarcloud_org_key":   "org1",
+		},
+	})
+	writeTaskJSONL(t, runDir, "generateTemplateMappings", []map[string]any{
+		{"name": "Banking Template", "sonarcloud_org_key": "org1"},
+	})
+	writeTaskJSONL(t, extractDir, "getTemplateUsersScanners", []map[string]any{
+		{"templateId": "uuid-banking-tpl", "login": "charlie"},
+		{"templateId": "uuid-banking-tpl", "login": "dave"},
+	})
+
 	summary, err := CollectSummary(runDir, dir)
 	if err != nil {
 		t.Fatalf("CollectSummary: %v", err)
@@ -94,6 +135,36 @@ func TestCollectSummary_DroppedUserPerms(t *testing.T) {
 			t.Errorf("expected |userPerms:2 marker, got Detail=%q", item.Detail)
 		}
 		rendered := partialDetails(item, false, false, true)
+		if !strings.Contains(rendered, "Permissions granted to 2 users have been dropped in the migration") {
+			t.Errorf("expected user-perm line, got: %s", rendered)
+		}
+	})
+
+	t.Run("quality profiles carry the user-perm line — regression for 'Olivier Way'", func(t *testing.T) {
+		profiles := findSection(summary, "Quality Profiles")
+		if profiles == nil || len(profiles.Succeeded) != 1 {
+			t.Fatalf("expected 1 succeeded profile, got %+v", profiles)
+		}
+		item := profiles.Succeeded[0]
+		if !strings.Contains(item.Detail, "|userPerms:1") {
+			t.Errorf("expected |userPerms:1 marker (source_profile_key→cloud_profile_key translation), got Detail=%q", item.Detail)
+		}
+		rendered := partialDetails(item, false, false, false)
+		if !strings.Contains(rendered, "Permissions granted to 1 user have been dropped in the migration") {
+			t.Errorf("expected user-perm line, got: %s", rendered)
+		}
+	})
+
+	t.Run("permission templates carry the user-perm line", func(t *testing.T) {
+		tpls := findSection(summary, "Permission Templates")
+		if tpls == nil || len(tpls.Succeeded) != 1 {
+			t.Fatalf("expected 1 succeeded template, got %+v", tpls)
+		}
+		item := tpls.Succeeded[0]
+		if !strings.Contains(item.Detail, "|userPerms:2") {
+			t.Errorf("expected |userPerms:2 marker (source_template_key→cloud_template_id translation), got Detail=%q", item.Detail)
+		}
+		rendered := partialDetails(item, false, false, false)
 		if !strings.Contains(rendered, "Permissions granted to 2 users have been dropped in the migration") {
 			t.Errorf("expected user-perm line, got: %s", rendered)
 		}
