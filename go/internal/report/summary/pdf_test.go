@@ -412,10 +412,60 @@ func TestUnifiedRowDisplayNameWithLanguage(t *testing.T) {
 	}
 }
 
+// #359: project-data migration outcome rendering. Successful imports
+// are silent (no mention in Details). Skipped / failed projects say
+// "Project data migration skipped" optionally followed by the reason.
+// Predictive reports suppress the line entirely (sync outcomes can't
+// be predicted from a pre-migration extract).
 func TestSuccessDetailsProjectData(t *testing.T) {
-	got := successDetails(EntityItem{Detail: "proj1|scan:failed"}, false, false, false)
-	if !strings.Contains(got, "proj1") || !strings.Contains(got, "Failed") {
-		t.Errorf("expected project data in details, got %q", got)
+	tests := []struct {
+		name       string
+		detail     string
+		predictive bool
+		want       string // exact equality for tight assertions
+		mustNot    []string
+	}{
+		{
+			name:    "success — no project-data mention",
+			detail:  "proj1|scan:success",
+			want:    "proj1",
+			mustNot: []string{"Project data", "project data:", "Yes"},
+		},
+		{
+			name: "skipped with reason — render reason",
+			detail: "proj1|scan:skipped:Source project was provisioned but never analyzed",
+			want:   "proj1\nProject data migration skipped: Source project was provisioned but never analyzed",
+		},
+		{
+			name:   "skipped without reason — bare wording",
+			detail: "proj1|scan:skipped",
+			want:   "proj1\nProject data migration skipped",
+		},
+		{
+			name: "failed with reason",
+			detail: "proj1|scan:failed:API error when migrating project data: 503 Service Unavailable",
+			want:   "proj1\nProject data migration skipped: API error when migrating project data: 503 Service Unavailable",
+		},
+		{
+			name:       "predictive suppresses all project-data wording",
+			detail:     "proj1|scan:skipped:never analyzed",
+			predictive: true,
+			want:       "proj1",
+			mustNot:    []string{"Project data", "skipped"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := successDetails(EntityItem{Detail: tc.detail}, tc.predictive, false, false)
+			if got != tc.want {
+				t.Errorf("want %q, got %q", tc.want, got)
+			}
+			for _, m := range tc.mustNot {
+				if strings.Contains(got, m) {
+					t.Errorf("did NOT expect %q in: %q", m, got)
+				}
+			}
+		})
 	}
 }
 
@@ -479,12 +529,15 @@ func TestSuccessDetailsSyncStatsLine(t *testing.T) {
 
 func TestPartialDetailsSplitsScanMarker(t *testing.T) {
 	// Regression: a Partial / NearPerfect project carrying a |scan: marker
-	// in its Detail must have the marker split off onto its own
-	// "project data:" line (like Succeeded rows) so the inline-bold span
-	// around the cloud key stays balanced and the issue lines are kept.
-	// Previously the raw marker was embedded inside the bold key, which a
-	// downstream re-split (the Markdown renderer) truncated — dropping the
-	// closing bold marker and the issue text.
+	// in its Detail must have the marker split off so the inline-bold
+	// span around the cloud key stays balanced and the issue lines are
+	// kept. Previously the raw marker was embedded inside the bold key,
+	// which a downstream re-split (the Markdown renderer) truncated.
+	//
+	// #359: a successful scan no longer renders any project-data line
+	// (the previous "project data: Yes" wording was removed). The
+	// marker still must be split off — this test now asserts marker
+	// stripping + no leaked text without expecting a project-data line.
 	got := partialDetails(
 		EntityItem{Detail: "proj1|scan:success", Issues: []string{"per-branch NCD dropped"}},
 		false, false, true,
@@ -499,8 +552,8 @@ func TestPartialDetailsSplitsScanMarker(t *testing.T) {
 	if !strings.Contains(got, "New Project Key: "+inlineBoldStart+"proj1"+inlineBoldEnd) {
 		t.Errorf("expected labeled+bold cloud key, got %q", got)
 	}
-	if !strings.Contains(got, "project data:") {
-		t.Errorf("expected project-data line, got %q", got)
+	if strings.Contains(got, "project data:") {
+		t.Errorf("legacy project-data line should be gone (#359): %q", got)
 	}
 	if !strings.Contains(got, "per-branch NCD dropped") {
 		t.Errorf("expected issue line preserved, got %q", got)

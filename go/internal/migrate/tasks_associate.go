@@ -600,7 +600,7 @@ func runSetNewCodePeriods(ctx context.Context, e *Executor) error {
 			// by the main-branch record). Either way, nothing to apply.
 			if branch != "" && branch != info.mainBranch {
 				if !extractBool(item.Data, "inherited") {
-					e.Logger.Info("setNewCodePeriods: per-branch NCD override not migratable to SonarQube Cloud, skipping",
+					e.Logger.Warn("setNewCodePeriods: per-branch NCD override not migratable to SonarQube Cloud, skipping",
 						"project", pm.CloudKey, "branch", branch, "type", extractField(item.Data, "type"))
 					// Sidecar marker so the PDF report's Projects table
 					// can flag this project as Partial (#240 follow-up):

@@ -265,6 +265,42 @@ func TestStripProjectKeyPrefix(t *testing.T) {
 	}
 }
 
+// Per-reason breakdown surfaced at the start of each per-project
+// sync. An issue can trip multiple signals (e.g. ACCEPTED + tags); it
+// must be counted once per signal so operators can see what's driving
+// the migration cost. Branch count is a separate signal taken from
+// distinct branch names on the source issues.
+func TestClassifyActionableReasonsAndBranches(t *testing.T) {
+	comment := issueComment{Login: "u", Markdown: "noted"}
+	issues := []matchableIssue{
+		{Status: "ACCEPTED", Branch: "main"},                                                       // accepted
+		{Status: "RESOLVED", Resolution: "FALSE-POSITIVE", Branch: "main"},                          // accepted_or_fp (via resolution)
+		{Status: "FALSE_POSITIVE", Branch: "develop"},                                               // accepted_or_fp (modern enum)
+		{Status: "OPEN", Tags: []string{"flagged"}, Branch: "develop"},                              // custom_tags
+		{Status: "OPEN", ManualSeverity: true, Branch: "feat-1"},                                    // manual_severity
+		{Status: "OPEN", Comments: []issueComment{comment}, Branch: "feat-2"},                       // comments
+		{Status: "ACCEPTED", Tags: []string{"audited"}, Branch: "main"},                             // accepted + tags (counted in both)
+		{Status: "ACCEPTED", Comments: []issueComment{comment}, ManualSeverity: true, Branch: ""},   // accepted + manualSeverity + comments
+	}
+	b := classifyActionableReasons(issues)
+	if want := 5; b.acceptedOrFP != want {
+		t.Errorf("acceptedOrFP: want %d, got %d", want, b.acceptedOrFP)
+	}
+	if want := 2; b.customTags != want {
+		t.Errorf("customTags: want %d, got %d", want, b.customTags)
+	}
+	if want := 2; b.manualSeverity != want {
+		t.Errorf("manualSeverity: want %d, got %d", want, b.manualSeverity)
+	}
+	if want := 2; b.comments != want {
+		t.Errorf("comments: want %d, got %d", want, b.comments)
+	}
+	// Distinct non-empty branches: main, develop, feat-1, feat-2 = 4.
+	if want := 4; countDistinctBranches(issues) != want {
+		t.Errorf("countDistinctBranches: want %d, got %d", want, countDistinctBranches(issues))
+	}
+}
+
 // #356: case a/b/c classification — exactly the semantics from the
 // issue. 1 cloud counterpart on the source line → synced (a); 0
 // counterparts on the line → not_found (c); 2+ on the same line →

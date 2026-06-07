@@ -7,6 +7,7 @@ package summary
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -59,7 +60,7 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 			// project-data / hotspot-sync skip records (orange) read
 			// from the data-migration tasks' JSONL output.
 			projectFailures := collectProjectFailures(runDir)
-			projectFailures = append(projectFailures, collectProjectSyncSkips(store)...)
+			projectFailures = append(projectFailures, collectProjectSyncSkips(store, projectDataMap)...)
 			section.Succeeded, section.NearPerfect, section.Partial = applyProjectFailures(
 				section.Succeeded, section.NearPerfect, section.Partial, projectFailures)
 			// #356 — append a per-project "x/y issues synced (z%)"
@@ -123,6 +124,10 @@ func collectLimitations(runDir, exportDir string, mapping structure.ExtractMappi
 		out = append(out,
 			fmt.Sprintf("Applications do not exist on SonarQube Cloud, %d SQS applications were not migrated.",
 				appCount))
+	}
+	if projectDataGloballySkipped(runDir) {
+		out = append(out,
+			"Project data migration was skipped by configuration (--skip_project_data_migration). No source code, history, issue triage, or hotspot review state was imported.")
 	}
 	out = append(out, collectNCDLimitations(runDir, exportDir, mapping)...)
 	out = append(out, collectSASTCustomizationLimitation(exportDir, mapping)...)
@@ -710,35 +715,162 @@ func collectFailed(failuresByType map[string][]analysis.ReportRow, def sectionDe
 	return result
 }
 
-// collectProjectData reads importProjectData JSONL and returns a map of
-// cloud_project_key -> status ("success", "failed", "skipped").
-func collectProjectData(store *common.DataStore) map[string]string {
+// projectDataOutcome holds the per-project state of the
+// importProjectData task plus a human-readable reason for the skipped /
+// failed cases (#359). It replaces the older single-status string that
+// could only render "Yes / No / Failed" in the report.
+type projectDataOutcome struct {
+	// State is one of "success", "skipped", "failed", or empty when
+	// no record exists for the project (e.g. config-skipped).
+	State string
+	// Reason carries a free-text operator-friendly explanation for
+	// State=="skipped" / "failed". Empty when the state is success
+	// or when no signal could be derived.
+	Reason string
+}
+
+// collectProjectData reads importProjectData JSONL and returns the
+// per-project outcome. A project may have multiple branch records;
+// the worst non-success outcome wins (failed > skipped > success),
+// because that's the signal an operator should see in the report.
+func collectProjectData(store *common.DataStore) map[string]projectDataOutcome {
 	items, err := store.ReadAll("importProjectData")
 	if err != nil || len(items) == 0 {
 		return nil
 	}
-	result := make(map[string]string)
+	type acc struct {
+		states  map[string][]string // state → branch detail (for the reason)
+		errs    map[string]string   // state → first non-empty error
+		ordered []string            // first-seen state order
+	}
+	by := make(map[string]*acc)
 	for _, item := range items {
 		key := jsonStr(item, "cloud_project_key")
-		status := jsonStr(item, "status")
-		if key != "" {
-			result[key] = status
+		if key == "" {
+			continue
+		}
+		state := jsonStr(item, "status")
+		branch := jsonStr(item, "branch")
+		errMsg := jsonStr(item, "error")
+		bucket := by[key]
+		if bucket == nil {
+			bucket = &acc{states: map[string][]string{}, errs: map[string]string{}}
+			by[key] = bucket
+		}
+		if _, seen := bucket.states[state]; !seen {
+			bucket.ordered = append(bucket.ordered, state)
+		}
+		bucket.states[state] = append(bucket.states[state], branch)
+		if errMsg != "" && bucket.errs[state] == "" {
+			bucket.errs[state] = errMsg
+		}
+	}
+
+	result := make(map[string]projectDataOutcome, len(by))
+	for key, a := range by {
+		switch {
+		case len(a.states["failed"]) > 0:
+			result[key] = projectDataOutcome{State: "failed", Reason: projectDataFailureReason(a.errs["failed"])}
+		case len(a.states["skipped"]) > 0:
+			result[key] = projectDataOutcome{State: "skipped", Reason: projectDataSkipReason(a.errs["skipped"])}
+		case len(a.states["success"]) > 0:
+			result[key] = projectDataOutcome{State: "success"}
+		default:
+			// State string we don't recognise — surface as skipped so
+			// the report still warns the operator instead of silently
+			// degrading to "success".
+			result[key] = projectDataOutcome{State: "skipped", Reason: projectDataSkipReason("")}
 		}
 	}
 	return result
 }
 
-// attachProjectData adds project data status to project EntityItems.
-func attachProjectData(projects []EntityItem, scanMap map[string]string) {
-	if scanMap == nil {
+// projectDataSkipReason maps the captured per-branch error message
+// (or absence thereof) to one of the operator-friendly reasons the
+// issue lists. Empty error means "no components / no analysis data"
+// (#359 wording: "Source project was provisioned but never analyzed").
+func projectDataSkipReason(errMsg string) string {
+	if errMsg == "" {
+		return "Source project was provisioned but never analyzed"
+	}
+	lower := strings.ToLower(errMsg)
+	switch {
+	case strings.Contains(lower, "permission") || strings.Contains(lower, "forbidden") || strings.Contains(lower, "403"):
+		return "Not enough permission on the source project to extract data"
+	case strings.Contains(lower, "main branch") && strings.Contains(lower, "ce failed"):
+		return "Main branch import failed; remaining branches skipped"
+	}
+	return errMsg
+}
+
+// projectDataFailureReason wraps the captured "failed" error message
+// with the operator-friendly framing the issue spec uses ("API error
+// when migrating project data"). Empty errors fall back to the bare
+// framing so we never lose the signal entirely.
+func projectDataFailureReason(errMsg string) string {
+	if errMsg == "" {
+		return "API error when migrating project data"
+	}
+	return "API error when migrating project data: " + errMsg
+}
+
+// attachProjectData stamps a per-project |scan:<state>:<reason>
+// marker on each project's Detail field for projects that have an
+// explicit importProjectData record (success / skipped / failed).
+//
+// Note: --skip_project_data_migration (i.e. importProjectData was
+// never scheduled, projectDataGloballySkipped is true) is intentionally
+// NOT stamped here. The operator explicitly opted out; a per-project
+// "skipped: skipped by configuration" line on every row would be pure
+// noise. A single limitation entry at the end of the report covers
+// the operator-facing signal — see collectLimitations.
+func attachProjectData(projects []EntityItem, scanMap map[string]projectDataOutcome) {
+	if len(scanMap) == 0 {
 		return
 	}
 	for i := range projects {
 		cloudKey := projects[i].Detail
-		if status, ok := scanMap[cloudKey]; ok {
-			projects[i].Detail = cloudKey + "|scan:" + status
+		outcome, ok := scanMap[cloudKey]
+		if !ok || outcome.State == "" {
+			continue
+		}
+		marker := outcome.State
+		if outcome.Reason != "" {
+			marker += ":" + outcome.Reason
+		}
+		projects[i].Detail = cloudKey + "|scan:" + marker
+	}
+}
+
+// projectDataGloballySkipped reports whether the importProjectData
+// task was excluded from the migration run plan (i.e. the operator
+// passed --skip_project_data_migration). Detected by checking
+// run_meta.json's task list — if the task isn't listed, it didn't
+// run. Tolerant of a missing or unparseable file: returns false so
+// the per-project logic still applies. #359.
+func projectDataGloballySkipped(runDir string) bool {
+	data, err := os.ReadFile(filepath.Join(runDir, "run_meta.json"))
+	if err != nil {
+		return false
+	}
+	var meta struct {
+		Tasks []struct {
+			Name string `json:"name"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return false
+	}
+	if len(meta.Tasks) == 0 {
+		// No task list means we can't tell. Default to false.
+		return false
+	}
+	for _, t := range meta.Tasks {
+		if t.Name == "importProjectData" {
+			return false
 		}
 	}
+	return true
 }
 
 // projectSyncCounts holds the issue/hotspot sync a/b/c counts for a

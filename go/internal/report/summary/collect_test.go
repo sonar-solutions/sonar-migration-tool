@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 )
 
 func TestCollectSummaryEmpty(t *testing.T) {
@@ -149,16 +151,25 @@ func TestCollectSummaryWithProjectData(t *testing.T) {
 		t.Fatal("missing Projects section")
 	}
 
-	// Check project data is attached
-	for _, item := range projSection.Succeeded {
+	// Successful project: marker carries just the state (no reason
+	// since success has nothing to surface). Failed project's marker
+	// carries the captured error wrapped with the operator-friendly
+	// framing introduced in #359. Proj2 was failed → it moves to
+	// NearPerfect/Partial via collectProjectSyncSkips, so we look in
+	// both Succeeded (Proj1) and Partial (Proj2) buckets.
+	allProjectItems := append([]EntityItem{}, projSection.Succeeded...)
+	allProjectItems = append(allProjectItems, projSection.NearPerfect...)
+	allProjectItems = append(allProjectItems, projSection.Partial...)
+	for _, item := range allProjectItems {
 		if item.Name == "Proj1" {
 			if item.Detail != "org1_proj1|scan:success" {
-				t.Errorf("expected scan:success in detail, got %q", item.Detail)
+				t.Errorf("Proj1 expected scan:success, got %q", item.Detail)
 			}
 		}
 		if item.Name == "Proj2" {
-			if item.Detail != "org1_proj2|scan:failed" {
-				t.Errorf("expected scan:failed in detail, got %q", item.Detail)
+			want := "org1_proj2|scan:failed:API error when migrating project data: CE failed"
+			if item.Detail != want {
+				t.Errorf("Proj2 expected %q, got %q", want, item.Detail)
 			}
 		}
 	}
@@ -225,21 +236,6 @@ func TestParseProjectData(t *testing.T) {
 	detail2, status2 := parseProjectData("org1_proj")
 	if detail2 != "org1_proj" || status2 != "" {
 		t.Errorf("no scan: got detail=%q status=%q", detail2, status2)
-	}
-}
-
-func TestScanStatusLabel(t *testing.T) {
-	if scanStatusLabel("success") != "Yes" {
-		t.Error("expected Yes")
-	}
-	if scanStatusLabel("failed") != "Failed" {
-		t.Error("expected Failed")
-	}
-	if scanStatusLabel("skipped") != "No" {
-		t.Error("expected No")
-	}
-	if scanStatusLabel("") != "" {
-		t.Error("expected empty")
 	}
 }
 
@@ -1410,6 +1406,155 @@ func writeExtractMeta(t *testing.T, extractDir, url string) {
 	b, _ := json.Marshal(map[string]any{"url": url})
 	if err := os.WriteFile(filepath.Join(extractDir, "extract.json"), b, 0o644); err != nil {
 		t.Fatalf("write extract.json: %v", err)
+	}
+}
+
+// #359: per-project outcome derivation. A project with at least one
+// failed branch is "failed"; otherwise any skipped branch makes it
+// "skipped"; otherwise success. Reason strings come from the
+// branches' captured error messages, normalised to operator-friendly
+// wording.
+func TestCollectProjectDataOutcomes(t *testing.T) {
+	dir := t.TempDir()
+	writeTaskJSONL(t, dir, "importProjectData", []map[string]any{
+		// proj-success — all branches OK.
+		{"cloud_project_key": "proj-success", "branch": "main", "status": "success"},
+		{"cloud_project_key": "proj-success", "branch": "develop", "status": "success"},
+		// proj-never-analyzed — only skipped branches with empty errors.
+		{"cloud_project_key": "proj-never-analyzed", "branch": "main", "status": "skipped"},
+		// proj-permission — skipped branch with a permission-shaped error.
+		{"cloud_project_key": "proj-permission", "branch": "main", "status": "skipped", "error": "403 Forbidden: insufficient privileges"},
+		// proj-source-purged — skipped branch with a free-text error.
+		{"cloud_project_key": "proj-source-purged", "branch": "feat-1", "status": "skipped", "error": "source code not retrievable for this branch (purged by SonarQube housekeeping)"},
+		// proj-mixed — main failed, secondary skipped. Failed wins.
+		{"cloud_project_key": "proj-mixed", "branch": "main", "status": "failed", "error": "CE task failed: HTTP 500"},
+		{"cloud_project_key": "proj-mixed", "branch": "develop", "status": "skipped", "error": "skipped: main branch CE failed"},
+	})
+
+	store := common.NewDataStore(dir)
+	got := collectProjectData(store)
+
+	want := map[string]projectDataOutcome{
+		"proj-success":        {State: "success"},
+		"proj-never-analyzed": {State: "skipped", Reason: "Source project was provisioned but never analyzed"},
+		"proj-permission":     {State: "skipped", Reason: "Not enough permission on the source project to extract data"},
+		"proj-source-purged":  {State: "skipped", Reason: "source code not retrievable for this branch (purged by SonarQube housekeeping)"},
+		"proj-mixed":          {State: "failed", Reason: "API error when migrating project data: CE task failed: HTTP 500"},
+	}
+	for k, w := range want {
+		got, ok := got[k]
+		if !ok {
+			t.Errorf("missing key %q", k)
+			continue
+		}
+		if got != w {
+			t.Errorf("%s: want %+v, got %+v", k, w, got)
+		}
+	}
+}
+
+// #359: when --skip_project_data_migration was passed, importProjectData
+// is absent from the run_meta task list. Projects with no per-project
+// record pick up the config-skipped reason via attachProjectData's
+// globallySkipped path.
+func TestProjectDataGloballySkipped(t *testing.T) {
+	t.Run("task absent from run_meta → globally skipped", func(t *testing.T) {
+		dir := t.TempDir()
+		writeRunMeta(t, dir, map[string]any{
+			"tasks": []map[string]any{
+				{"name": "createProjects"},
+				{"name": "setProjectGates"},
+			},
+		})
+		if !projectDataGloballySkipped(dir) {
+			t.Error("expected globally skipped when importProjectData absent")
+		}
+	})
+	t.Run("task present in run_meta → not globally skipped", func(t *testing.T) {
+		dir := t.TempDir()
+		writeRunMeta(t, dir, map[string]any{
+			"tasks": []map[string]any{
+				{"name": "createProjects"},
+				{"name": "importProjectData"},
+			},
+		})
+		if projectDataGloballySkipped(dir) {
+			t.Error("did not expect globally skipped when importProjectData listed")
+		}
+	})
+	t.Run("missing run_meta.json → false (don't infer)", func(t *testing.T) {
+		dir := t.TempDir()
+		if projectDataGloballySkipped(dir) {
+			t.Error("missing run_meta should yield false")
+		}
+	})
+}
+
+// attachProjectData stamps a marker only on projects that have an
+// explicit per-project record. Projects with no record stay clean
+// — even when project data migration was globally skipped by
+// configuration, where the spec-compliant signal lives in the
+// report-level Limitations section (see collectLimitations).
+func TestAttachProjectDataNoStampWhenGlobalSkip(t *testing.T) {
+	scanMap := map[string]projectDataOutcome{
+		"proj-explicit": {State: "skipped", Reason: "Source project was provisioned but never analyzed"},
+	}
+	projects := []EntityItem{
+		{Name: "Explicit", Detail: "proj-explicit"},
+		{Name: "NoRecord", Detail: "proj-no-record"},
+	}
+	attachProjectData(projects, scanMap)
+
+	wantExplicit := "proj-explicit|scan:skipped:Source project was provisioned but never analyzed"
+	if projects[0].Detail != wantExplicit {
+		t.Errorf("explicit reason should be stamped: want %q, got %q", wantExplicit, projects[0].Detail)
+	}
+	if projects[1].Detail != "proj-no-record" {
+		t.Errorf("no-record project should stay clean (no per-project line for config-skip): got %q", projects[1].Detail)
+	}
+}
+
+// #359 follow-up: when --skip_project_data_migration is set, the
+// per-project Details column stays clean, but the report's
+// Limitations section carries a single explanatory note so the
+// operator can recover the signal even when reading the report
+// long after the run.
+func TestCollectLimitations_GlobalProjectDataSkipped(t *testing.T) {
+	dir := t.TempDir()
+	writeRunMeta(t, dir, map[string]any{
+		"tasks": []map[string]any{
+			{"name": "createProjects"},
+			{"name": "setProjectGates"},
+		},
+	})
+	got := collectLimitations(dir, "", nil)
+	found := false
+	for _, l := range got {
+		if strings.Contains(l, "Project data migration was skipped by configuration") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected limitation note about global project-data skip, got %v", got)
+	}
+}
+
+// #359: when project data is skipped (any reason), the sync stats
+// line MUST be suppressed even if the syncStats marker is present —
+// the sync depended on the import that didn't happen.
+func TestSuccessDetailsSyncStatsSuppressedWhenProjectDataSkipped(t *testing.T) {
+	// Project data skipped + sync stats marker (in case the run also
+	// produced sync records — defensive: the line should still be
+	// suppressed because import was skipped).
+	got := successDetails(EntityItem{
+		Detail: "proj1|scan:skipped:Source project was provisioned but never analyzed|syncStats:i=5/10",
+	}, false, false, false)
+	if strings.Contains(got, "synced") {
+		t.Errorf("sync line must be suppressed when project data skipped: %q", got)
+	}
+	if !strings.Contains(got, "Project data migration skipped") {
+		t.Errorf("expected skip line, got %q", got)
 	}
 }
 
