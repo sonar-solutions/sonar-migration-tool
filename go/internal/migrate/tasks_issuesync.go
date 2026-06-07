@@ -12,9 +12,11 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	sqapi "github.com/sonar-solutions/sq-api-go"
+	sqtypes "github.com/sonar-solutions/sq-api-go/types"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 )
 
@@ -81,62 +83,16 @@ type issuePair struct {
 // Matching helpers
 // ---------------------------------------------------------------------------
 
-// buildIssueMatchKey produces a canonical key for matching issues across
-// environments. The component field from SonarQube includes the project
-// key as a prefix ("myproject:src/Foo.java"); we strip it so only the
-// relative file path remains. The key format is "rule|filePath|line".
-//
-// Returns "" if the issue lacks a rule, component, or has a non-positive line.
-func buildIssueMatchKey(iss matchableIssue) string {
-	if iss.Rule == "" || iss.Component == "" || iss.Line <= 0 {
-		return ""
+// stripProjectKeyPrefix removes the leading "projectKey:" segment from a
+// SonarQube component path, returning the bare file path. SonarQube
+// formats components as "projectKey:src/main/java/Foo.java"; the
+// project key is environment-specific but the file path part is the
+// same on source and cloud.
+func stripProjectKeyPrefix(component string) string {
+	if idx := strings.Index(component, ":"); idx >= 0 {
+		return component[idx+1:]
 	}
-	// Strip "projectKey:" prefix from component.
-	filePath := iss.Component
-	if idx := strings.Index(filePath, ":"); idx >= 0 {
-		filePath = filePath[idx+1:]
-	}
-	return fmt.Sprintf("%s|%s|%d", iss.Rule, filePath, iss.Line)
-}
-
-// matchIssues performs FIFO matching: for every source issue, take the first
-// Cloud candidate with the same match key. Each Cloud issue is consumed at
-// most once, preventing one-to-many duplication.
-//
-// The candidate map is built from cloudIssues (key -> []matchableIssue).
-// Source issues are iterated in order; the first available candidate for
-// each key is popped from the front of the slice (FIFO).
-//
-// All data structures are fully built before this function returns; no
-// mutation occurs during any subsequent concurrent phase.
-func matchIssues(sourceIssues, cloudIssues []matchableIssue) []issuePair {
-	// Build candidate map: matchKey -> ordered slice of cloud issues.
-	candidates := make(map[string][]matchableIssue, len(cloudIssues))
-	for _, ci := range cloudIssues {
-		k := buildIssueMatchKey(ci)
-		if k == "" {
-			continue
-		}
-		candidates[k] = append(candidates[k], ci)
-	}
-
-	// FIFO consume: iterate source issues and take the first available
-	// cloud candidate for each match key.
-	var pairs []issuePair
-	for _, si := range sourceIssues {
-		k := buildIssueMatchKey(si)
-		if k == "" {
-			continue
-		}
-		bucket := candidates[k]
-		if len(bucket) == 0 {
-			continue
-		}
-		// Pop the first candidate (FIFO).
-		pairs = append(pairs, issuePair{source: si, cloud: bucket[0]})
-		candidates[k] = bucket[1:]
-	}
-	return pairs
+	return component
 }
 
 // ---------------------------------------------------------------------------
@@ -311,9 +267,31 @@ func runSyncIssueMetadata(ctx context.Context, e *Executor) error {
 			if cloudKey == "" || orgKey == "" {
 				return nil
 			}
-			return syncProjectIssues(ctx, e, cloudKey, orgKey, serverURL, serverKey, counter, ruleDefaults)
+			stats := syncProjectIssues(ctx, e, cloudKey, orgKey, serverURL, serverKey, counter, ruleDefaults)
+			record, _ := json.Marshal(map[string]any{
+				"cloud_project_key": cloudKey,
+				"synced":            stats.A,
+				"line_mismatch":     stats.B,
+				"not_found":         stats.C,
+				"actionable":        stats.Actionable,
+			})
+			return w.WriteOne(record)
 		})
 	return err
+}
+
+// projectSyncStats is the per-project breakdown reported back from
+// syncProjectIssues / syncProjectHotspots for #356. A counts case a
+// (1 cloud counterpart on the same line — synced); B counts case b
+// (>1 counterparts on the same line — ambiguous, skipped); C counts
+// case c (no counterpart on the source's line — skipped). Actionable
+// is the size of the input set, so A+B+C ≤ Actionable (some pairs may
+// short-circuit before classification, e.g. lookup errors).
+type projectSyncStats struct {
+	Actionable int64
+	A          int64
+	B          int64
+	C          int64
 }
 
 // ---------------------------------------------------------------------------
@@ -322,98 +300,185 @@ func runSyncIssueMetadata(ctx context.Context, e *Executor) error {
 
 // syncProjectIssues handles the full issue-metadata sync for a single project:
 //
-//  1. Load source issues from extract
-//  2. Wait for Cloud indexing
-//  3. Fetch Cloud issues
-//  4. Match (FIFO)
-//  5. Pre-filter (hasManualChanges)
-//  6. Sync pairs with bounded concurrency
-//  7. Log summary
-func syncProjectIssues(ctx context.Context, e *Executor, cloudKey, orgKey, serverURL, serverKey string, counter *TaskCounter, ruleDefaults *ruleTagDefaults) error {
-	// 1. Load source issues from extract data.
+//  1. Load + pre-filter source issues (only "actionable" via hasManualChanges)
+//  2. Wait for Cloud indexing to complete
+//  3. For each actionable source issue, search Cloud scoped to its file + rule
+//  4. Resolve by line: 1 hit → sync, 0 hits → not_found, >1 → line_mismatch
+//  5. Persist per-project a/b/c stats
+//
+// Replaces the previous fetch-all + FIFO match scheme (#356). The old
+// approach paginated /api/issues/search across every cloud issue in the
+// project (10k cap, O(cloud) per project regardless of source size);
+// the new approach issues one targeted search per ACTIONABLE source
+// issue and resolves it in memory. For projects where actionable is in
+// the dozens, this is dramatically faster — and the 10k cap no longer
+// bites large projects whose total issue count exceeds it.
+func syncProjectIssues(ctx context.Context, e *Executor, cloudKey, orgKey, serverURL, serverKey string, counter *TaskCounter, ruleDefaults *ruleTagDefaults) projectSyncStats {
+	var stats projectSyncStats
+
+	// 1. Load source issues + pre-filter to actionable.
 	sourceIssues := loadMatchableIssues(e, serverURL, serverKey, ruleDefaults)
 	if len(sourceIssues) == 0 {
 		e.Logger.Debug("syncIssueMetadata: no source issues", "project", cloudKey)
-		return nil
+		return stats
+	}
+	var actionable []matchableIssue
+	for _, s := range sourceIssues {
+		if hasManualChanges(s) {
+			actionable = append(actionable, s)
+		}
+	}
+	stats.Actionable = int64(len(actionable))
+	if len(actionable) == 0 {
+		e.Logger.Debug("syncIssueMetadata: no actionable source issues after filter", "project", cloudKey, "source_total", len(sourceIssues))
+		return stats
 	}
 
-	// 2. Wait for Cloud indexing to complete before fetching.
-	err := waitForCloudIndexing(ctx, func() (int, error) {
+	// 2. Wait for Cloud indexing — proves the CE task is done so per-
+	// issue searches return real data.
+	if err := waitForCloudIndexing(ctx, func() (int, error) {
 		params := url.Values{}
 		params.Set("componentKeys", cloudKey)
 		params.Set("organization", orgKey)
 		return e.Cloud.Issues.Count(ctx, params)
-	})
-	if err != nil {
+	}); err != nil {
 		logAPIWarn(e.Logger, "syncIssueMetadata: indexing wait failed", err, "project", cloudKey)
-		return nil // non-fatal
-	}
-
-	// 3. Fetch all Cloud issues for the project.
-	cloudIssues, err := loadCloudMatchableIssues(ctx, e, cloudKey, orgKey)
-	if err != nil {
-		logAPIWarn(e.Logger, "syncIssueMetadata: fetch cloud issues failed", err, "project", cloudKey)
-		return nil // non-fatal — skip project
-	}
-	if len(cloudIssues) == 0 {
-		// Source had issues worth syncing, but Cloud has nothing to
-		// match against. Most common cause: the project-data CE task
-		// for this project failed (or was skipped), so the report was
-		// never indexed and Cloud has no issues yet. Promote to INFO
-		// so the operator can correlate the skip with the upstream
-		// failure log instead of wondering why nothing happened. #299.
-		e.Logger.Info("syncIssueMetadata: skipping project — no Cloud issues to match (project-data CE task likely failed or was skipped)",
-			"project", cloudKey, "source_issues", len(sourceIssues))
-		return nil
-	}
-
-	// 4. Match issues (FIFO). Built entirely before launching goroutines.
-	matchedPairs := matchIssues(sourceIssues, cloudIssues)
-	if len(matchedPairs) == 0 {
-		e.Logger.Debug("syncIssueMetadata: no matched pairs", "project", cloudKey)
-		return nil
-	}
-
-	// 5. Pre-filter: only sync pairs where the source has manual changes.
-	var actionable []issuePair
-	for _, p := range matchedPairs {
-		if hasManualChanges(p.source) {
-			actionable = append(actionable, p)
-		}
-	}
-	if len(actionable) == 0 {
-		e.Logger.Debug("syncIssueMetadata: no actionable pairs after filter", "project", cloudKey)
-		return nil
+		return stats
 	}
 
 	e.Logger.Info("syncIssueMetadata: syncing pairs",
 		"project", cloudKey,
 		"source_total", len(sourceIssues),
-		"cloud_total", len(cloudIssues),
-		"matched", len(matchedPairs),
 		"actionable", len(actionable),
 	)
 
-	// 6. Sync pairs with bounded concurrency, emitting a per-
-	// project "Project key <key> issue sync: N/M - X%" line every
-	// 20 completions (#300 / #348). The label includes the cloud
-	// project key so an operator tailing the log can disentangle
-	// the lines coming from concurrent projects' inner loops
-	// (issue #348). runProjectSyncLoop handles the errgroup, the
-	// semaphore bound, and the progress logger.
-	//
-	// RACE-CONDITION SAFETY:
-	//   - actionable slice is read-only during this phase.
-	//   - Each goroutine receives exactly ONE issuePair by value.
-	//   - counter uses atomic operations (existing pattern).
-	//   - No shared mutable state is accessed.
+	// 3 + 4. Per-actionable-source: targeted search, resolve by line,
+	// dispatch. Counted via atomics on the shared stats. Race-safety:
+	// the actionable slice is read-only, each goroutine receives one
+	// source by value, and stats.{A,B,C} use atomic adds.
+	var a, b, c atomic.Int64
 	label := "Project key " + cloudKey + " issue sync:"
 	runProjectSyncLoop(ctx, e, actionable, label, 20,
-		func(gctx context.Context, pair issuePair) {
-			syncOnePair(gctx, e, pair, counter)
+		func(gctx context.Context, src matchableIssue) {
+			outcome := resolveAndSyncIssue(gctx, e, cloudKey, orgKey, src, counter)
+			switch outcome {
+			case syncOutcomeSynced:
+				a.Add(1)
+			case syncOutcomeLineMismatch:
+				b.Add(1)
+			case syncOutcomeNotFound:
+				c.Add(1)
+			}
 		})
+	stats.A = a.Load()
+	stats.B = b.Load()
+	stats.C = c.Load()
+	return stats
+}
 
-	return nil
+// syncOutcome is the per-source classification produced by
+// resolveAndSyncIssue (#356).
+type syncOutcome int
+
+const (
+	// syncOutcomeSynced — exactly one cloud counterpart on the same
+	// line; pair was sync'd (case a).
+	syncOutcomeSynced syncOutcome = iota
+	// syncOutcomeLineMismatch — multiple cloud counterparts on the
+	// same line (case b); ambiguous, skipped.
+	syncOutcomeLineMismatch
+	// syncOutcomeNotFound — zero cloud counterparts on the source's
+	// line (case c); unexpected for a freshly migrated project,
+	// skipped.
+	syncOutcomeNotFound
+	// syncOutcomeLookupError — the per-source search call failed
+	// (network, 5xx). Reported but not classified into a/b/c so a
+	// noisy network doesn't pollute the near-perfect signal.
+	syncOutcomeLookupError
+)
+
+// resolveAndSyncIssue searches Cloud for counterparts of src, resolves
+// to one by line, and dispatches the sync. Returns the case-a/b/c/lookup
+// outcome.
+func resolveAndSyncIssue(ctx context.Context, e *Executor, cloudKey, orgKey string, src matchableIssue, counter *TaskCounter) syncOutcome {
+	filePath := stripProjectKeyPrefix(src.Component)
+	if filePath == "" || src.Rule == "" || src.Line <= 0 {
+		e.Logger.Debug("syncIssueMetadata: source issue not matchable", "key", src.Key, "rule", src.Rule, "component", src.Component, "line", src.Line)
+		return syncOutcomeNotFound
+	}
+	candidates, err := findCloudIssueCandidates(ctx, e, cloudKey, orgKey, filePath, src.Rule)
+	if err != nil {
+		logAPIWarn(e.Logger, "syncIssueMetadata: cloud candidate lookup failed", err,
+			"project", cloudKey, "source_key", src.Key, "rule", src.Rule, "file", filePath)
+		return syncOutcomeLookupError
+	}
+	target, outcome := classifyIssueCandidatesByLine(candidates, src.Line)
+	switch outcome {
+	case syncOutcomeSynced:
+		syncOnePair(ctx, e, issuePair{source: src, cloud: target}, counter)
+	case syncOutcomeNotFound:
+		e.Logger.Debug("syncIssueMetadata: no cloud counterpart on source line", "source_key", src.Key, "rule", src.Rule, "file", filePath, "line", src.Line)
+	case syncOutcomeLineMismatch:
+		keys := make([]string, 0)
+		for _, c := range candidates {
+			if c.Line == src.Line {
+				keys = append(keys, c.Key)
+			}
+		}
+		e.Logger.Debug("syncIssueMetadata: multiple cloud counterparts on source line, skipping", "source_key", src.Key, "rule", src.Rule, "file", filePath, "line", src.Line, "candidates", keys)
+	}
+	return outcome
+}
+
+// classifyIssueCandidatesByLine implements the case a/b/c decision
+// from #356: among candidates returned by /api/issues/search, pick
+// the one on the source's line. 1 → synced, 0 → not_found, n>1 →
+// line_mismatch. Factored out so the per-pair logic is unit testable
+// without HTTP mocking.
+func classifyIssueCandidatesByLine(candidates []matchableIssue, sourceLine int) (matchableIssue, syncOutcome) {
+	var pick matchableIssue
+	matches := 0
+	for _, c := range candidates {
+		if c.Line == sourceLine {
+			matches++
+			if matches == 1 {
+				pick = c
+			}
+		}
+	}
+	switch matches {
+	case 0:
+		return matchableIssue{}, syncOutcomeNotFound
+	case 1:
+		return pick, syncOutcomeSynced
+	default:
+		return matchableIssue{}, syncOutcomeLineMismatch
+	}
+}
+
+// findCloudIssueCandidates queries /api/issues/search for cloud issues
+// matching the given file path + rule. Typical result set is 1–3
+// issues; pagination cost is dwarfed by the savings from no longer
+// fetching every issue in the project.
+func findCloudIssueCandidates(ctx context.Context, e *Executor, cloudKey, orgKey, filePath, ruleKey string) ([]matchableIssue, error) {
+	params := url.Values{}
+	params.Set("componentKeys", cloudKey+":"+filePath)
+	params.Set("organization", orgKey)
+	params.Set("rules", ruleKey)
+	// Same statuses we already use on the source side — we want to be
+	// idempotent against issues that were already migrated in a prior
+	// run (the cloud counterpart may be in ACCEPTED / FALSE_POSITIVE
+	// state already).
+	params.Set("issueStatuses", "OPEN,CONFIRMED,FALSE_POSITIVE,ACCEPTED")
+	apiIssues, err := e.Cloud.Issues.SearchAll(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]matchableIssue, 0, len(apiIssues))
+	for _, ai := range apiIssues {
+		out = append(out, apiIssueToMatchable(ai))
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -657,44 +722,29 @@ func loadMatchableIssues(e *Executor, serverURL, serverKey string, ruleDefaults 
 	return issues
 }
 
-// loadCloudMatchableIssues fetches all issues from Cloud for a given
-// project and converts them to matchableIssue values.
-func loadCloudMatchableIssues(ctx context.Context, e *Executor, cloudKey, orgKey string) ([]matchableIssue, error) {
-	params := url.Values{}
-	params.Set("componentKeys", cloudKey)
-	params.Set("organization", orgKey)
-	// Fetch all statuses to enable accurate matching.
-	params.Set("statuses", "OPEN,CONFIRMED,REOPENED,RESOLVED,CLOSED")
-
-	apiIssues, err := e.Cloud.Issues.SearchAll(ctx, params)
-	if err != nil {
-		return nil, err
-	}
-
-	issues := make([]matchableIssue, 0, len(apiIssues))
-	for _, ai := range apiIssues {
-		comments := make([]issueComment, 0, len(ai.Comments))
-		for _, c := range ai.Comments {
-			comments = append(comments, issueComment{
-				Login:     c.Login,
-				HTMLText:  c.HTMLText,
-				Markdown:  c.Markdown,
-				CreatedAt: c.CreatedAt,
-			})
-		}
-		issues = append(issues, matchableIssue{
-			Key:        ai.Key,
-			Rule:       ai.Rule,
-			Component:  ai.Component,
-			Line:       ai.Line,
-			Status:     ai.Status,
-			Resolution: ai.Resolution,
-			Tags:       ai.Tags,
-			Comments:   comments,
-			Assignee:   ai.Assignee,
+// apiIssueToMatchable converts an sq-api-go Issue into the local
+// matchableIssue shape used by the sync orchestration.
+func apiIssueToMatchable(ai sqtypes.Issue) matchableIssue {
+	comments := make([]issueComment, 0, len(ai.Comments))
+	for _, c := range ai.Comments {
+		comments = append(comments, issueComment{
+			Login:     c.Login,
+			HTMLText:  c.HTMLText,
+			Markdown:  c.Markdown,
+			CreatedAt: c.CreatedAt,
 		})
 	}
-	return issues, nil
+	return matchableIssue{
+		Key:        ai.Key,
+		Rule:       ai.Rule,
+		Component:  ai.Component,
+		Line:       ai.Line,
+		Status:     ai.Status,
+		Resolution: ai.Resolution,
+		Tags:       ai.Tags,
+		Comments:   comments,
+		Assignee:   ai.Assignee,
+	}
 }
 
 // ---------------------------------------------------------------------------

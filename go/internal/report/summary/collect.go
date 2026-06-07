@@ -41,6 +41,7 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 	projectDataMap := collectProjectData(store)
 	ncdFallbackMap := collectNCDFallback(store)
 	ncdBranchOverrideSet := collectNCDBranchOverrides(store)
+	syncStatsMap := collectSyncStats(store)
 	extractMapping, _ := structure.GetUniqueExtracts(exportDir)
 
 	var sections []Section
@@ -61,6 +62,15 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 			projectFailures = append(projectFailures, collectProjectSyncSkips(store)...)
 			section.Succeeded, section.NearPerfect, section.Partial = applyProjectFailures(
 				section.Succeeded, section.NearPerfect, section.Partial, projectFailures)
+			// #356 — append a per-project "x/y issues synced (z%)"
+			// line to the project's Detail field. Applied AFTER
+			// applyProjectFailures so it lands on all routed buckets
+			// (Succeeded, NearPerfect, Partial). Predictive reports
+			// suppress this line at render time (sync success cannot
+			// be predicted).
+			attachSyncStats(section.Succeeded, syncStatsMap)
+			attachSyncStats(section.NearPerfect, syncStatsMap)
+			attachSyncStats(section.Partial, syncStatsMap)
 		}
 		sections = append(sections, section)
 	}
@@ -729,6 +739,87 @@ func attachProjectData(projects []EntityItem, scanMap map[string]string) {
 			projects[i].Detail = cloudKey + "|scan:" + status
 		}
 	}
+}
+
+// projectSyncCounts holds the issue/hotspot sync a/b/c counts for a
+// single cloud project. Built by collectSyncStats from the JSONL
+// records syncIssueMetadata and syncHotspotMetadata write per project.
+type projectSyncCounts struct {
+	IssueActionable    int
+	IssueSynced        int
+	HotspotActionable  int
+	HotspotSynced      int
+}
+
+// collectSyncStats reads per-project sync records and returns a map
+// keyed by cloud project key. The per-project record schema is
+// {synced, line_mismatch, not_found, actionable}; only `synced` and
+// `actionable` need to surface in the Details line (#356).
+func collectSyncStats(store *common.DataStore) map[string]projectSyncCounts {
+	out := map[string]projectSyncCounts{}
+	collect := func(taskName string, set func(*projectSyncCounts, int, int)) {
+		items, err := store.ReadAll(taskName)
+		if err != nil {
+			return
+		}
+		for _, raw := range items {
+			key := jsonStr(raw, "cloud_project_key")
+			if key == "" {
+				continue
+			}
+			counts := out[key]
+			set(&counts, jsonInt(raw, "synced"), jsonInt(raw, "actionable"))
+			out[key] = counts
+		}
+	}
+	collect("syncIssueMetadata", func(c *projectSyncCounts, synced, actionable int) {
+		c.IssueSynced = synced
+		c.IssueActionable = actionable
+	})
+	collect("syncHotspotMetadata", func(c *projectSyncCounts, synced, actionable int) {
+		c.HotspotSynced = synced
+		c.HotspotActionable = actionable
+	})
+	return out
+}
+
+// attachSyncStats appends a "|syncStats:i=<synced>/<actionable>(<pct>),h=..."
+// marker to each project's Detail field when at least one of issues
+// or hotspots had actionable items for that project. The renderer
+// parses this marker and emits a one-line "X% of manually-triaged
+// items successfully synchronized" comment (PDF + markdown only —
+// the predictive report skips it because sync success cannot be
+// predicted). #356.
+func attachSyncStats(projects []EntityItem, syncMap map[string]projectSyncCounts) {
+	if len(syncMap) == 0 || len(projects) == 0 {
+		return
+	}
+	for i := range projects {
+		key := projectCloudKey(projects[i].Detail)
+		counts, ok := syncMap[key]
+		if !ok {
+			continue
+		}
+		if counts.IssueActionable == 0 && counts.HotspotActionable == 0 {
+			continue
+		}
+		projects[i].Detail = projects[i].Detail + "|syncStats:" + encodeSyncStats(counts)
+	}
+}
+
+// encodeSyncStats renders projectSyncCounts as a compact marker
+// payload: "i=<synced>/<actionable>,h=<synced>/<actionable>". Either
+// half is omitted when its actionable count is zero so the renderer
+// can simply split-and-render the segments that exist.
+func encodeSyncStats(c projectSyncCounts) string {
+	var parts []string
+	if c.IssueActionable > 0 {
+		parts = append(parts, fmt.Sprintf("i=%d/%d", c.IssueSynced, c.IssueActionable))
+	}
+	if c.HotspotActionable > 0 {
+		parts = append(parts, fmt.Sprintf("h=%d/%d", c.HotspotSynced, c.HotspotActionable))
+	}
+	return strings.Join(parts, ",")
 }
 
 // collectNCDFallback reads the setNewCodePeriods JSONL and returns a
