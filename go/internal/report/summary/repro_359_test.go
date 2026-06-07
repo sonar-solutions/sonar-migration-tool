@@ -85,10 +85,11 @@ func TestCollectSummary_ProjectDataAndSyncStats(t *testing.T) {
 			bucket: "NearPerfect",
 			mustContain: []string{
 				"44% of issues with manual changes synced (36/81)",
-				"Issue sync had unresolved counterparts",
 			},
 			mustNot: []string{
-				"Project data migration", // import was successful, no skip line
+				"Project data migration",            // import was successful, no skip line
+				"Issue sync had unresolved",         // dropped per #359 follow-up — redundant with the sync stats line
+				"Hotspot sync had unresolved",
 			},
 		},
 		"ProjNeverAnalyzed": {

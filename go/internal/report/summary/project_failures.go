@@ -301,13 +301,12 @@ func applyProjectFailures(succeeded, nearPerfect, partial []EntityItem,
 //   - syncHotspotMetadata / syncIssueMetadata rows whose source-issue
 //     could not be resolved to a single cloud counterpart on the same
 //     line (line_mismatch > 0 || not_found > 0) → NearPerfect,
-//     "Issue sync had unresolved counterparts" /
-//     "Hotspot sync had unresolved counterparts" — but ONLY for
-//     projects whose data import succeeded (sync fidelity is moot when
-//     the import didn't happen, #359).
+//     ROUTE-ONLY. The sync stats line on the Detail (#356) already
+//     conveys "X% synced (N/M)" — duplicating it as an Issues line
+//     was operator noise, dropped per #359 follow-up.
 //   - syncHotspotMetadata / syncIssueMetadata rows with error != ""
-//     → Partial, "<task> errored" — same gating: skipped when the
-//     project's data import was skipped or failed.
+//     → Partial, "<task> errored" — gated on the project's data
+//     import being successful (otherwise the sync error is moot).
 //
 // scanMap (the per-project data outcomes from collectProjectData) is
 // used to gate the sync-side failures.
@@ -343,19 +342,18 @@ func collectProjectSyncSkips(store *common.DataStore, scanMap map[string]project
 		})
 	}
 
-	// Per-project issue / hotspot sync rows — Near perfect when b+c > 0,
-	// Partial when a fatal error was captured. Skip emission for projects
-	// whose data import was skipped or failed — there's nothing
-	// meaningful to say about sync fidelity in that case.
-	for _, f := range collectSyncOutcome(store, "syncIssueMetadata",
-		"Issue sync had unresolved counterparts", "Issue sync errored") {
+	// Per-project issue / hotspot sync rows — Near perfect when b+c > 0
+	// (route-only; the sync stats line carries the synced fraction),
+	// Partial when a fatal error was captured. Skip emission entirely
+	// for projects whose data import was skipped or failed — there's
+	// nothing meaningful to say about sync fidelity in that case.
+	for _, f := range collectSyncOutcome(store, "syncIssueMetadata", "Issue sync errored") {
 		if dataSkipped(f.CloudProjectKey) {
 			continue
 		}
 		out = append(out, f)
 	}
-	for _, f := range collectSyncOutcome(store, "syncHotspotMetadata",
-		"Hotspot sync had unresolved counterparts", "Hotspot sync errored") {
+	for _, f := range collectSyncOutcome(store, "syncHotspotMetadata", "Hotspot sync errored") {
 		if dataSkipped(f.CloudProjectKey) {
 			continue
 		}
@@ -367,9 +365,16 @@ func collectProjectSyncSkips(store *common.DataStore, scanMap map[string]project
 
 // collectSyncOutcome reads per-project sync records for a given task
 // (syncIssueMetadata or syncHotspotMetadata) and converts them to
-// projectFailure entries. b/c > 0 yields a NearPerfect failure; a
-// non-empty error yields a Partial one.
-func collectSyncOutcome(store *common.DataStore, taskName, mismatchOp, errorOp string) []projectFailure {
+// projectFailure entries:
+//
+//   - line_mismatch + not_found > 0 → route-only NearPerfect failure
+//     (empty Operation/Detail). The sync stats line attached via
+//     attachSyncStats already communicates "X% of items synced (N/M)";
+//     the unresolved-counterparts detail was redundant and was
+//     dropped per #359 follow-up.
+//   - error != "" → Partial failure with the captured error as the
+//     visible Issues line, labelled with errorOp.
+func collectSyncOutcome(store *common.DataStore, taskName, errorOp string) []projectFailure {
 	items, err := store.ReadAll(taskName)
 	if err != nil || len(items) == 0 {
 		return nil
@@ -382,30 +387,13 @@ func collectSyncOutcome(store *common.DataStore, taskName, mismatchOp, errorOp s
 		}
 		lineMismatch := jsonInt(raw, "line_mismatch")
 		notFound := jsonInt(raw, "not_found")
-		actionable := jsonInt(raw, "actionable")
-		synced := jsonInt(raw, "synced")
 		errMsg := jsonStr(raw, "error")
 
 		if lineMismatch+notFound > 0 {
-			parts := []string{}
-			if lineMismatch > 0 {
-				parts = append(parts, fmt.Sprintf("%d line mismatches", lineMismatch))
-			}
-			if notFound > 0 {
-				parts = append(parts, fmt.Sprintf("%d not found", notFound))
-			}
-			detail := fmt.Sprintf("%d/%d synced", synced, actionable)
-			if actionable > 0 {
-				detail += fmt.Sprintf(" (%d%%)", percent(synced, actionable))
-			}
-			if len(parts) > 0 {
-				detail += " — " + strings.Join(parts, ", ")
-			}
 			out = append(out, projectFailure{
 				CloudProjectKey: key,
 				Bucket:          projectBucketNearPerfect,
-				Operation:       mismatchOp,
-				Detail:          detail,
+				// Operation/Detail intentionally empty — route-only.
 			})
 		}
 		if errMsg != "" {
@@ -420,11 +408,3 @@ func collectSyncOutcome(store *common.DataStore, taskName, mismatchOp, errorOp s
 	return out
 }
 
-// percent computes 100 * a / total with truncation. Returns 0 when
-// total is zero so callers don't have to guard.
-func percent(a, total int) int {
-	if total <= 0 {
-		return 0
-	}
-	return a * 100 / total
-}
