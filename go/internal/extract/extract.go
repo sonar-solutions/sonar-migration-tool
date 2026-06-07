@@ -12,6 +12,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -317,14 +319,26 @@ func detectEdition(ctx context.Context, raw *RawClient) (Edition, error) {
 // rationale — the two helpers are deliberately kept in sync.
 func generateRunID(directory string) string {
 	today := time.Now().UTC().Format("2006-01-02")
+	prefix := today + "-"
 	entries, _ := os.ReadDir(directory)
-	count := 0
+	maxN := 0
 	for _, e := range entries {
-		if e.IsDir() && len(e.Name()) > len(today) && e.Name()[:len(today)] == today {
-			count++
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		n, err := strconv.Atoi(name[len(prefix):])
+		if err != nil {
+			continue
+		}
+		if n > maxN {
+			maxN = n
 		}
 	}
-	return fmt.Sprintf("%s-%02d", today, count+1)
+	return fmt.Sprintf("%s-%02d", today, maxN+1)
 }
 
 // extractMeta groups the parameters for writeMetadata. Version stays as
