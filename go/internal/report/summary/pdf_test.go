@@ -436,6 +436,47 @@ func TestSuccessDetailsLabelProjectKey(t *testing.T) {
 	}
 }
 
+// #356: per-project sync stats marker renders a one-line "x% of items
+// with manual changes synced" comment, but only in the live migration
+// report — predictive reports suppress it because sync success
+// cannot be predicted ahead of the migration.
+func TestSuccessDetailsSyncStatsLine(t *testing.T) {
+	item := EntityItem{Detail: "acme_proj|syncStats:i=42/50,h=10/12"}
+
+	t.Run("live report renders both segments + cloud key", func(t *testing.T) {
+		got := successDetails(item, false, false, false)
+		for _, want := range []string{"acme_proj", "84% of issues with manual changes synced (42/50)", "83% of hotspots with manual changes synced (10/12)"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("missing %q in:\n%s", want, got)
+			}
+		}
+	})
+	t.Run("predictive report suppresses the line", func(t *testing.T) {
+		got := successDetails(item, true, false, false)
+		if strings.Contains(got, "synced") {
+			t.Errorf("predictive should not render sync stats, got %q", got)
+		}
+		if !strings.Contains(got, "acme_proj") {
+			t.Errorf("expected cloud key still present, got %q", got)
+		}
+	})
+	t.Run("issue-only marker", func(t *testing.T) {
+		got := successDetails(EntityItem{Detail: "p|syncStats:i=0/3"}, false, false, false)
+		if !strings.Contains(got, "0% of issues with manual changes synced (0/3)") {
+			t.Errorf("expected 0%% line, got %q", got)
+		}
+		if strings.Contains(got, "hotspots") {
+			t.Errorf("did not expect hotspot segment, got %q", got)
+		}
+	})
+	t.Run("no marker — no sync line", func(t *testing.T) {
+		got := successDetails(EntityItem{Detail: "plain"}, false, false, false)
+		if strings.Contains(got, "synced") {
+			t.Errorf("did not expect sync line for plain detail, got %q", got)
+		}
+	})
+}
+
 func TestPartialDetailsSplitsScanMarker(t *testing.T) {
 	// Regression: a Partial / NearPerfect project carrying a |scan: marker
 	// in its Detail must have the marker split off onto its own

@@ -238,3 +238,97 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// #356: stripProjectKeyPrefix isolates the file-path part of a
+// SonarQube component identifier. The substitution is essential for
+// the targeted cloud search: we send componentKeys=<cloudKey>:<file>
+// derived from the source's <sourceKey>:<file> string.
+func TestStripProjectKeyPrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "leading project key", in: "myproject:src/main/java/Foo.java", want: "src/main/java/Foo.java"},
+		{name: "nested colon stays after first", in: "myproject:com:foo/Bar.java", want: "com:foo/Bar.java"},
+		{name: "no project prefix", in: "src/main/java/Foo.java", want: "src/main/java/Foo.java"},
+		{name: "empty", in: "", want: ""},
+		{name: "colon only", in: "myproject:", want: ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripProjectKeyPrefix(tc.in)
+			if got != tc.want {
+				t.Errorf("stripProjectKeyPrefix(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// #356: case a/b/c classification — exactly the semantics from the
+// issue. 1 cloud counterpart on the source line → synced (a); 0
+// counterparts on the line → not_found (c); 2+ on the same line →
+// line_mismatch (b). Off-line candidates are ignored.
+func TestClassifyIssueCandidatesByLine(t *testing.T) {
+	cand := func(key string, line int) matchableIssue {
+		return matchableIssue{Key: key, Line: line}
+	}
+	tests := []struct {
+		name        string
+		candidates  []matchableIssue
+		sourceLine  int
+		wantKey     string
+		wantOutcome syncOutcome
+	}{
+		{
+			name:        "exactly one match on line — synced (a)",
+			candidates:  []matchableIssue{cand("cloud-1", 42)},
+			sourceLine:  42,
+			wantKey:     "cloud-1",
+			wantOutcome: syncOutcomeSynced,
+		},
+		{
+			name:        "one match among off-line candidates — synced (a)",
+			candidates:  []matchableIssue{cand("cloud-a", 40), cand("cloud-b", 42), cand("cloud-c", 44)},
+			sourceLine:  42,
+			wantKey:     "cloud-b",
+			wantOutcome: syncOutcomeSynced,
+		},
+		{
+			name:        "two matches on same line — line_mismatch (b)",
+			candidates:  []matchableIssue{cand("cloud-a", 42), cand("cloud-b", 42)},
+			sourceLine:  42,
+			wantOutcome: syncOutcomeLineMismatch,
+		},
+		{
+			name:        "three matches on same line, one off-line — line_mismatch (b)",
+			candidates:  []matchableIssue{cand("cloud-a", 42), cand("cloud-b", 42), cand("cloud-c", 42), cand("cloud-d", 99)},
+			sourceLine:  42,
+			wantOutcome: syncOutcomeLineMismatch,
+		},
+		{
+			name:        "no matches on line, candidates elsewhere — not_found (c)",
+			candidates:  []matchableIssue{cand("cloud-a", 40), cand("cloud-b", 44)},
+			sourceLine:  42,
+			wantOutcome: syncOutcomeNotFound,
+		},
+		{
+			name:        "empty candidates — not_found (c)",
+			candidates:  nil,
+			sourceLine:  42,
+			wantOutcome: syncOutcomeNotFound,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, outcome := classifyIssueCandidatesByLine(tc.candidates, tc.sourceLine)
+			if outcome != tc.wantOutcome {
+				t.Errorf("outcome = %v, want %v", outcome, tc.wantOutcome)
+			}
+			if tc.wantOutcome == syncOutcomeSynced && got.Key != tc.wantKey {
+				t.Errorf("pick = %q, want %q", got.Key, tc.wantKey)
+			}
+		})
+	}
+}

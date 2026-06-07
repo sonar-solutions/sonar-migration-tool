@@ -8,13 +8,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
-	"github.com/sonar-solutions/sq-api-go/types"
 )
 
 // hotspotMetadataSyncTasks returns the task definitions for syncing hotspot
@@ -59,63 +60,19 @@ type hotspotPair struct {
 }
 
 // ---------------------------------------------------------------------------
-// Matching helpers
+// Actionable filtering (source-side, #350 / #356)
 // ---------------------------------------------------------------------------
 
-// buildHotspotMatchKey produces "ruleKey|filePath|line" for FIFO matching.
-// The component prefix (everything up to and including the first colon after
-// the project key) is stripped so that source and Cloud components can be
-// compared by relative file path alone.
-func buildHotspotMatchKey(h matchableHotspot, projectKey string) string {
-	if h.RuleKey == "" || h.Component == "" || h.Line <= 0 {
-		return ""
-	}
-	filePath := h.Component
-	prefix := projectKey + ":"
-	if strings.HasPrefix(filePath, prefix) {
-		filePath = filePath[len(prefix):]
-	}
-	return fmt.Sprintf("%s|%s|%d", h.RuleKey, filePath, h.Line)
-}
-
-// matchHotspots performs FIFO matching between source and cloud hotspot
-// slices. For each unique match key the first unmatched source hotspot is
-// paired with the first unmatched cloud hotspot that shares the same key.
-// This is identical in semantics to matchIssues.
-func matchHotspots(sources, clouds []matchableHotspot, sourceProject, cloudProject string) []hotspotPair {
-	// Build cloud buckets keyed by match key.
-	type bucket struct {
-		items []matchableHotspot
-		idx   int // next unconsumed index
-	}
-	cloudBuckets := make(map[string]*bucket)
-	for _, c := range clouds {
-		k := buildHotspotMatchKey(c, cloudProject)
-		if k == "" {
-			continue
-		}
-		b, ok := cloudBuckets[k]
-		if !ok {
-			b = &bucket{}
-			cloudBuckets[k] = b
-		}
-		b.items = append(b.items, c)
-	}
-
-	var pairs []hotspotPair
-	for _, s := range sources {
-		k := buildHotspotMatchKey(s, sourceProject)
-		if k == "" {
-			continue
-		}
-		b, ok := cloudBuckets[k]
-		if !ok || b.idx >= len(b.items) {
-			continue
-		}
-		pairs = append(pairs, hotspotPair{source: s, cloud: b.items[b.idx]})
-		b.idx++
-	}
-	return pairs
+// hotspotHasManualChanges mirrors hasManualChanges for issues: returns
+// true when the source hotspot carries metadata worth migrating to
+// Cloud. Same criteria as the previous filterActionableHotspotPairs
+// (#350) — REVIEWED with a real review resolution, or any comment —
+// but applied source-side BEFORE we look at Cloud (#356).
+func hotspotHasManualChanges(h matchableHotspot) bool {
+	status := strings.ToUpper(h.Status)
+	resolution := strings.ToUpper(h.Resolution)
+	reviewed := status == "REVIEWED" && (resolution == "SAFE" || resolution == "ACKNOWLEDGED" || resolution == "FIXED")
+	return reviewed || len(h.Comments) > 0
 }
 
 // ---------------------------------------------------------------------------
@@ -157,22 +114,19 @@ func runSyncHotspotMetadata(ctx context.Context, e *Executor) error {
 				return nil
 			}
 
-			result, err := syncProjectHotspots(ctx, e, syncHotspotInput{
+			result := syncProjectHotspots(ctx, e, syncHotspotInput{
 				CloudKey:  cloudKey,
 				OrgKey:    orgKey,
 				ServerURL: serverURL,
 				ServerKey: serverKey,
 			})
-			if err != nil {
-				logAPIWarn(e.Logger, "syncHotspotMetadata: project failed", err,
-					"project", cloudKey)
-			}
 
 			record, _ := json.Marshal(map[string]any{
 				"cloud_project_key": cloudKey,
-				"synced":            result.Synced,
-				"skipped":           result.Skipped,
-				"failed":            result.Failed,
+				"synced":            result.Stats.A,
+				"line_mismatch":     result.Stats.B,
+				"not_found":         result.Stats.C,
+				"actionable":        result.Stats.Actionable,
 				"error":             result.Error,
 			})
 			return w.WriteOne(record)
@@ -190,124 +144,183 @@ type syncHotspotInput struct {
 	ServerKey string
 }
 
+// syncHotspotResult holds the per-project sync outcome. Stats carries
+// the a/b/c breakdown (#356); Error captures a fatal lookup failure
+// that prevented the project from being processed at all.
 type syncHotspotResult struct {
-	Synced  int64
-	Skipped int64
-	Failed  int64
-	Error   string
+	Stats projectSyncStats
+	Error string
 }
 
-// syncProjectHotspots synchronises hotspot metadata for a single project.
-// A per-project counter is kept alongside the top-level task counter so each
-// project gets its own "task summary" line (#333 merge-format).
-func syncProjectHotspots(ctx context.Context, e *Executor, input syncHotspotInput) (syncHotspotResult, error) {
+// syncProjectHotspots synchronises hotspot metadata for a single
+// project using the targeted per-actionable-source-hotspot search
+// approach introduced in #356. Replaces the previous fetch-all + FIFO
+// match scheme.
+func syncProjectHotspots(ctx context.Context, e *Executor, input syncHotspotInput) syncHotspotResult {
 	projStart := time.Now()
 	counter := NewTaskCounter("syncHotspotMetadata:" + input.CloudKey)
 	defer func() { counter.LogSummary(e.Logger, time.Since(projStart)) }()
 
-	matchedPairs, allCount, err := buildHotspotPairs(ctx, e, input)
-	if err != nil {
-		return syncHotspotResult{Error: err.Error()}, err
-	}
-	if len(matchedPairs) == 0 {
-		return syncHotspotResult{Skipped: int64(allCount)}, nil
-	}
+	var result syncHotspotResult
 
-	// Sync pairs concurrently with bounded parallelism, emitting a
-	// per-project "Project key <key> hotspot sync: N/M - X%" line
-	// every 10 completions (#300 / #348). The label includes the
-	// cloud project key so an operator tailing the log can
-	// disentangle the lines coming from concurrent projects' inner
-	// loops (#348). buildHotspotPairs already filters to the
-	// actionable set, so len(matchedPairs) is the right
-	// denominator. runProjectSyncLoop handles the errgroup, the
-	// semaphore bound, and the progress logger.
-	//
-	// matchedPairs is fully built BEFORE launching goroutines. Each goroutine
-	// operates on exactly ONE pair -- no cross-pair sharing, no race conditions.
-	label := "Project key " + input.CloudKey + " hotspot sync:"
-	runProjectSyncLoop(ctx, e, matchedPairs, label, 10,
-		func(gctx context.Context, pair hotspotPair) {
-			if err := syncOneHotspot(gctx, e, pair); err != nil {
-				counter.Fail()
-				logAPIWarn(e.Logger, "syncHotspotMetadata: hotspot sync failed", err,
-					"source_key", pair.source.Key, "cloud_key", pair.cloud.Key)
-			} else {
-				counter.Success()
-			}
-		})
-
-	return syncHotspotResult{
-		Synced:  counter.succeeded.Load(),
-		Skipped: int64(allCount - len(matchedPairs)),
-		Failed:  counter.failed.Load(),
-	}, nil
-}
-
-// filterActionableHotspotPairs returns pairs that need any work (#350):
-// REVIEWED with a real review resolution (SAFE / ACKNOWLEDGED / FIXED),
-// OR any hotspot with source comments to migrate.
-//
-// Previously every REVIEWED hotspot was actionable, but a REVIEWED
-// status with no resolution carries no payload to sync — narrowing on
-// resolution drops those zero-work pairs before the per-pair fetch.
-func filterActionableHotspotPairs(pairs []hotspotPair) []hotspotPair {
-	var actionable []hotspotPair
-	for _, p := range pairs {
-		status := strings.ToUpper(p.source.Status)
-		resolution := strings.ToUpper(p.source.Resolution)
-		reviewed := status == "REVIEWED" && (resolution == "SAFE" || resolution == "ACKNOWLEDGED" || resolution == "FIXED")
-		if reviewed || len(p.source.Comments) > 0 {
-			actionable = append(actionable, p)
-		}
-	}
-	return actionable
-}
-
-// buildHotspotPairs loads, indexes, matches, and filters hotspot pairs for a
-// project. Returns only actionable pairs that need syncing.
-func buildHotspotPairs(ctx context.Context, e *Executor, input syncHotspotInput) ([]hotspotPair, int, error) {
+	// 1. Load + pre-filter source hotspots to the actionable set.
 	sourceHotspots, err := loadMatchableHotspots(e, input.ServerURL, input.ServerKey)
 	if err != nil {
-		return nil, 0, err
+		result.Error = err.Error()
+		logAPIWarn(e.Logger, "syncHotspotMetadata: load source hotspots failed", err, "project", input.CloudKey)
+		return result
 	}
 	if len(sourceHotspots) == 0 {
-		return nil, 0, nil
+		return result
+	}
+	var actionable []matchableHotspot
+	for _, h := range sourceHotspots {
+		if hotspotHasManualChanges(h) {
+			actionable = append(actionable, h)
+		}
+	}
+	result.Stats.Actionable = int64(len(actionable))
+	if len(actionable) == 0 {
+		e.Logger.Debug("syncHotspotMetadata: no actionable source hotspots after filter", "project", input.CloudKey, "source_total", len(sourceHotspots))
+		return result
 	}
 
+	// 2. Wait for Cloud indexing — proves the CE task is done.
 	_ = waitForCloudIndexing(ctx, func() (int, error) {
 		return e.Cloud.Hotspots.Count(ctx, input.CloudKey, input.OrgKey)
 	})
 
-	cloudAPIHotspots, err := e.Cloud.Hotspots.SearchAll(ctx, input.CloudKey, input.OrgKey)
-	if err != nil {
-		return nil, 0, err
-	}
-	cloudHotspots := loadCloudMatchableHotspots(cloudAPIHotspots)
-
-	// Source had hotspots worth syncing, but Cloud has none. Most
-	// common cause: the project-data CE task for this project failed
-	// (or was skipped), so the report was never indexed and Cloud
-	// has no hotspots yet. Surface that explicitly at INFO so the
-	// operator can correlate the skip with the upstream failure. #299.
-	if len(cloudHotspots) == 0 {
-		e.Logger.Info("syncHotspotMetadata: skipping project — no Cloud hotspots to match (project-data CE task likely failed or was skipped)",
-			"project", input.CloudKey, "source_hotspots", len(sourceHotspots))
-		return nil, 0, nil
-	}
-
-	allPairs := matchHotspots(sourceHotspots, cloudHotspots, input.ServerKey, input.CloudKey)
-	actionable := filterActionableHotspotPairs(allPairs)
-
-	e.Logger.Info("syncHotspotMetadata: matched pairs",
+	e.Logger.Info("syncHotspotMetadata: syncing pairs",
 		"project", input.CloudKey,
 		"source_total", len(sourceHotspots),
-		"cloud_total", len(cloudHotspots),
-		"matched", len(allPairs),
 		"actionable", len(actionable),
 	)
 
-	return actionable, len(allPairs), nil
+	// 3 + 4. Per-actionable-source: targeted search + resolve by
+	// (ruleKey, line). Race-safety: actionable is read-only, each
+	// goroutine takes one hotspot by value, stats counters are
+	// atomic.
+	var a, b, c atomic.Int64
+	label := "Project key " + input.CloudKey + " hotspot sync:"
+	runProjectSyncLoop(ctx, e, actionable, label, 10,
+		func(gctx context.Context, src matchableHotspot) {
+			outcome := resolveAndSyncHotspot(gctx, e, input.CloudKey, input.OrgKey, input.ServerKey, src, counter)
+			switch outcome {
+			case syncOutcomeSynced:
+				a.Add(1)
+			case syncOutcomeLineMismatch:
+				b.Add(1)
+			case syncOutcomeNotFound:
+				c.Add(1)
+			}
+		})
+	result.Stats.A = a.Load()
+	result.Stats.B = b.Load()
+	result.Stats.C = c.Load()
+	return result
+}
+
+// resolveAndSyncHotspot searches Cloud for hotspots in the source
+// hotspot's file, then resolves by (ruleKey, line). Returns the case
+// a/b/c/lookup outcome.
+func resolveAndSyncHotspot(ctx context.Context, e *Executor, cloudKey, orgKey, sourceKey string, src matchableHotspot, counter *TaskCounter) syncOutcome {
+	filePath := src.Component
+	prefix := sourceKey + ":"
+	if strings.HasPrefix(filePath, prefix) {
+		filePath = filePath[len(prefix):]
+	}
+	if filePath == "" || src.RuleKey == "" || src.Line <= 0 {
+		e.Logger.Debug("syncHotspotMetadata: source hotspot not matchable", "key", src.Key, "rule", src.RuleKey, "component", src.Component, "line", src.Line)
+		return syncOutcomeNotFound
+	}
+	candidates, err := findCloudHotspotCandidates(ctx, e, cloudKey, orgKey, filePath)
+	if err != nil {
+		logAPIWarn(e.Logger, "syncHotspotMetadata: cloud candidate lookup failed", err,
+			"project", cloudKey, "source_key", src.Key, "file", filePath)
+		return syncOutcomeLookupError
+	}
+	target, outcome := classifyHotspotCandidatesByLine(candidates, src.RuleKey, src.Line)
+	switch outcome {
+	case syncOutcomeSynced:
+		pair := hotspotPair{source: src, cloud: target}
+		if err := syncOneHotspot(ctx, e, pair); err != nil {
+			counter.Fail()
+			logAPIWarn(e.Logger, "syncHotspotMetadata: hotspot sync failed", err,
+				"source_key", src.Key, "cloud_key", target.Key)
+		} else {
+			counter.Success()
+		}
+	case syncOutcomeNotFound:
+		e.Logger.Debug("syncHotspotMetadata: no cloud counterpart on source line", "source_key", src.Key, "rule", src.RuleKey, "file", filePath, "line", src.Line)
+	case syncOutcomeLineMismatch:
+		keys := make([]string, 0)
+		for _, c := range candidates {
+			if c.RuleKey == src.RuleKey && c.Line == src.Line {
+				keys = append(keys, c.Key)
+			}
+		}
+		e.Logger.Debug("syncHotspotMetadata: multiple cloud counterparts on source line, skipping", "source_key", src.Key, "rule", src.RuleKey, "file", filePath, "line", src.Line, "candidates", keys)
+	}
+	return outcome
+}
+
+// classifyHotspotCandidatesByLine is the hotspot counterpart of
+// classifyIssueCandidatesByLine. The hotspot search isn't scoped by
+// rule on the cloud side, so we filter on (ruleKey, line) here.
+func classifyHotspotCandidatesByLine(candidates []matchableHotspot, sourceRule string, sourceLine int) (matchableHotspot, syncOutcome) {
+	var pick matchableHotspot
+	matches := 0
+	for _, c := range candidates {
+		if c.RuleKey == sourceRule && c.Line == sourceLine {
+			matches++
+			if matches == 1 {
+				pick = c
+			}
+		}
+	}
+	switch matches {
+	case 0:
+		return matchableHotspot{}, syncOutcomeNotFound
+	case 1:
+		return pick, syncOutcomeSynced
+	default:
+		return matchableHotspot{}, syncOutcomeLineMismatch
+	}
+}
+
+// findCloudHotspotCandidates queries /api/hotspots/search?files=…
+// for cloud hotspots in a single file. Hotspots are scarce enough
+// that we can skip the rule filter here and resolve in memory; the
+// /api/hotspots/search endpoint also does not accept a rules
+// parameter.
+//
+// Uses e.Raw (the cloud-side raw client) because the typed
+// HotspotsClient's SearchAll doesn't expose a per-file filter.
+func findCloudHotspotCandidates(ctx context.Context, e *Executor, cloudKey, orgKey, filePath string) ([]matchableHotspot, error) {
+	params := url.Values{}
+	params.Set("projectKey", cloudKey)
+	params.Set("files", filePath)
+	if orgKey != "" {
+		params.Set("organization", orgKey)
+	}
+	items, err := e.Raw.GetPaginated(ctx, common.PaginatedOpts{
+		Path:      "api/hotspots/search",
+		Params:    params,
+		ResultKey: "hotspots",
+		PageLimit: 5, // hotspots-in-one-file is small; cap for safety
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]matchableHotspot, 0, len(items))
+	for _, raw := range items {
+		h := parseMatchableHotspot(raw)
+		if h.Key == "" {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -531,27 +544,6 @@ func extractNestedField(data json.RawMessage, outerKey, innerKey string) string 
 		return ""
 	}
 	return extractField(nested, innerKey)
-}
-
-// ---------------------------------------------------------------------------
-// Loading Cloud hotspots
-// ---------------------------------------------------------------------------
-
-// loadCloudMatchableHotspots converts Cloud API Hotspot structs into
-// matchableHotspot structs suitable for FIFO matching.
-func loadCloudMatchableHotspots(hotspots []types.Hotspot) []matchableHotspot {
-	result := make([]matchableHotspot, 0, len(hotspots))
-	for _, h := range hotspots {
-		result = append(result, matchableHotspot{
-			Key:        h.Key,
-			RuleKey:    h.RuleKey,
-			Component:  h.Component,
-			Line:       h.Line,
-			Status:     h.Status,
-			Resolution: h.Resolution,
-		})
-	}
-	return result
 }
 
 // ---------------------------------------------------------------------------

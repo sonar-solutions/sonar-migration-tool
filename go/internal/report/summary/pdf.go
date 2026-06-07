@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1155,7 +1156,7 @@ const (
 // bold markers so the PDF renderer can stress it. Other sections keep
 // the bare cloud key as-is.
 func successDetails(item EntityItem, predictive, hideCloudKey, labelProjectKey bool) string {
-	cloudKey, scan, ncdFallback := parseProjectDetailMarkers(item.Detail)
+	cloudKey, scan, ncdFallback, syncStats := parseProjectDetailMarkers(item.Detail)
 	if hideCloudKey || (predictive && strings.HasPrefix(cloudKey, "predict:")) {
 		cloudKey = ""
 	}
@@ -1175,7 +1176,51 @@ func successDetails(item EntityItem, predictive, hideCloudKey, labelProjectKey b
 	if scan != "" {
 		parts = append(parts, fmt.Sprintf("project data: %s", scanStatusLabel(scan)))
 	}
+	// #356 — render the per-project "x% of items with manual changes
+	// were successfully synchronized" comment. Suppressed in
+	// predictive reports because sync success cannot be predicted
+	// ahead of the actual migration.
+	if !predictive && syncStats != "" {
+		if line := renderSyncStatsLine(syncStats); line != "" {
+			parts = append(parts, line)
+		}
+	}
 	return strings.Join(parts, "\n")
+}
+
+// renderSyncStatsLine turns an attachSyncStats payload
+// ("i=42/50,h=10/12") into a human-readable line. The marker
+// guarantees each segment has the shape "x=N/M"; we render N/M and
+// the truncated percent.
+func renderSyncStatsLine(payload string) string {
+	var segments []string
+	for _, seg := range strings.Split(payload, ",") {
+		switch {
+		case strings.HasPrefix(seg, "i="):
+			if s := formatSyncStatSegment("issues with manual changes", seg[2:]); s != "" {
+				segments = append(segments, s)
+			}
+		case strings.HasPrefix(seg, "h="):
+			if s := formatSyncStatSegment("hotspots with manual changes", seg[2:]); s != "" {
+				segments = append(segments, s)
+			}
+		}
+	}
+	return strings.Join(segments, "; ")
+}
+
+func formatSyncStatSegment(label, fraction string) string {
+	slash := strings.Index(fraction, "/")
+	if slash <= 0 {
+		return ""
+	}
+	synced, err1 := strconv.Atoi(fraction[:slash])
+	actionable, err2 := strconv.Atoi(fraction[slash+1:])
+	if err1 != nil || err2 != nil || actionable <= 0 {
+		return ""
+	}
+	pct := synced * 100 / actionable
+	return fmt.Sprintf("%d%% of %s synced (%d/%d)", pct, label, synced, actionable)
 }
 
 // partialDetails formats the Details column for a Partial / NearPerfect
@@ -1299,12 +1344,20 @@ func parseProjectData(detail string) (string, string) {
 }
 
 // parseProjectDetailMarkers splits a project's Detail string into its
-// three parts: the cloud key, the project-data status (or empty),
-// and the NCD fallback source type (or empty). Marker ordering set
-// by attachNCDFallback puts the NCD marker BEFORE the scan marker.
-func parseProjectDetailMarkers(detail string) (cloudKey, scan, ncdFallback string) {
+// constituent parts: the cloud key, the project-data status (or
+// empty), the NCD fallback source type (or empty), and the #356
+// per-project issue/hotspot sync stats payload (or empty). The sync
+// marker is appended last by attachSyncStats so it's stripped FIRST
+// here to avoid being absorbed by the others' suffix matching.
+func parseProjectDetailMarkers(detail string) (cloudKey, scan, ncdFallback, syncStats string) {
 	cloudKey = detail
-	// scan marker (always last when present).
+	// syncStats marker (always last when present — attachSyncStats
+	// runs at the end of the collect pipeline).
+	if idx := strings.Index(cloudKey, "|syncStats:"); idx >= 0 {
+		syncStats = cloudKey[idx+len("|syncStats:"):]
+		cloudKey = cloudKey[:idx]
+	}
+	// scan marker.
 	if idx := strings.Index(cloudKey, "|scan:"); idx >= 0 {
 		scan = cloudKey[idx+len("|scan:"):]
 		cloudKey = cloudKey[:idx]
@@ -1314,7 +1367,7 @@ func parseProjectDetailMarkers(detail string) (cloudKey, scan, ncdFallback strin
 		ncdFallback = cloudKey[idx+len("|ncdFallback:"):]
 		cloudKey = cloudKey[:idx]
 	}
-	return cloudKey, scan, ncdFallback
+	return cloudKey, scan, ncdFallback, syncStats
 }
 
 func scanStatusLabel(status string) string {

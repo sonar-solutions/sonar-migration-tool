@@ -285,13 +285,18 @@ func applyProjectFailures(succeeded, nearPerfect, partial []EntityItem,
 
 // collectProjectSyncSkips reads the per-project status JSONL produced
 // by the data-migration tasks and returns a synthetic []projectFailure
-// covering #228's orange criteria:
+// covering #228's orange criteria plus #356's yellow criteria:
 //
-//   - importProjectData rows with status != "success" → "Project data
-//     migration was skipped" (one per affected branch is collapsed
-//     into a single row per project, listing the failed branches).
-//   - syncHotspotMetadata rows with skipped>0 / failed>0 / error!=""
-//     → "Hotspot status sync was skipped".
+//   - importProjectData rows with status != "success" → Partial,
+//     "Project data migration was skipped" (one row per project,
+//     listing the failed branches).
+//   - syncHotspotMetadata / syncIssueMetadata rows whose source-issue
+//     could not be resolved to a single cloud counterpart on the same
+//     line (line_mismatch > 0 || not_found > 0) → NearPerfect,
+//     "Issue sync had unresolved counterparts" /
+//     "Hotspot sync had unresolved counterparts".
+//   - syncHotspotMetadata / syncIssueMetadata rows with error != ""
+//     → Partial, "<task> errored".
 //
 // The returned failures plug straight into applyProjectFailures.
 func collectProjectSyncSkips(store *common.DataStore) []projectFailure {
@@ -327,37 +332,78 @@ func collectProjectSyncSkips(store *common.DataStore) []projectFailure {
 		})
 	}
 
-	// syncHotspotMetadata — one row per project.
-	hotspotItems, _ := store.ReadAll("syncHotspotMetadata")
-	for _, raw := range hotspotItems {
+	// Per-project issue / hotspot sync rows — Near perfect when b+c > 0,
+	// Partial when a fatal error was captured.
+	out = append(out, collectSyncOutcome(store, "syncIssueMetadata",
+		"Issue sync had unresolved counterparts",
+		"Issue sync errored")...)
+	out = append(out, collectSyncOutcome(store, "syncHotspotMetadata",
+		"Hotspot sync had unresolved counterparts",
+		"Hotspot sync errored")...)
+
+	return out
+}
+
+// collectSyncOutcome reads per-project sync records for a given task
+// (syncIssueMetadata or syncHotspotMetadata) and converts them to
+// projectFailure entries. b/c > 0 yields a NearPerfect failure; a
+// non-empty error yields a Partial one.
+func collectSyncOutcome(store *common.DataStore, taskName, mismatchOp, errorOp string) []projectFailure {
+	items, err := store.ReadAll(taskName)
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+	var out []projectFailure
+	for _, raw := range items {
 		key := jsonStr(raw, "cloud_project_key")
 		if key == "" {
 			continue
 		}
-		skipped := jsonInt(raw, "skipped")
-		failed := jsonInt(raw, "failed")
+		lineMismatch := jsonInt(raw, "line_mismatch")
+		notFound := jsonInt(raw, "not_found")
+		actionable := jsonInt(raw, "actionable")
+		synced := jsonInt(raw, "synced")
 		errMsg := jsonStr(raw, "error")
-		if skipped == 0 && failed == 0 && errMsg == "" {
-			continue
-		}
-		parts := []string{}
-		if skipped > 0 {
-			parts = append(parts, fmt.Sprintf("%d skipped", skipped))
-		}
-		if failed > 0 {
-			parts = append(parts, fmt.Sprintf("%d failed", failed))
-		}
-		pf := projectFailure{
-			CloudProjectKey: key,
-			Bucket:          projectBucketPartial,
-			Operation:       "Hotspot status sync was skipped",
-			Detail:          strings.Join(parts, ", "),
+
+		if lineMismatch+notFound > 0 {
+			parts := []string{}
+			if lineMismatch > 0 {
+				parts = append(parts, fmt.Sprintf("%d line mismatches", lineMismatch))
+			}
+			if notFound > 0 {
+				parts = append(parts, fmt.Sprintf("%d not found", notFound))
+			}
+			detail := fmt.Sprintf("%d/%d synced", synced, actionable)
+			if actionable > 0 {
+				detail += fmt.Sprintf(" (%d%%)", percent(synced, actionable))
+			}
+			if len(parts) > 0 {
+				detail += " — " + strings.Join(parts, ", ")
+			}
+			out = append(out, projectFailure{
+				CloudProjectKey: key,
+				Bucket:          projectBucketNearPerfect,
+				Operation:       mismatchOp,
+				Detail:          detail,
+			})
 		}
 		if errMsg != "" {
-			pf.Error = errMsg
+			out = append(out, projectFailure{
+				CloudProjectKey: key,
+				Bucket:          projectBucketPartial,
+				Operation:       errorOp,
+				Error:           errMsg,
+			})
 		}
-		out = append(out, pf)
 	}
-
 	return out
+}
+
+// percent computes 100 * a / total with truncation. Returns 0 when
+// total is zero so callers don't have to guard.
+func percent(a, total int) int {
+	if total <= 0 {
+		return 0
+	}
+	return a * 100 / total
 }
