@@ -52,6 +52,11 @@ func issueMetadataSyncTasks() []TaskDef {
 // ManualSeverity mirrors the `manualSeverity` boolean on the SQ Server
 // API response: true means a user has explicitly overridden the issue's
 // severity vs the rule default.
+//
+// Branch is populated for source-side issues (from the
+// getProjectIssuesFull extract's branch enrichment) and left empty for
+// Cloud-side candidates. Used at sync time to log a per-project
+// branch count so operators can see the project's shape.
 type matchableIssue struct {
 	Key            string
 	Rule           string
@@ -63,6 +68,7 @@ type matchableIssue struct {
 	Comments       []issueComment
 	Assignee       string
 	ManualSeverity bool
+	Branch         string
 }
 
 // issueComment is a normalised comment attached to a matchableIssue.
@@ -182,6 +188,55 @@ func hasManualChanges(iss matchableIssue) bool {
 		return true
 	}
 	return false
+}
+
+// actionableReasonBreakdown counts each issue under EVERY signal it
+// trips (an issue with both ACCEPTED status and a user tag is counted
+// once under acceptedOrFP and once under customTags). The numbers
+// therefore sum to ≥ len(actionable). Surfaced at INFO at the start
+// of the per-project sync so operators can see what's driving the
+// migration cost.
+type actionableReasonBreakdown struct {
+	acceptedOrFP   int
+	customTags     int
+	manualSeverity int
+	comments       int
+}
+
+func classifyActionableReasons(actionable []matchableIssue) actionableReasonBreakdown {
+	var b actionableReasonBreakdown
+	for _, iss := range actionable {
+		status := strings.ToUpper(iss.Status)
+		resolution := strings.ToUpper(iss.Resolution)
+		if status == "ACCEPTED" || status == "FALSE_POSITIVE" ||
+			resolution == "FALSE-POSITIVE" || resolution == "WONTFIX" {
+			b.acceptedOrFP++
+		}
+		if len(iss.Tags) > 0 {
+			b.customTags++
+		}
+		if iss.ManualSeverity {
+			b.manualSeverity++
+		}
+		if len(iss.Comments) > 0 {
+			b.comments++
+		}
+	}
+	return b
+}
+
+// countDistinctBranches returns the number of unique branch names in
+// the source issues for a project. Reported at sync start so operators
+// can see project shape (single-branch vs. fan-out across feature
+// branches) when reading the log.
+func countDistinctBranches(issues []matchableIssue) int {
+	seen := make(map[string]struct{})
+	for _, iss := range issues {
+		if iss.Branch != "" {
+			seen[iss.Branch] = struct{}{}
+		}
+	}
+	return len(seen)
 }
 
 // ---------------------------------------------------------------------------
@@ -346,10 +401,16 @@ func syncProjectIssues(ctx context.Context, e *Executor, cloudKey, orgKey, serve
 		return stats
 	}
 
+	breakdown := classifyActionableReasons(actionable)
 	e.Logger.Info("syncIssueMetadata: syncing pairs",
 		"project", cloudKey,
 		"source_total", len(sourceIssues),
 		"actionable", len(actionable),
+		"branches", countDistinctBranches(sourceIssues),
+		"accepted_or_false_positive", breakdown.acceptedOrFP,
+		"custom_tags", breakdown.customTags,
+		"manual_severity", breakdown.manualSeverity,
+		"comments", breakdown.comments,
 	)
 
 	// 3 + 4. Per-actionable-source: targeted search, resolve by line,
@@ -717,6 +778,7 @@ func loadMatchableIssues(e *Executor, serverURL, serverKey string, ruleDefaults 
 			Comments:       comments,
 			Assignee:       extractField(item.Data, "assignee"),
 			ManualSeverity: extractBool(item.Data, "manualSeverity"),
+			Branch:         extractField(item.Data, "branch"),
 		})
 	}
 	return issues
