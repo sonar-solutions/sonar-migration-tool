@@ -1173,19 +1173,52 @@ func successDetails(item EntityItem, predictive, hideCloudKey, labelProjectKey b
 			"new code definition: %s on SonarQube Server is not supported at project scope on SonarQube Cloud — falling back to the org default",
 			ncdFallback))
 	}
-	if scan != "" {
-		parts = append(parts, fmt.Sprintf("project data: %s", scanStatusLabel(scan)))
+	// #359 — anything project-data related is suppressed in the
+	// predictive report (sync outcomes can't be predicted from the
+	// pre-migration extract).
+	state, reason := parseScanMarker(scan)
+	dataSkipped := state == "skipped" || state == "failed"
+	if !predictive && dataSkipped {
+		parts = append(parts, formatProjectDataSkipped(reason))
 	}
 	// #356 — render the per-project "x% of items with manual changes
-	// were successfully synchronized" comment. Suppressed in
-	// predictive reports because sync success cannot be predicted
-	// ahead of the actual migration.
-	if !predictive && syncStats != "" {
+	// were successfully synchronized" comment. Suppressed when the
+	// project's data migration was skipped or failed (issue sync
+	// depends on a successful import) and in the predictive report
+	// (#359 + #356).
+	if !predictive && !dataSkipped && syncStats != "" {
 		if line := renderSyncStatsLine(syncStats); line != "" {
 			parts = append(parts, line)
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// parseScanMarker splits a |scan: marker payload into its state and
+// optional reason. The marker schema is "<state>" or "<state>:<reason>"
+// where state is "success" / "skipped" / "failed" (or empty when no
+// marker was set). Reason is a free-text human-readable explanation
+// for the skipped / failed cases; it's empty for success.
+func parseScanMarker(scan string) (state, reason string) {
+	if scan == "" {
+		return "", ""
+	}
+	if idx := strings.Index(scan, ":"); idx >= 0 {
+		return scan[:idx], scan[idx+1:]
+	}
+	return scan, ""
+}
+
+// formatProjectDataSkipped builds the per-project Details line that
+// replaces the previous "project data: No / Failed" wording (#359).
+// reason is the operator-friendly explanation; when absent we still
+// surface the skip itself so a missing reason doesn't silently swallow
+// the signal.
+func formatProjectDataSkipped(reason string) string {
+	if reason == "" {
+		return "Project data migration skipped"
+	}
+	return "Project data migration skipped: " + reason
 }
 
 // renderSyncStatsLine turns an attachSyncStats payload
@@ -1368,19 +1401,6 @@ func parseProjectDetailMarkers(detail string) (cloudKey, scan, ncdFallback, sync
 		cloudKey = cloudKey[:idx]
 	}
 	return cloudKey, scan, ncdFallback, syncStats
-}
-
-func scanStatusLabel(status string) string {
-	switch status {
-	case "success":
-		return "Yes"
-	case "failed":
-		return "Failed"
-	case "skipped":
-		return "No"
-	default:
-		return ""
-	}
 }
 
 func checkPageBreak(pdf *fpdf.Fpdf, h float64) {
