@@ -1156,7 +1156,7 @@ const (
 // bold markers so the PDF renderer can stress it. Other sections keep
 // the bare cloud key as-is.
 func successDetails(item EntityItem, predictive, hideCloudKey, labelProjectKey bool) string {
-	cloudKey, scan, ncdFallback, syncStats := parseProjectDetailMarkers(item.Detail)
+	cloudKey, scan, ncdFallback, syncStats, userPerms := parseProjectDetailMarkers(item.Detail)
 	if hideCloudKey || (predictive && strings.HasPrefix(cloudKey, "predict:")) {
 		cloudKey = ""
 	}
@@ -1191,7 +1191,38 @@ func successDetails(item EntityItem, predictive, hideCloudKey, labelProjectKey b
 			parts = append(parts, line)
 		}
 	}
+	// #353 — render the "Permissions granted to N user(s) {have been,
+	// will be} dropped in the migration" line. Shown in both actual
+	// and predictive reports (verb tense differs); applies to any
+	// section whose entity carries user-permission records (projects,
+	// quality gates, quality profiles, permission templates).
+	if line := renderDroppedUserPermsLine(userPerms, predictive); line != "" {
+		parts = append(parts, line)
+	}
 	return strings.Join(parts, "\n")
+}
+
+// renderDroppedUserPermsLine turns a |userPerms:N marker payload into
+// the operator-friendly line. Empty payload, zero, or unparseable
+// values yield "" so callers can skip appending. Tense flips for
+// predictive vs. actual reports (#353).
+func renderDroppedUserPermsLine(payload string, predictive bool) string {
+	if payload == "" {
+		return ""
+	}
+	n, err := strconv.Atoi(payload)
+	if err != nil || n <= 0 {
+		return ""
+	}
+	verb := "have been dropped"
+	if predictive {
+		verb = "will be dropped"
+	}
+	noun := "users"
+	if n == 1 {
+		noun = "user"
+	}
+	return fmt.Sprintf("Permissions granted to %d %s %s in the migration", n, noun, verb)
 }
 
 // parseScanMarker splits a |scan: marker payload into its state and
@@ -1376,16 +1407,22 @@ func parseProjectData(detail string) (string, string) {
 	return detail[:idx], detail[idx+6:]
 }
 
-// parseProjectDetailMarkers splits a project's Detail string into its
-// constituent parts: the cloud key, the project-data status (or
-// empty), the NCD fallback source type (or empty), and the #356
-// per-project issue/hotspot sync stats payload (or empty). The sync
-// marker is appended last by attachSyncStats so it's stripped FIRST
-// here to avoid being absorbed by the others' suffix matching.
-func parseProjectDetailMarkers(detail string) (cloudKey, scan, ncdFallback, syncStats string) {
+// parseProjectDetailMarkers splits an EntityItem's Detail string
+// into its constituent parts: the cloud key, the project-data status
+// (or empty), the NCD fallback source type (or empty), the #356
+// per-project issue/hotspot sync stats payload (or empty), and the
+// #353 dropped-user-permissions count payload (or empty). Markers
+// are stripped in reverse-attachment order so trailing payloads
+// don't get absorbed into earlier ones' suffix matching.
+func parseProjectDetailMarkers(detail string) (cloudKey, scan, ncdFallback, syncStats, userPerms string) {
 	cloudKey = detail
-	// syncStats marker (always last when present — attachSyncStats
-	// runs at the end of the collect pipeline).
+	// userPerms marker (always last when present — attachDroppedUserPerms
+	// runs after attachSyncStats / attachProjectData / etc.).
+	if idx := strings.Index(cloudKey, "|userPerms:"); idx >= 0 {
+		userPerms = cloudKey[idx+len("|userPerms:"):]
+		cloudKey = cloudKey[:idx]
+	}
+	// syncStats marker.
 	if idx := strings.Index(cloudKey, "|syncStats:"); idx >= 0 {
 		syncStats = cloudKey[idx+len("|syncStats:"):]
 		cloudKey = cloudKey[:idx]
@@ -1400,7 +1437,7 @@ func parseProjectDetailMarkers(detail string) (cloudKey, scan, ncdFallback, sync
 		ncdFallback = cloudKey[idx+len("|ncdFallback:"):]
 		cloudKey = cloudKey[:idx]
 	}
-	return cloudKey, scan, ncdFallback, syncStats
+	return cloudKey, scan, ncdFallback, syncStats, userPerms
 }
 
 func checkPageBreak(pdf *fpdf.Fpdf, h float64) {

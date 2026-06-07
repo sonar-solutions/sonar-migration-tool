@@ -486,6 +486,37 @@ func TestSuccessDetailsLabelProjectKey(t *testing.T) {
 	}
 }
 
+// #353: |userPerms:N renders a "Permissions granted to N user(s)
+// {have been, will be} dropped in the migration" line. Past tense
+// in the actual report; future tense in the predictive report. Zero
+// or unparseable payloads yield no line. The status of the entity
+// is NOT affected (Succeeded items stay Succeeded — see the collect
+// pipeline test).
+func TestSuccessDetailsDroppedUserPermsLine(t *testing.T) {
+	tests := []struct {
+		name       string
+		detail     string
+		predictive bool
+		want       string // exact equality for tight assertions
+	}{
+		{name: "actual report, plural", detail: "proj1|userPerms:3", want: "proj1\nPermissions granted to 3 users have been dropped in the migration"},
+		{name: "actual report, singular", detail: "proj1|userPerms:1", want: "proj1\nPermissions granted to 1 user have been dropped in the migration"},
+		{name: "predictive report, plural", detail: "proj1|userPerms:5", predictive: true, want: "proj1\nPermissions granted to 5 users will be dropped in the migration"},
+		{name: "predictive report, singular", detail: "proj1|userPerms:1", predictive: true, want: "proj1\nPermissions granted to 1 user will be dropped in the migration"},
+		{name: "zero count — no line", detail: "proj1|userPerms:0", want: "proj1"},
+		{name: "malformed payload — no line", detail: "proj1|userPerms:nope", want: "proj1"},
+		{name: "no marker — no line", detail: "proj1", want: "proj1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := successDetails(EntityItem{Detail: tc.detail}, tc.predictive, false, false)
+			if got != tc.want {
+				t.Errorf("want %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
 // #356: per-project sync stats marker renders a one-line "x% of items
 // with manual changes synced" comment, but only in the live migration
 // report — predictive reports suppress it because sync success
