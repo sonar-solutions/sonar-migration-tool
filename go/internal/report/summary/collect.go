@@ -40,7 +40,6 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 	}
 
 	projectDataMap := collectProjectData(store)
-	projectDataConfigSkipped := projectDataGloballySkipped(runDir)
 	ncdFallbackMap := collectNCDFallback(store)
 	ncdBranchOverrideSet := collectNCDBranchOverrides(store)
 	syncStatsMap := collectSyncStats(store)
@@ -50,7 +49,7 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 	for _, def := range sectionDefs {
 		section := collectSection(store, def, failuresByType, configFailures, exportDir, extractMapping)
 		if def.Name == "Projects" {
-			attachProjectData(section.Succeeded, projectDataMap, projectDataConfigSkipped)
+			attachProjectData(section.Succeeded, projectDataMap)
 			section.Succeeded, section.Partial = applyNCDFallbackPartials(section.Succeeded, section.Partial, ncdFallbackMap)
 			section.Succeeded, section.Partial = applyNCDBranchOverridePartials(section.Succeeded, section.Partial, ncdBranchOverrideSet)
 			// #228 — per-project follow-up operations (tags, settings,
@@ -125,6 +124,10 @@ func collectLimitations(runDir, exportDir string, mapping structure.ExtractMappi
 		out = append(out,
 			fmt.Sprintf("Applications do not exist on SonarQube Cloud, %d SQS applications were not migrated.",
 				appCount))
+	}
+	if projectDataGloballySkipped(runDir) {
+		out = append(out,
+			"Project data migration was skipped by configuration (--skip_project_data_migration). No source code, history, issue triage, or hotspot review state was imported.")
 	}
 	out = append(out, collectNCDLimitations(runDir, exportDir, mapping)...)
 	out = append(out, collectSASTCustomizationLimitation(exportDir, mapping)...)
@@ -812,19 +815,22 @@ func projectDataFailureReason(errMsg string) string {
 }
 
 // attachProjectData stamps a per-project |scan:<state>:<reason>
-// marker on each project's Detail field. When globallySkipped is
-// true, projects with no record at all (importProjectData never ran)
-// pick up "skipped:project data migration skipped by configuration".
-func attachProjectData(projects []EntityItem, scanMap map[string]projectDataOutcome, globallySkipped bool) {
+// marker on each project's Detail field for projects that have an
+// explicit importProjectData record (success / skipped / failed).
+//
+// Note: --skip_project_data_migration (i.e. importProjectData was
+// never scheduled, projectDataGloballySkipped is true) is intentionally
+// NOT stamped here. The operator explicitly opted out; a per-project
+// "skipped: skipped by configuration" line on every row would be pure
+// noise. A single limitation entry at the end of the report covers
+// the operator-facing signal — see collectLimitations.
+func attachProjectData(projects []EntityItem, scanMap map[string]projectDataOutcome) {
+	if len(scanMap) == 0 {
+		return
+	}
 	for i := range projects {
 		cloudKey := projects[i].Detail
 		outcome, ok := scanMap[cloudKey]
-		if !ok {
-			if globallySkipped {
-				outcome = projectDataOutcome{State: "skipped", Reason: "project data migration skipped by configuration"}
-				ok = true
-			}
-		}
 		if !ok || outcome.State == "" {
 			continue
 		}

@@ -1490,10 +1490,12 @@ func TestProjectDataGloballySkipped(t *testing.T) {
 	})
 }
 
-// attachProjectData(globallySkipped=true) stamps the config-skipped
-// reason on projects with NO per-project record. Projects WITH a
-// record retain their own (more specific) reason.
-func TestAttachProjectDataGloballySkippedFallback(t *testing.T) {
+// attachProjectData stamps a marker only on projects that have an
+// explicit per-project record. Projects with no record stay clean
+// — even when project data migration was globally skipped by
+// configuration, where the spec-compliant signal lives in the
+// report-level Limitations section (see collectLimitations).
+func TestAttachProjectDataNoStampWhenGlobalSkip(t *testing.T) {
 	scanMap := map[string]projectDataOutcome{
 		"proj-explicit": {State: "skipped", Reason: "Source project was provisioned but never analyzed"},
 	}
@@ -1501,15 +1503,40 @@ func TestAttachProjectDataGloballySkippedFallback(t *testing.T) {
 		{Name: "Explicit", Detail: "proj-explicit"},
 		{Name: "NoRecord", Detail: "proj-no-record"},
 	}
-	attachProjectData(projects, scanMap, true /*globallySkipped*/)
+	attachProjectData(projects, scanMap)
 
 	wantExplicit := "proj-explicit|scan:skipped:Source project was provisioned but never analyzed"
 	if projects[0].Detail != wantExplicit {
-		t.Errorf("explicit reason should win: want %q, got %q", wantExplicit, projects[0].Detail)
+		t.Errorf("explicit reason should be stamped: want %q, got %q", wantExplicit, projects[0].Detail)
 	}
-	wantConfig := "proj-no-record|scan:skipped:project data migration skipped by configuration"
-	if projects[1].Detail != wantConfig {
-		t.Errorf("no-record should pick up config reason: want %q, got %q", wantConfig, projects[1].Detail)
+	if projects[1].Detail != "proj-no-record" {
+		t.Errorf("no-record project should stay clean (no per-project line for config-skip): got %q", projects[1].Detail)
+	}
+}
+
+// #359 follow-up: when --skip_project_data_migration is set, the
+// per-project Details column stays clean, but the report's
+// Limitations section carries a single explanatory note so the
+// operator can recover the signal even when reading the report
+// long after the run.
+func TestCollectLimitations_GlobalProjectDataSkipped(t *testing.T) {
+	dir := t.TempDir()
+	writeRunMeta(t, dir, map[string]any{
+		"tasks": []map[string]any{
+			{"name": "createProjects"},
+			{"name": "setProjectGates"},
+		},
+	})
+	got := collectLimitations(dir, "", nil)
+	found := false
+	for _, l := range got {
+		if strings.Contains(l, "Project data migration was skipped by configuration") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected limitation note about global project-data skip, got %v", got)
 	}
 }
 
