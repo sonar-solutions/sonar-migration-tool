@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +45,14 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 	ncdBranchOverrideSet := collectNCDBranchOverrides(store)
 	syncStatsMap := collectSyncStats(store)
 	extractMapping, _ := structure.GetUniqueExtracts(exportDir)
+	// #353 — per-object dropped-user-permission counts: SonarQube Cloud
+	// has no API to grant permissions to individual users, so any user
+	// permission found on a source object is dropped at migration time.
+	// Surface that as a per-row "Permissions granted to N users have
+	// been dropped" line via a |userPerms: marker. The status of the
+	// object itself stays Succeeded — this is informational, not a
+	// failure.
+	droppedPerms := collectDroppedUserPermsBySection(exportDir, extractMapping, store)
 
 	var sections []Section
 	for _, def := range sectionDefs {
@@ -72,6 +81,15 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 			attachSyncStats(section.Succeeded, syncStatsMap)
 			attachSyncStats(section.NearPerfect, syncStatsMap)
 			attachSyncStats(section.Partial, syncStatsMap)
+		}
+		// #353 — attach the dropped-user-permission count marker to
+		// every entity in every routed bucket so the per-row Details
+		// column carries "Permissions granted to N users have been
+		// dropped". Object status is NOT changed.
+		if perms, ok := droppedPerms[def.Name]; ok && len(perms) > 0 {
+			attachDroppedUserPerms(section.Succeeded, perms, def.Name)
+			attachDroppedUserPerms(section.NearPerfect, perms, def.Name)
+			attachDroppedUserPerms(section.Partial, perms, def.Name)
 		}
 		sections = append(sections, section)
 	}
@@ -871,6 +889,158 @@ func projectDataGloballySkipped(runDir string) bool {
 		}
 	}
 	return true
+}
+
+// collectDroppedUserPermsBySection returns the per-entity dropped-
+// user-permission counts (#353), keyed by section name. The inner
+// map is keyed by the identifier the per-section attachDroppedUserPerms
+// will use to look up each EntityItem: cloud_*_id (or _key) for
+// Projects / Quality Profiles / Permission Templates, and gate name
+// for Quality Gates (the user-perm extract record carries gateName
+// directly, not the cloud gate id).
+//
+// SonarQube Cloud's API does not let us grant permissions to
+// individual users (only to groups), so any user found in a source
+// permission extract is dropped at migration time. The numbers here
+// drive the per-row "Permissions granted to N users have been
+// dropped" line surfaced via the |userPerms: marker.
+func collectDroppedUserPermsBySection(exportDir string, mapping structure.ExtractMapping, store *common.DataStore) map[string]map[string]int {
+	out := map[string]map[string]int{}
+
+	// Projects: getProjectUsersScanners + getProjectUsersViewers both
+	// carry a `project` field equal to the source project key. We
+	// translate via createProjects' (key → cloud_project_key) records.
+	if projMap := buildSourceToCloudMap(store, "createProjects", "key", "cloud_project_key"); len(projMap) > 0 {
+		out["Projects"] = aggregateUserPermsByEntity(exportDir, mapping,
+			[]string{"getProjectUsersScanners", "getProjectUsersViewers"},
+			"project", projMap)
+	}
+
+	// Quality Profiles: getProfileUsers carries `profileKey` (the
+	// source profile's UUID). createProfiles writes the SAME value
+	// under the `source_profile_key` field — not `key`, which is
+	// reserved for use by the input mappings — so we translate via
+	// source_profile_key → cloud_profile_key.
+	if profMap := buildSourceToCloudMap(store, "createProfiles", "source_profile_key", "cloud_profile_key"); len(profMap) > 0 {
+		out["Quality Profiles"] = aggregateUserPermsByEntity(exportDir, mapping,
+			[]string{"getProfileUsers"}, "profileKey", profMap)
+	}
+
+	// Permission Templates: getTemplateUsersScanners +
+	// getTemplateUsersViewers both carry `templateId` (the source
+	// template's UUID). createPermissionTemplates writes the same
+	// value under `source_template_key`.
+	if tplMap := buildSourceToCloudMap(store, "createPermissionTemplates", "source_template_key", "cloud_template_id"); len(tplMap) > 0 {
+		out["Permission Templates"] = aggregateUserPermsByEntity(exportDir, mapping,
+			[]string{"getTemplateUsersScanners", "getTemplateUsersViewers"},
+			"templateId", tplMap)
+	}
+
+	// Quality Gates: getGateUsers carries `gateName`, which is the
+	// same string the EntityItem.Name field holds — no translation
+	// needed. The identity map below routes the lookup straight
+	// through gate name.
+	out["Quality Gates"] = aggregateUserPermsByEntity(exportDir, mapping,
+		[]string{"getGateUsers"}, "gateName", nil)
+
+	return out
+}
+
+// buildSourceToCloudMap reads a create-* task's records from the data
+// store and builds a map from the record's source identifier (e.g.
+// "key", "id") to the cloud identifier (e.g. "cloud_project_key",
+// "cloud_template_id"). Used by collectDroppedUserPermsBySection to
+// route per-section lookups.
+func buildSourceToCloudMap(store *common.DataStore, taskName, sourceField, cloudField string) map[string]string {
+	items, err := store.ReadAll(taskName)
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(items))
+	for _, raw := range items {
+		src := jsonStr(raw, sourceField)
+		cloud := jsonStr(raw, cloudField)
+		if src != "" && cloud != "" {
+			out[src] = cloud
+		}
+	}
+	return out
+}
+
+// aggregateUserPermsByEntity reads the listed user-permission extract
+// tasks, groups distinct user logins per parent entity, and returns
+// map[entityKey]userCount. parentField names the field on the
+// extract record that holds the source identifier of the parent
+// entity. When sourceToCloud is non-nil, the source identifier is
+// translated via that map (entities not in the map are dropped from
+// the result — they no longer exist on the cloud side). When
+// sourceToCloud is nil, the source identifier is used directly as
+// the result key (used by Quality Gates whose extract carries the
+// gate name and where the EntityItem.Name is the same string).
+func aggregateUserPermsByEntity(exportDir string, mapping structure.ExtractMapping, taskNames []string, parentField string, sourceToCloud map[string]string) map[string]int {
+	if mapping == nil {
+		return nil
+	}
+	// (entityKey → set of logins) so we don't double-count a user
+	// who appears in both the "scan" and "user" permission feeds.
+	loginsByEntity := map[string]map[string]struct{}{}
+	for _, task := range taskNames {
+		items, _ := structure.ReadExtractData(exportDir, mapping, task)
+		for _, it := range items {
+			source := jsonStr(it.Data, parentField)
+			if source == "" {
+				continue
+			}
+			key := source
+			if sourceToCloud != nil {
+				translated, ok := sourceToCloud[source]
+				if !ok {
+					continue
+				}
+				key = translated
+			}
+			login := jsonStr(it.Data, "login")
+			if login == "" {
+				continue
+			}
+			set := loginsByEntity[key]
+			if set == nil {
+				set = map[string]struct{}{}
+				loginsByEntity[key] = set
+			}
+			set[login] = struct{}{}
+		}
+	}
+	if len(loginsByEntity) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(loginsByEntity))
+	for k, set := range loginsByEntity {
+		out[k] = len(set)
+	}
+	return out
+}
+
+// attachDroppedUserPerms stamps a |userPerms:N marker on each
+// EntityItem whose lookup key carries N > 0 dropped user permissions.
+// The lookup key is the EntityItem.Name for the "Quality Gates"
+// section (gate names match directly) and the stripped cloud
+// identifier from Detail for the other sections.
+func attachDroppedUserPerms(items []EntityItem, perms map[string]int, sectionName string) {
+	if len(perms) == 0 || len(items) == 0 {
+		return
+	}
+	for i := range items {
+		var key string
+		if sectionName == "Quality Gates" {
+			key = items[i].Name
+		} else {
+			key = projectCloudKey(items[i].Detail)
+		}
+		if n, ok := perms[key]; ok && n > 0 {
+			items[i].Detail = items[i].Detail + "|userPerms:" + strconv.Itoa(n)
+		}
+	}
 }
 
 // projectSyncCounts holds the issue/hotspot sync a/b/c counts for a
