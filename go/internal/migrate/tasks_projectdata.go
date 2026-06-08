@@ -1199,10 +1199,28 @@ func buildSourceLineCountMap(sources []sourceRecord) map[string]int {
 	m := make(map[string]int, len(sources))
 	for _, s := range sources {
 		if s.Source != "" {
-			m[s.Component] = strings.Count(s.Source, "\n") + 1
+			m[s.Component] = sourceLineCount(s.Source)
 		}
 	}
 	return m
+}
+
+// sourceLineCount returns the number of source lines in src. Counting
+// "\n" + 1 unconditionally (the previous behaviour) is off-by-one
+// whenever the content ends with "\n" — which is the universal case
+// for api/sources/raw responses. SonarCloud CE validates that
+// Components.Lines matches the count of lines actually present in
+// source-<ref>.txt; an over-count silently drops the source from
+// the file_sources table, leaving the Code tab empty (#358).
+func sourceLineCount(src string) int {
+	if src == "" {
+		return 0
+	}
+	n := strings.Count(src, "\n")
+	if !strings.HasSuffix(src, "\n") {
+		n++
+	}
+	return n
 }
 
 // buildSourceKeySet returns a set of component keys that have extracted source code.
