@@ -323,6 +323,23 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 		return nil, &importResult{Status: "skipped"}, nil
 	}
 
+	// Drop binary FILE components (e.g. __pycache__/*.pyc, .class,
+	// .jar). SonarQube Server indexes those when their path is
+	// reachable from the project, and api/sources/raw returns the
+	// raw bytes verbatim. The earlier fix (#358) skipped the binary
+	// content from the source map but left the FILE component in
+	// the report — and the CE's SourceFilesAction step still tried
+	// to persist source for that component and aborted with
+	// "Cannot persist sources of <key>" (Visit of Component failed).
+	// Dropping the whole component for binary files keeps the CE
+	// happy: it never sees the entry, and SonarCloud's file tree
+	// just doesn't list it — matching what a fresh scan would
+	// produce since binary files aren't analysed anyway.
+	components, sources = excludeBinarySourceComponents(e, input.CloudKey, input.Branch, components, sources)
+	if len(components) == 0 {
+		return nil, &importResult{Status: "skipped"}, nil
+	}
+
 	// The source server returns no source TEXT for this branch even though line
 	// measures may still exist (SonarQube housekeeping purges source/SCM data
 	// for old or inactive branches while keeping aggregate measures and issues;
@@ -377,31 +394,10 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 
 	root, fileComps, cr := scanreport.BuildComponents(input.CloudKey, components)
 	pbSources := make(map[int32]string)
-	binarySkipped := 0
 	for _, s := range sources {
-		ref, ok := cr.Refs()[s.Component]
-		if !ok {
-			continue
+		if ref, ok := cr.Refs()[s.Component]; ok {
+			pbSources[ref] = s.Source
 		}
-		// Skip binary content. SonarQube Server indexes some non-text
-		// files (e.g. __pycache__/*.pyc, .class, .so) when their path
-		// is reachable from a project, and api/sources/raw returns
-		// their raw bytes verbatim. SonarCloud CE rejects (or
-		// silently aborts) source processing when it hits a
-		// source-<ref>.txt entry that isn't valid UTF-8 — leaving the
-		// project's Code tab empty (#358). Skip such entries: the
-		// component still appears in the tree, just without source
-		// preview, mirroring what SonarCloud would have shown if the
-		// file had never been indexed.
-		if !isValidSourceText(s.Source) {
-			binarySkipped++
-			continue
-		}
-		pbSources[ref] = s.Source
-	}
-	if binarySkipped > 0 {
-		e.Logger.Info("skipped non-text source entries (binary content)",
-			"project", input.CloudKey, "branch", input.Branch, "count", binarySkipped)
 	}
 
 	changesets := buildChangesetMap(cr, components, pbSources, now)
@@ -1268,6 +1264,50 @@ func isValidSourceText(src string) bool {
 		return false
 	}
 	return utf8.ValidString(src)
+}
+
+// excludeBinarySourceComponents drops FILE components whose
+// api/sources/raw response is binary (not valid UTF-8 or contains
+// embedded NUL bytes). The matching source records are dropped too
+// so the downstream map[sourceRef]content stays consistent.
+//
+// Removing only the source-<ref>.txt entry while keeping the FILE
+// component triggers a CE error: "Cannot persist sources of <key>
+// (Visit of Component failed)" — the CE's SourceFilesAction step
+// expects every FILE component to either have valid source or be
+// absent entirely. Dropping the component up front matches what
+// SonarCloud would have shown if the file were never indexed
+// (binary files aren't analysed anyway).
+//
+// Components without ANY source record (rare — e.g. a file
+// referenced only by external issues) pass through unchanged so the
+// "ALL FIL components" CloudVoyager behaviour is preserved for the
+// external-issues edge case.
+func excludeBinarySourceComponents(e *Executor, cloudKey, branch string, components []scanreport.ComponentInput, sources []sourceRecord) ([]scanreport.ComponentInput, []sourceRecord) {
+	binaryKeys := make(map[string]bool)
+	for _, s := range sources {
+		if !isValidSourceText(s.Source) {
+			binaryKeys[s.Component] = true
+		}
+	}
+	if len(binaryKeys) == 0 {
+		return components, sources
+	}
+	filteredComponents := make([]scanreport.ComponentInput, 0, len(components))
+	for _, c := range components {
+		if !binaryKeys[c.Key] {
+			filteredComponents = append(filteredComponents, c)
+		}
+	}
+	filteredSources := make([]sourceRecord, 0, len(sources))
+	for _, s := range sources {
+		if !binaryKeys[s.Component] {
+			filteredSources = append(filteredSources, s)
+		}
+	}
+	e.Logger.Info("excluded binary FILE components from scanner report",
+		"project", cloudKey, "branch", branch, "count", len(binaryKeys))
+	return filteredComponents, filteredSources
 }
 
 // buildSourceKeySet returns a set of component keys that have extracted source code.

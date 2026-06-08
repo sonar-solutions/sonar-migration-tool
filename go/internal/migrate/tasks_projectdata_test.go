@@ -1299,3 +1299,50 @@ func TestIsValidSourceText(t *testing.T) {
 		})
 	}
 }
+
+// #358 v2: skipping the source content for a binary file but
+// keeping the FILE component triggered a CE failure:
+// "Cannot persist sources of <key> (Visit of Component failed)".
+// excludeBinarySourceComponents drops both the component AND its
+// source record so the CE never sees the binary entry.
+func TestExcludeBinarySourceComponents(t *testing.T) {
+	e := &Executor{Logger: discardLogger()}
+
+	components := []scanreport.ComponentInput{
+		{Key: "proj:src/Foo.py", Path: "src/Foo.py", Language: "py"},
+		{Key: "proj:src/__pycache__/Foo.cpython-310.pyc", Path: "src/__pycache__/Foo.cpython-310.pyc"},
+		{Key: "proj:src/Bar.py", Path: "src/Bar.py", Language: "py"},
+		{Key: "proj:src/Baz.java", Path: "src/Baz.java", Language: "java"}, // no source — referenced via external issue only
+	}
+	sources := []sourceRecord{
+		{Component: "proj:src/Foo.py", Source: "def f():\n    pass\n"},
+		{Component: "proj:src/__pycache__/Foo.cpython-310.pyc", Source: "o\n\n\x00\x00\x00\x00\xa7\xff\xa6i"},
+		{Component: "proj:src/Bar.py", Source: "x = 1\n"},
+		// no source for Baz.java
+	}
+
+	gotComponents, gotSources := excludeBinarySourceComponents(e, "cloud-key", "main", components, sources)
+
+	// Binary component must be dropped; text components and the
+	// component-without-source must pass through.
+	wantKeys := []string{"proj:src/Foo.py", "proj:src/Bar.py", "proj:src/Baz.java"}
+	if len(gotComponents) != len(wantKeys) {
+		t.Fatalf("components: want %d, got %d (%v)", len(wantKeys), len(gotComponents), gotComponents)
+	}
+	for i, w := range wantKeys {
+		if gotComponents[i].Key != w {
+			t.Errorf("components[%d]: want %q, got %q", i, w, gotComponents[i].Key)
+		}
+	}
+
+	// Binary source record must be dropped.
+	wantSrcKeys := []string{"proj:src/Foo.py", "proj:src/Bar.py"}
+	if len(gotSources) != len(wantSrcKeys) {
+		t.Fatalf("sources: want %d, got %d (%v)", len(wantSrcKeys), len(gotSources), gotSources)
+	}
+	for i, w := range wantSrcKeys {
+		if gotSources[i].Component != w {
+			t.Errorf("sources[%d]: want %q, got %q", i, w, gotSources[i].Component)
+		}
+	}
+}
