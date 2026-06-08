@@ -1266,3 +1266,36 @@ func TestSourceLineCount(t *testing.T) {
 		})
 	}
 }
+
+// #358 root cause: SonarQube Server indexes some non-text files
+// (e.g. __pycache__/*.pyc, .class, .jar). api/sources/raw returns
+// their raw bytes verbatim. Including one of those entries in the
+// scanner report breaks SonarCloud's CE source-import step and
+// leaves the Code tab empty for the entire project (not just the
+// bad file).
+//
+// User-reported example: okorach-oss_sonar-tools' branch had 5
+// `.pyc` files in __pycache__/; their api/sources/raw responses
+// began with Python's `o\n\n\x00\x00\x00\x00...` magic bytes.
+func TestIsValidSourceText(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{name: "empty — valid (empty source files are legit)", src: "", want: true},
+		{name: "plain ASCII", src: "package main\n\nfunc main() {}\n", want: true},
+		{name: "UTF-8 with non-ASCII chars", src: "// Olivier Korách's file\n# 日本語\n", want: true},
+		{name: "embedded NUL byte — binary", src: "abc\x00def", want: false},
+		{name: "leading NUL byte — binary", src: "\x00\x00\x00", want: false},
+		{name: "invalid UTF-8 — binary", src: "abc\xff\xfedef", want: false},
+		{name: "python pyc magic — binary", src: "o\n\n\x00\x00\x00\x00\xa7\xff\xa6i", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isValidSourceText(tc.src); got != tc.want {
+				t.Errorf("isValidSourceText(%q) = %v, want %v", tc.src, got, tc.want)
+			}
+		})
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/scanreport"
@@ -376,10 +377,31 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 
 	root, fileComps, cr := scanreport.BuildComponents(input.CloudKey, components)
 	pbSources := make(map[int32]string)
+	binarySkipped := 0
 	for _, s := range sources {
-		if ref, ok := cr.Refs()[s.Component]; ok {
-			pbSources[ref] = s.Source
+		ref, ok := cr.Refs()[s.Component]
+		if !ok {
+			continue
 		}
+		// Skip binary content. SonarQube Server indexes some non-text
+		// files (e.g. __pycache__/*.pyc, .class, .so) when their path
+		// is reachable from a project, and api/sources/raw returns
+		// their raw bytes verbatim. SonarCloud CE rejects (or
+		// silently aborts) source processing when it hits a
+		// source-<ref>.txt entry that isn't valid UTF-8 — leaving the
+		// project's Code tab empty (#358). Skip such entries: the
+		// component still appears in the tree, just without source
+		// preview, mirroring what SonarCloud would have shown if the
+		// file had never been indexed.
+		if !isValidSourceText(s.Source) {
+			binarySkipped++
+			continue
+		}
+		pbSources[ref] = s.Source
+	}
+	if binarySkipped > 0 {
+		e.Logger.Info("skipped non-text source entries (binary content)",
+			"project", input.CloudKey, "branch", input.Branch, "count", binarySkipped)
 	}
 
 	changesets := buildChangesetMap(cr, components, pbSources, now)
@@ -1226,6 +1248,26 @@ func sourceLineCount(src string) int {
 		n++
 	}
 	return n
+}
+
+// isValidSourceText reports whether src is a plausible text source
+// file: valid UTF-8 with no embedded NUL bytes. SonarQube Server
+// indexes some non-text files (e.g. __pycache__/*.pyc — Python
+// bytecode, .class — JVM bytecode) whose api/sources/raw response
+// is raw binary. Including those entries in the scanner report
+// breaks SonarCloud's CE source-import step and leaves the project's
+// Code tab empty for ALL files, not just the bad one (#358).
+//
+// Empty content is treated as valid — an empty source file is
+// legitimate (e.g. __init__.py) and CE handles it fine.
+func isValidSourceText(src string) bool {
+	if src == "" {
+		return true
+	}
+	if strings.ContainsRune(src, '\x00') {
+		return false
+	}
+	return utf8.ValidString(src)
 }
 
 // buildSourceKeySet returns a set of component keys that have extracted source code.
