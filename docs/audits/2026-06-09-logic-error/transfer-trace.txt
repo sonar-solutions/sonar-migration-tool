@@ -1,0 +1,605 @@
+================================================================================
+PHASE: extract (transfer phase 1 of 4)  ENTRY: extract.RunExtract
+================================================================================
+STEPS:
+  [1] runTransfer / runTransferExtract  (go/cmd/transfer.go)
+      Transfer entry. runTransfer prints '[1/4] Extracting...' then runTransferExtract builds an extract.ExtractConfig and calls extract.RunExtract. A single projectKey is wrapped into ProjectKeys=[key]; empty key leaves ProjectKeys nil (all-projects mode). Sets IncludeProjectData=!skipProjectDataMigration.
+      reads: transferConfig (sourceURL, sourceToken, projectKey, exportDir, concurrency, timeout, mTLS paths, skipProjectDataMigration, debug)
+      writes: stdout '[1/4]' banner; constructs ExtractConfig; returns (skipped []string, error)
+      decisions: projectKey!='' -> scoped to [key]; else nil=all projects. IncludeProjectData=!skipProjectDataMigration. On err: wrap 'extract failed: %w' and abort transfer (structure/mappings/migrate never run).
+      calls: printPhase, extract.RunExtract, warnSkippedProjects
+  [2] RunExtract + applyDefaults  (go/internal/extract/extract.go)
+      Main orchestrator. applyDefaults sets Concurrency=25, Timeout=60, ExportDirectory=/app/files/, ExtractType=all, trailing-slash URL. Defers command-duration log, then drives client init -> dir prep -> plan build -> metadata write -> store/executor build -> phase execution. Returns sorted skipped-project list.
+      reads: ExtractConfig (URL, Token, ProjectKeys, IncludeProjectData, Concurrency, ExportDirectory)
+      writes: returns ([]string skippedKeys, error); prints 'Extract Complete: <runID>'
+      decisions: transfer never sets TargetTask/ExtractType so ExtractType defaults to 'all' -> all-get* target branch. Any sub-step error aborts.
+      calls: applyDefaults, initClient, prepareExtractDir, buildPlan, writeMetadataFile, NewDataStore, filterCompleted, newExecutor, executePhases, SkippedProjectKeys
+  [3] initClient (detectVersion, detectEdition)  (go/internal/extract/extract.go)
+      Builds authenticated SDK client + RawClient. detectVersion GETs api/server/version via a temp v10 (bearer) client to parse common.Version precisely. Real client via sqapi.NewServerClient (bearer vs basic from version float). detectEdition GETs api/system/info, falling back to api/navigation/global on HTTP 403.
+      reads: GET api/server/version; GET api/system/info OR api/navigation/global
+      writes: returns sqapi.Client, *RawClient, Version, Edition
+      decisions: cert error -> abort. 403 on system/info -> navigation/global fallback. Edition gates FilterByEdition later.
+      calls: baseSDKOptions, detectVersion, sqapi.NewServerClient, NewRawClient, detectEdition, ParseEdition
+  [4] prepareExtractDir + generateRunID  (go/internal/extract/extract.go)
+      Computes run ID (ExtractID if set, else generateRunID scans exportDir for existing YYYY-MM-DD-NN dirs and returns next NN) and MkdirAll exportDir/<runID> (0755). transfer never sets ExtractID so always generated.
+      reads: os.ReadDir(ExportDirectory) to find max NN
+      writes: creates dir exportDir/<runID>/
+      decisions: ExtractID=='' -> generate date-prefixed ID.
+      calls: generateRunID, os.MkdirAll
+  [5] buildPlan + targetTasks  (go/internal/extract/extract.go, go/internal/extract/planner.go)
+      Builds the task DAG. RegisterAll() collects all TaskDefs; BuildRegistry maps name->*TaskDef; FilterByEdition drops tasks not supporting detected edition. Chooses TargetTasksWithProjectData vs TargetTasks by IncludeProjectData. targetTasks returns all sorted 'get*' names, excluding the 6 projectDataTaskNames when project data is off.
+      reads: ExtractConfig.IncludeProjectData, TargetTask(''), ExtractType('all'); Edition; registry keys; projectDataTaskNames map
+      writes: returns (registry, plan [][]string, targets []string)
+      decisions: IncludeProjectData true -> include getProjectIssuesFull/getProjectComponentTree/getProjectSourceCode/getProjectSCMData/getProjectHotspotsFull/getProjectVersions; false -> exclude (their dirs never created). ResolveDependencies==nil -> error 'cannot resolve dependencies'.
+      calls: RegisterAll, BuildRegistry, FilterByEdition, TargetTasksWithProjectData/TargetTasks, ResolveDependencies, PlanPhases
+  [6] ResolveDependenciesGeneric + PlanPhasesGeneric  (go/internal/common/planner.go)
+      ResolveDependencies recursively walks TaskDeps to build the full task set (nil if any dep missing). PlanPhases does Kahn-style topo sort: repeatedly collects ready tasks (all deps complete), sorts each phase, until all scheduled; errors on cycle. Yields [][]string phases where same-phase tasks run concurrently.
+      reads: TaskDef.Dependencies via TaskMeta interface
+      writes: returns taskSet map then plan [][]string
+      decisions: missing dep -> nil. empty ready phase mid-sort -> 'cycle detected'. Ordering example: getProjects phase 1; getProjectComponentTree (deps getProjects,getBranches) later; getProjectSourceCode (dep getProjectComponentTree) later still.
+      calls: resolveGeneric, collectReadyTasks, allDepsCompleted, slices.Sort
+  [7] writeMetadataFile  (go/internal/extract/extract.go)
+      Serializes run metadata to extract.json: plan, version (legacy float + string), edition, url, target_tasks, available_configs (all registry names), run_id. Written before any task runs.
+      reads: extractMeta (plan, runID, version, edition, url, targets, registry)
+      writes: FILE: exportDir/<runID>/extract.json (0644)
+      decisions: none
+      calls: json.MarshalIndent, os.WriteFile
+  [8] NewDataStore + filterCompleted  (go/internal/extract/store.go, go/internal/common/store.go, go/internal/extract/extract.go)
+      Creates DataStore rooted at exportDir/<runID>. filterCompleted drops any planned task whose output subdir already exists on disk (TaskDirExists) -> resumability: re-runs into the same dir skip already-extracted tasks.
+      reads: os.Stat(exportDir/<runID>/<taskName>) per task
+      writes: returns *DataStore; trimmed plan [][]string
+      decisions: TaskDirExists(task) true -> remove from plan; empty phases dropped.
+      calls: common.NewDataStore, DataStore.TaskDirExists
+  [9] newExecutor (set ProjectKeys)  (go/internal/extract/extract.go)
+      Builds the Executor runtime shared by every task: RawClient, DataStore, ServerURL, Edition, Version, Sem=make(chan struct{},concurrency), slog.Default() logger, mutex-guarded skippedProjects map. RunExtract then sets executor.ProjectKeys=cfg.ProjectKeys — the SOLE carrier of project-scoping into task functions.
+      reads: raw, store, baseURL, edition, version, concurrency, cfg.ProjectKeys
+      writes: returns *Executor; sets .ProjectKeys
+      decisions: Sem capacity=concurrency (default 25) governs both phase-level and item-level parallelism.
+      calls: make(chan struct{}, concurrency), slog.Default
+  [10] executePhases -> runPhase  (go/internal/extract/extract.go)
+      Iterates phases strictly in order. runPhase starts an errgroup limited to cap(Sem) and launches each task's def.Run concurrently; logs per-task duration on success and failure. After a phase completes, MarkComplete each task. First task error cancels ctx and aborts as 'phase N: task X: ...'.
+      reads: plan [][]string, registry[name].Run
+      writes: store.completed map; per-task/phase timing logs
+      decisions: g.SetLimit(cap(e.Sem)) bounds intra-phase concurrency. Any task error -> abort whole extract. Phases never overlap (next starts only after prior fully done).
+      calls: errgroup.WithContext, g.SetLimit, def.Run, common.LogTaskDuration, store.MarkComplete
+  [11] getProjects Run + fetchAndWritePaginated  (go/internal/extract/tasks_projects.go, go/internal/extract/helpers.go)
+      PHASE-1 root and the ONLY consumer of ProjectKeys. Builds PaginatedOpts on api/projects/search (ResultKey 'components'); if len(e.ProjectKeys)>0 sets param 'projects'=comma-join(keys) so the server returns only the scoped project(s) server-side. fetchAndWritePaginated acquires sem, pages via Raw.GetPaginated, enriches each record with serverUrl, writes JSONL.
+      reads: GET api/projects/search?projects=<keys>&p&ps; e.ProjectKeys, e.ServerURL
+      writes: FILE(s): exportDir/<runID>/getProjects/results.N.jsonl
+      decisions: ProjectKeys empty -> no 'projects' param -> all projects. This single param drives transitive scoping for every later per-project task (they read getProjects from disk).
+      calls: Raw.GetPaginated, acquireSem, enrichAll, Store.Writer, ChunkWriter.WriteChunk
+  [12] per-project tasks via forEachDep / runWithSem  (go/internal/extract/helpers.go, go/internal/extract/tasks_projects.go)
+      Later-phase tasks (getProjectTags, getProjectDetails, getProjectSettings, getProjectLinks, getProjectMeasures, getProjectWebhooks, getProjectBindings, getProjectGroupsPermissions, getProjectUsersScanners/Viewers) call forEachDep, which Store.ReadAll('getProjects'), pre-filters out skipped keys, then fans out one goroutine per project via runWithSem (sem-bounded). Each fetches its per-project endpoint and writes enriched JSONL into its own task dir.
+      reads: Store.ReadAll('getProjects'); per-project GETs (api/components/show, api/navigation/component, api/settings/values, api/project_links/search, api/measures/search, api/webhooks/list, api/alm_settings/get_binding, api/permissions/groups|users)
+      writes: FILE(s): exportDir/<runID>/<taskName>/results.N.jsonl (atomic 1-indexed chunks; WriteChunk no-op on empty)
+      decisions: forEachDep filter drops keys where e.IsSkipped(key). HTTP 403/404 -> handleNonFatalErr/inline branch logs '<task> skipped' + e.RecordSkipped(key); other errors abort. Scoping inherited purely from getProjects file contents.
+      calls: forEachDep, Store.ReadAll, runWithSem, acquireSem, handleNonFatalErr, RecordSkipped, ChunkWriter.WriteChunk/WriteOne
+  [13] project-data tasks via forEachProjectBranch (only if IncludeProjectData)  (go/internal/extract/tasks_projectdata.go)
+      When project data is included: getProjectIssuesFull/getProjectHotspotsFull/getProjectComponentTree/getProjectVersions iterate projects x branches via forEachProjectBranch (reads getProjects+getBranches, buildBranchMap drops type==SHORT branches, defaults to 'main' when none), branches processed sequentially per project. getProjectSourceCode/getProjectSCMData instead forEachDep over getProjectComponentTree (one record per file) hitting api/sources/raw and api/sources/scm. Version-gated: issues use statuses vs issueStatuses by 10.4; PageLimit=20 caps the 10k ceiling.
+      reads: Store.ReadAll('getProjects'|'getBranches'|'getProjectComponentTree'); GET api/issues/search, api/hotspots/search(+show), api/measures/component_tree, api/navigation/component, api/sources/raw, api/sources/scm
+      writes: FILE(s): exportDir/<runID>/{getProjectIssuesFull,getProjectHotspotsFull,getProjectComponentTree,getProjectSourceCode,getProjectSCMData,getProjectVersions}/results.N.jsonl
+      decisions: Skipped entirely if !IncludeProjectData (dirs never created). Per project: e.IsSkipped(key) excludes it. branchMap omits SHORT branches. 403/404 logged+skipped best-effort (NOT RecordSkipped here). Branches sequential (sem held one branch at a time); progress counted in projects.
+      calls: forEachProjectBranch, iterateBranches, buildBranchMap, forEachDep, Raw.GetPaginated/Get/GetRaw, enrichHotspotDetails, ChunkWriter.WriteChunk/WriteOne
+  [14] SkippedProjectKeys -> warnSkippedProjects  (go/internal/extract/extract.go, go/cmd/transfer.go)
+      After all phases, RunExtract returns executor.SkippedProjectKeys() (sorted unique list of 403/404-denied projects) and prints 'Extract Complete'. Back in runTransfer, warnSkippedProjects prints a stderr warning listing each skipped key. Transfer does NOT abort on skips; continues to structure -> mappings -> migrate.
+      reads: executor.skippedProjects map (mutex-guarded)
+      writes: stderr 'Warning: N project(s) skipped (insufficient privileges)' + bullet list; returns []string to caller
+      decisions: len(skipped)==0 -> no warning. Skips non-fatal for transfer.
+      calls: Executor.SkippedProjectKeys, fmt.Fprintf(os.Stderr)
+DATA FILES: exportDir/<runID>/extract.json, exportDir/<runID>/getProjects/results.N.jsonl, exportDir/<runID>/getBranches/results.N.jsonl, exportDir/<runID>/getProject*/results.N.jsonl (per-project tasks), exportDir/<runID>/getProjectIssuesFull/results.N.jsonl, exportDir/<runID>/getProjectHotspotsFull/results.N.jsonl, exportDir/<runID>/getProjectComponentTree/results.N.jsonl, exportDir/<runID>/getProjectSourceCode/results.N.jsonl, exportDir/<runID>/getProjectSCMData/results.N.jsonl, exportDir/<runID>/getProjectVersions/results.N.jsonl
+
+ASCII FRAGMENT:
++------------------------------------------------------------------+
+| PHASE 1: EXTRACT  (transfer.go -> extract.RunExtract)            |
+|                                                                  |
+|  runTransferExtract                                              |
+|   projectKey!="" ? ProjectKeys=[key] : nil (all)                 |
+|   IncludeProjectData = !skipProjectDataMigration                 |
+|        |                                                         |
+|        v                                                         |
+|  RunExtract (applyDefaults: conc=25,to=60,type=all)              |
+|        |                                                         |
+|        +--> initClient --> GET api/server/version (detectVer)    |
+|        |               --> GET system/info |403| navigation/glob |
+|        +--> prepareExtractDir --> mkdir exportDir/<runID>/       |
+|        +--> buildPlan: RegisterAll->Registry->FilterByEdition    |
+|        |     targetTasks = all "get*"  (- 6 projectData if skip) |
+|        |     ResolveDeps -> PlanPhases (topo DAG [][]string)     |
+|        +--> writeMetadataFile --> extract.json                   |
+|        +--> NewDataStore + filterCompleted (skip existing dirs)  |
+|        +--> newExecutor (Sem=chan,cap=conc; .ProjectKeys set)    |
+|        |                                                         |
+|        v                                                         |
+|  executePhases (in order) -> runPhase (errgroup, limit=cap Sem)  |
+|   +------------------------------------------------------------+ |
+|   | phase1: getProjects --------------------------------------+| |
+|   |   GET api/projects/search?projects=<keys>  (SCOPING)     || |
+|   |   -> getProjects/results.N.jsonl                         || |
+|   |          | (later phases ReadAll "getProjects")          || |
+|   |          v                                               || |
+|   | per-project (forEachDep, 1 goroutine/proj, sem-bounded): || |
+|   |   getProjectSettings/Links/Measures/Webhooks/Bindings/   || |
+|   |   Groups/Users/Details/Tags  -> <task>/results.N.jsonl   || |
+|   |   403/404 -> RecordSkipped(key); dropped from later tasks|| |
+|   |                                                          || |
+|   | project-data (IF IncludeProjectData) forEachProjectBranch|| |
+|   |   getProjects x getBranches (drop SHORT, branches seq):  || |
+|   |   IssuesFull / HotspotsFull / ComponentTree / Versions   || |
+|   |   ComponentTree -> SourceCode + SCMData (per file)       || |
+|   |   -> <task>/results.N.jsonl                              || |
+|   +------------------------------------------------------------+ |
+|        | MarkComplete each task after its phase                  |
+|        v                                                         |
+|  return SkippedProjectKeys() ----> warnSkippedProjects (stderr)  |
+|  (non-fatal; transfer continues to STRUCTURE)                    |
++------------------------------------------------------------------+
+                              |
+                              v   (phase 2: structure)
+
+================================================================================
+PHASE: Transfer phases 2 and 3: structure (RunStructure) and mappings (RunMappings)  ENTRY: runTransfer in cmd/transfer.go calls runTransferStructure then runTransferMappings
+================================================================================
+STEPS:
+  [1] runTransfer  (go/cmd/transfer.go:344)
+      Orchestrator. After phase-1 extract, calls runTransferStructure(cfg) (line 431) then runTransferMappings(cfg) (line 439) sequentially, each printing a [N/4] banner. Phase 2 failure aborts; phase 3 only runs if phase 2 succeeded. Both are plain library calls, not cobra subcommands.
+      reads: transferConfig (cfg.exportDir, cfg.defaultOrganization)
+      writes: stdout banners
+      decisions: Hard sequencing because mappings needs projects.csv from structure. Errors wrapped 'structure failed'/'mappings failed'.
+      calls: structure.RunStructure, structure.RunMappings
+  [2] RunStructure  (go/internal/structure/structure.go:13)
+      PHASE 2 entry. Scans extracts, builds bindings+projects, derives organizations (pre-filling SonarCloud org), writes organizations.csv + projects.csv. No API calls.
+      reads: exportDir; defaultOrgKey variadic = cfg.defaultOrganization
+      writes: organizations.csv, projects.csv
+      decisions: Errors if GetUniqueExtracts fails or returns 0 extracts.
+      calls: GetUniqueExtracts, MapProjectStructure, MapOrganizationStructure, ExportCSV
+  [3] GetUniqueExtracts  (go/internal/structure/extract.go:21)
+      Lists export dir, reads each extractID/extract.json, groups extract IDs by the url field, keeps the lexicographically greatest (newest) extract ID per server URL.
+      reads: exportDir/extractID/extract.json (url)
+      writes: in-memory ExtractMapping serverURL->latest extractID
+      decisions: Skips non-dirs and dirs whose extract.json is missing/unparseable or has empty url.
+      calls: buildURLMappings, latestID
+  [4] MapProjectStructure  (go/internal/structure/projects.go:130)
+      Core of phase 2. Reads NCDs, bindings, project bindings, project details; computes unique binding key and unique project key per project; builds []Binding and []Project; sets each project SonarQubeOrgKey = its uniqueBindingKey.
+      reads: tasks getNewCodePeriods, getBindings, getProjectBindings, getProjectDetails
+      writes: []Binding, []Project
+      decisions: Cloud-ALM via IsCloudBinding; unbound projects fall back to serverURL as binding key; blank branch -> master; NCD per (server,project,branch) with days/30 fallback; REFERENCE_BRANCH/SPECIFIC_ANALYSIS dropped (#135).
+      calls: MapNewCodeDefinitions, ReadExtractData, GenerateUniqueBindingKey, GenerateUniqueProjectKey, getNewCodeDef, IsCloudBinding
+  [5] MapNewCodeDefinitions  (go/internal/structure/projects.go:87)
+      Builds map[serverURL][projectKey][branchKey]->newCodeDefinition from getNewCodePeriods. Maps NUMBER_OF_DAYS->days, PREVIOUS_VERSION->previous_version; blanks value for previous_version.
+      reads: task getNewCodePeriods
+      writes: nested NCD map
+      decisions: Skips types not in newCodeMappings; default value 30; nil value for PREVIOUS_VERSION so migrate omits it.
+      calls: ReadExtractData, common.ExtractField, extractAnyField
+  [6] ReadExtractData / readTaskDir  (go/internal/structure/extract.go:82)
+      Shared reader used by every Map* function. For each server URL, reads all *.jsonl under extractID/taskKey/, returning []ExtractItem{ServerURL,Data} across all extracts.
+      reads: exportDir/extractID/taskKey/*.jsonl
+      writes: []ExtractItem
+      decisions: Missing task dir -> skipped; per-file JSONL error -> slog.Warn + keep partial records (#312/#314); only dir-listing failure aborts the task.
+      calls: os.ReadDir, common.ReadJSONLFile
+  [7] MapOrganizationStructure  (go/internal/structure/organizations.go:10)
+      CRUX OF defaultOrg PRE-POPULATION. Converts unique bindings into Organization rows, writing SonarCloudOrgKey = defaultOrgKey[0] (cfg.defaultOrganization) into EVERY row, so organizations.csv sonarcloud_org_key is pre-filled and never hand-edited.
+      reads: []Binding; variadic defaultOrgKey = cfg.defaultOrganization
+      writes: []Organization
+      decisions: Skips bindings with ProjectCount<1; if defaultOrgKey empty (non-transfer) the column is left blank for manual editing.
+  [8] ExportCSV  (go/internal/structure/csv.go:21)
+      Reflection-based CSV writer; headers from csv struct tags; slices/maps/bools JSON-serialized. Writes organizations.csv then projects.csv.
+      reads: []Organization, []Project
+      writes: exportDir/organizations.csv, exportDir/projects.csv
+      decisions: Empty slice -> empty file. Org row carries pre-populated sonarcloud_org_key.
+      calls: structCSVHeaders, serializeCSVValue, serializeAny
+  [9] RunMappings  (go/internal/structure/structure.go:38)
+      PHASE 3 entry. Re-scans extracts, RELOADS projects.csv (phase-2 output) to build projectOrgMapping, derives templates/profiles/gates/portfolios/groups, writes one CSV each. Not given defaultOrganization; never touches sonarcloud_org_key.
+      reads: exportDir; projects.csv
+      writes: templates.csv, profiles.csv, gates.csv, portfolios.csv, groups.csv
+      decisions: Errors on 0 extracts; errors if projects.csv empty ('run structure command first'). projectOrgMapping keyed server_url+key -> sonarqube_org_key (rows with all three set).
+      calls: GetUniqueExtracts, LoadCSV, MapTemplates, MapProfiles, MapGates, MapPortfolios, MapGroups, ExportCSV
+  [10] LoadCSV  (go/internal/structure/csv.go:66)
+      Reads projects.csv into []map[string]any, coercing JSON-looking cells back to typed values. Source of projectOrgMapping joining every downstream entity to its org.
+      reads: exportDir/projects.csv
+      writes: []map[string]any
+      decisions: Missing file -> nil,nil; <2 rows -> nil. Uses server_url, key, sonarqube_org_key.
+      calls: coerceCSVValue
+  [11] MapTemplates  (go/internal/structure/templates.go:16)
+      Maps permission templates to orgs. Default/pattern-less templates go to ALL orgs; pattern templates are regex-matched against project keys (serverURL prefix stripped). Computed before groups (MapGroups consumes it).
+      reads: tasks getDefaultTemplates, getTemplates; projectOrgMapping
+      writes: []Template
+      decisions: uniqueKey=orgKey+templateID; invalid regex -> skip; isDefault from getDefaultTemplates.
+      calls: uniqueOrgKeys, ReadExtractData, common.ExtractField, addTemplateForAllOrgs, addTemplateForMatchingProjects
+  [12] MapProfiles  (go/internal/structure/profiles.go:14)
+      Maps quality profiles to orgs from project qualityProfiles plus each org default profiles; recursively pulls in parent profiles. Computed before groups (MapGroups consumes it).
+      reads: tasks getProfiles, getProjectDetails; projectOrgMapping
+      writes: []Profile
+      decisions: Skips builtIn and deleted profiles; uniqueKey=orgKey+profileKey; parent chain via addProfile recursion; defaults added for all orgs.
+      calls: ReadExtractData, mapProjectProfiles, addDefaultProfiles, addProfile, extractProfilesArray, uniqueOrgKeys
+  [13] MapGates  (go/internal/structure/gates.go:14)
+      Maps quality gates to orgs from project references plus each org default gate. Keyed serverURL+name.
+      reads: tasks getGates, getProjectDetails; projectOrgMapping
+      writes: []Gate
+      decisions: Skips builtIn; project gate added only if present in gates map; uniqueKey=orgKey+gateName; defaults added for all orgs.
+      calls: ReadExtractData, mapProjectGates, addDefaultGates, extractGateName, uniqueOrgKeys
+  [14] MapPortfolios  (go/internal/structure/portfolios.go:22)
+      Maps portfolios, deduped by SHA-256 of sorted project composition. Overlays selectionMode/regexp/tags from getPortfolioDetails, recursing subViews so nested portfolios keep their selection. Does NOT use projectOrgMapping.
+      reads: tasks getPortfolioProjects, getPortfolioDetails
+      writes: []Portfolio
+      decisions: Dedup via generateHashID; selection overlay applied when detail key matches; tags joined to comma string.
+      calls: ReadExtractData, buildSelectionIndex, collectPortfolioSelections, generateHashID, joinAnySlice
+  [15] MapGroups  (go/internal/structure/groups.go:15)
+      Aggregates groups from 4 sources: global groups w/ permissions (all orgs), project-level group perms, permission-template groups, quality-profile groups. Runs LAST because it takes profiles[] and templates[] as inputs.
+      reads: tasks getGroups, getProjectGroupsPermissions, getTemplateGroupsScanners, getTemplateGroupsViewers, getProfileGroups; profiles[], templates[], projectOrgMapping
+      writes: []Group
+      decisions: uniqueKey=orgKey+name; excludes 'Anyone'; skips global groups with empty/nil permissions; template/profile groups joined via indexes from prior steps.
+      calls: addDefaultGroups, addProjectGroups, addTemplateGroups, addProfileGroups, ReadExtractData, uniqueOrgKeys
+  [16] ExportCSV (mappings loop)  (go/internal/structure/structure.go:80)
+      Iterates the exports map and writes templates/profiles/gates/portfolios/groups CSVs, then prints 'Mappings complete: ...'.
+      reads: templates/profiles/gates/portfolios/groups slices
+      writes: exportDir/{templates,profiles,gates,portfolios,groups}.csv
+      decisions: Map iteration order randomized but harmless (values precomputed); any ExportCSV error aborts with 'exporting <name>.csv'.
+      calls: ExportCSV
+DATA FILES: exportDir/extractID/extract.json (IN: server url), exportDir/extractID/taskKey/*.jsonl (IN: extract task records), exportDir/organizations.csv (OUT phase2: sonarcloud_org_key pre-filled), exportDir/projects.csv (OUT phase2; IN phase3), exportDir/templates.csv (OUT phase3), exportDir/profiles.csv (OUT phase3), exportDir/gates.csv (OUT phase3), exportDir/portfolios.csv (OUT phase3), exportDir/groups.csv (OUT phase3)
+
+ASCII FRAGMENT:
++------------------------------------------------------------------+
+| PHASE 2+3: structure + mappings  (cmd/transfer.go runTransfer)   |
+| pure local JSON->CSV ; NO API calls                              |
++------------------------------------------------------------------+
+        runTransferStructure(cfg.exportDir, cfg.defaultOrg)
+                              |
+                              v
+   +----------------------- RunStructure ------------------------+
+   | structure.go:13                                             |
+   |   GetUniqueExtracts(dir) -> serverURL : latest extractID    |
+   |     reads <id>/extract.json                                 |
+   |        |                                                    |
+   |        v                                                    |
+   |   MapProjectStructure(dir, mapping)                         |
+   |     reads getNewCodePeriods / getBindings /                 |
+   |           getProjectBindings / getProjectDetails (*.jsonl)  |
+   |     -> []Binding , []Project                                |
+   |        |                                                    |
+   |        v                                                    |
+   |   MapOrganizationStructure(bindings, defaultOrg) <== KEY    |
+   |     sonarcloud_org_key = defaultOrg for EVERY row           |
+   |        |                                                    |
+   |        v                                                    |
+   |   ExportCSV -> organizations.csv  (sc_org_key pre-filled)   |
+   |   ExportCSV -> projects.csv                                 |
+   +-------------------------------------------------------------+
+                              |
+                              v   (sequential; phase3 needs projects.csv)
+        runTransferMappings(cfg.exportDir)   [no defaultOrg]
+                              |
+                              v
+   +----------------------- RunMappings -------------------------+
+   | structure.go:38                                             |
+   |   GetUniqueExtracts(dir)                                    |
+   |   LoadCSV(projects.csv) -> projectOrgMapping                |
+   |        (server_url+key -> sonarqube_org_key)                |
+   |        |                                                    |
+   |        v   (data-dependency order, NOT map order)           |
+   |   MapTemplates --+                                          |
+   |   MapProfiles  --+--> feed --> MapGroups                    |
+   |   MapGates       |                                          |
+   |   MapPortfolios  |                                          |
+   |        |                                                    |
+   |        v                                                    |
+   |   ExportCSV x5 -> templates / profiles / gates /            |
+   |                   portfolios / groups .csv                  |
+   +-------------------------------------------------------------+
+                              |
+                              v
+                  (phase 4: migrate ; DefaultOrg left UNSET)
+
+
+NOTES: SCOPE: phases 2 (structure) and 3 (mappings) only. Both are pure local JSON->CSV transforms; NO HTTP/API calls. defaultOrganization PRE-POPULATION: RunStructure forwards cfg.defaultOrganization as the variadic defaultOrgKey into MapOrganizationStructure, which writes SonarCloudOrgKey into EVERY org row, so organizations.csv sonarcloud_org_key is pre-filled. Consequence (transfer.go:447-452): runTransferMigrate leaves migrate DefaultOrganization UNSET to avoid the 'mapping defined, default ignored' WARN. RunMappings is NOT given defaultOrganization. ORDERING in RunMappings is enforced by Go data dependencies (MapGroups takes profiles+templates), NOT by the randomized exports map iteration. UNIQUE-KEY scheme: serverURL+entityKey join keys throughout (projectOrgMapping = serverURL+projectKey -> sonarqube_org_key which equals the project's uniqueBindingKey). GUARDS: both phases error on empty extract mapping; RunMappings also errors if projects.csv has 0 rows.
+
+================================================================================
+PHASE: migrate (transfer phase 4 of 4)  ENTRY: runTransferMigrate -> migrate.RunMigrate
+================================================================================
+STEPS:
+  [1] runTransferMigrate  (cmd/transfer.go)
+      Phase 4 entry. Prints '[4/4] Migrating to SonarQube Cloud...' then calls migrate.RunMigrate with a MigrateConfig. DefaultOrganization is deliberately left unset (structure already pre-stamped sonarcloud_org_key). The defining choice: TargetTasks = transferTargetTasks (14 project-scoped leaf names), plus IncludeProjectData=!skipPDM, SkipIssueSync, SkipProjectDataMigration, ExcludeBranches. Wraps any error as 'migrate failed' and returns the runID up to runTransfer, which then calls emitReports.
+      reads: transferConfig (resolved from flags+config file)
+      writes: nothing directly; returns runID
+      decisions: Sets TargetTasks=transferTargetTasks so RunMigrate runs project-scoped leaves, not the global default set. Skip flags are one-way (CLI true only).
+      calls: migrate.RunMigrate, printPhase, fmt.Errorf
+  [2] RunMigrate  (internal/migrate/migrate.go)
+      Main migrate orchestrator. applyDefaults (Concurrency default 25, URL default sonarcloud.io, edition default 'enterprise'). Builds slog logger wrapped with eventCollector. applyOrgMapping then validateOrgsExist abort early on bad org. Builds two Cloud clients (cloudClient @ sonarcloud.io, apiClient @ api.sonarcloud.io) plus RawClients, with retry-logger and rate-limit-observer options. Resolves extract mapping via structure.GetUniqueExtracts.
+      reads: organizations.csv (org mapping), extract run dirs
+      writes: creates runDir; defers run_meta.json, rate_limit_events.json
+      decisions: If SkipProjectDataMigration -> force SkipIssueSync=true and log both halves. createPlan = (RunID==''); transfer always passes empty RunID so createPlan=true.
+      calls: applyDefaults, applyOrgMapping, validateOrgsExist, sqapi.NewCloudClient, cloud.New, common.NewRawClient, structure.GetUniqueExtracts, generateRunID, NewRateLimitTracker
+  [3] generateRunID  (internal/migrate/migrate.go)
+      Produces runID 'YYYY-MM-DD-NN'. Reads the export dir, finds all dirs prefixed with today's UTC date, parses the trailing integer, and returns max+1 zero-padded to 2 digits. Uses MAX (not directory count) specifically to avoid the #359 bug where a gap in numbering caused count+1 to collide with an existing dir and silently reuse its task outputs.
+      reads: os.ReadDir(exportDirectory) — existing run subdirs
+      writes: nothing (pure)
+      decisions: max+1 over count+1 to survive numbering gaps. Only called when createPlan (RunID empty), which is always true for transfer.
+      calls: os.ReadDir, time.Now().UTC().Format, strconv.Atoi
+  [4] RegisterAll / BuildMigrateRegistry / FilterByEdition  (internal/migrate/planner.go)
+      RegisterAll concatenates every task group (setup, read, create, configure, associate, permission, alm, portfolio, rule, delete, projectData, hotspotMetadataSync, issueMetadataSync) into one []TaskDef. BuildMigrateRegistry keys them by Name. FilterByEdition drops tasks not supporting the active edition (enterprise) via FilterByEditionGeneric.
+      reads: static task definitions
+      writes: map[string]*TaskDef registry
+      decisions: Edition filter keeps tasks whose Editions is empty or contains the edition.
+      calls: setupTasks, readTasks, createTasks, configureTasks, associateTasks, permissionTasks, projectDataTasks, hotspotMetadataSyncTasks, issueMetadataSyncTasks, common.FilterByEditionGeneric
+  [5] MigrateTargetTasks  (internal/migrate/planner.go)
+      Selects the target leaf set. Because TargetTasks is non-empty (the 14 transfer leaves), it returns that list AS-IS rather than the default 'all tasks not prefixed get/delete/reset'. It still applies the project-data and issue-sync skip gates to the explicit list: drops importProjectData/syncIssueMetadata/syncHotspotMetadata if SkipProjectDataMigration, drops the two sync tasks if SkipIssueSync. Other gates (skipProfiles, project-data-without-flag) are not applied to transfer's curated list.
+      reads: cfg.TargetTasks, skip flags, registry
+      writes: filtered []string of target task names
+      decisions: TargetTasks branch takes precedence over targetTask and the default-all branch. Skip gates filter the explicit list so transfer honors --skip_project_data_migration / --skip_issue_sync.
+      calls: migrateProjectDataTasks lookup, migrateIssueSyncTasks lookup
+  [6] ResolveDependencies -> ResolveDependenciesGeneric  (internal/migrate/planner.go, internal/common/planner.go)
+      Recursively DFS-walks each target leaf's Dependencies into a set (map[string]bool) representing the full transitive closure. From the 14 leaves it pulls in: generate*Mappings (5, no deps), create{Projects,Profiles,Gates,Groups} (4), getMigrationUser/getGateConditions/getProfileBackups (3), grantMigrationUserProjectPermissions, setProfileParent. Returns nil if any dependency name is missing from the registry (aborts the run).
+      reads: registry TaskDef.Dependencies
+      writes: taskSet map[string]bool
+      decisions: Missing dep -> nil -> RunMigrate errors 'cannot resolve dependencies'. seen-map prevents revisiting; rollback on failed sub-resolve.
+      calls: resolveGeneric (recursive)
+  [7] PlanPhases -> PlanPhasesGeneric  (internal/migrate/planner.go, internal/common/planner.go)
+      Kahn-style topological sort over the resolved task set. Repeatedly collects all not-yet-completed tasks whose deps are fully completed (collectReadyTasks/allDepsCompleted), sorts each ready set alphabetically (slices.Sort), appends as a phase, marks them completed, and repeats. Empty ready set with tasks remaining => 'cycle detected'. Yields 6 phases for transfer: P1 generate*Mappings; P2 create* + getMigrationUser; P3 analyzeProfileRules,getGateConditions,getProfileBackups,grantMigrationUserProjectPermissions,setProfileParent; P4 addGateConditions,restoreProfiles,setProject*,setNewCodePeriods; P5 importProjectData; P6 syncHotspotMetadata,syncIssueMetadata.
+      reads: taskSet, registry
+      writes: plan [][]string (phase list)
+      decisions: restoreProfiles+addGateConditions naturally fall in P4 (one phase before importProjectData in P5), satisfying the 'profiles/gate configured before scan replay' guarantee WITHOUT any hardcoded ordering — it's pure topo-sort.
+      calls: collectReadyTasks, allDepsCompleted, slices.Sort
+  [8] writeMigrateMeta / filterCompleted  (internal/migrate/migrate.go)
+      Since createPlan=true, writeMigrateMeta serializes plan.json (plan phases, edition, url, target_tasks, available_configs, run_id). filterCompleted then drops any task whose run-dir already exists (store.TaskDirExists) for resumability — a no-op on a fresh runID. Builds the Executor (Cloud, CloudAPI, Raw, RawAPI, Store, Sem=chan struct{} of size Concurrency, Mapping, ExcludeBranches, Logger).
+      reads: store run dir for completed tasks
+      writes: plan.json
+      decisions: Resume path (RunID set) would skip writeMigrateMeta and prune completed tasks; transfer is always fresh.
+      calls: writeMigrateMeta, common.NewDataStore, filterCompleted, os.WriteFile
+  [9] runPhase (loop over plan)  (internal/migrate/migrate.go)
+      For each phase i, logs 'starting phase' then runPhase: an errgroup with ONE goroutine PER TASK (no SetLimit), so every task in the phase runs concurrently. Each task gets a TaskCounter in context, runs def.Run(taskCtx,e), records TaskTiming (duration/ok/err), and LogSummary. On task error the whole phase aborts (errgroup cancels ctx). After a phase completes, every task is store.MarkComplete'd. Intra-task fan-out (not this level) is what e.Sem bounds.
+      reads: plan phases, registry
+      writes: per-task output dirs via Store; tm timings; MarkComplete markers
+      decisions: Task-level parallelism = full phase width; item-level parallelism = cap(e.Sem)=Concurrency. Any task error => phase error => RunMigrate returns runID + wrapped error.
+      calls: errgroup.WithContext, def.Run, NewTaskCounter, WithTaskCounter, tm.addTask, tm.addPhase, store.MarkComplete
+  [10] runImportProjectData (P5)  (internal/migrate/tasks_projectdata.go)
+      Reads createProjects output, sorts items org-by-org, loads already-completed branches (resumability). Fans out per project bounded by g.SetLimit(cap(e.Sem)). Per project: collectBranchInfo (LONG branches only), sort main-first, filterBranches by ExcludeBranches globs, fetchSCMainBranch, then importProjectBranches.
+      reads: createProjects migrate output; getBranches extract
+      writes: importProjectData output (per-branch status records)
+      decisions: Skips rows missing cloud_project_key/org. Empty branch list defaults to a single main branch.
+      calls: e.Store.ReadAll, sortMigrateItems, loadCompletedBranches, collectBranchInfo, sortBranchesMainFirst, filterBranches, fetchSCMainBranch, importProjectBranches
+  [11] importProjectBranches -> importAndRecordBranch -> importBranch  (internal/migrate/tasks_projectdata.go)
+      Phase 1: main branch imported first as a BLOCKING GATE; if it fails, all non-main branches are recorded 'skipped' and the function errors. Phase 2: non-main branches imported SEQUENTIALLY. buildBranchReport loads issues/hotspots/external-issues/components/sources/activeRules, skips empty-component or source-purged branches, remaps SQ->SC quality-profile keys, dedups active rules, drops issues on inactive rules, backdates changesets to original creation dates. For non-main branches it performs PreCreateAnalysis (POST {api}/analysis/analyses -> analysisUuid stamped into metadata field 19, BranchType='long', reference branch = MAIN to dodge the CE 'issue whilst processing report' error). Submits the packaged report (scanreport.SubmitReport) then PollCETask.
+      reads: getProjectIssuesFull, getProjectHotspotsFull, getProjectComponentTree, getProjectSourceCode, getActiveProfileRules, getProjectVersions extracts; SC profiles/branches via API
+      writes: per-branch importResult (status/task_id/error) via ChunkWriter
+      decisions: Main-first gate; non-main self-reference avoided by referencing main (field 11); long-branch handshake (field 19) so the branch persists on SC; skip branches with no components or no source text.
+      calls: buildBranchReport, scanreport.PreCreateAnalysis, scanreport.BuildMetadata, scanreport.BuildIssues, scanreport.PackageReport, scanreport.SubmitReport, scanreport.PollCETask, recordBranchResult
+  [12] runSyncIssueMetadata -> syncProjectIssues (P6)  (internal/migrate/tasks_issuesync.go)
+      Depends on importProjectData (Cloud issues only exist after CE processes the report). loadRuleTagDefaults once (getRuleDetails) to strip rule-default tags so Tags = user-added only. forEachMigrateItem over createProjects. Per project: loadMatchableIssues (exclude CLOSED/FIXED), pre-filter to actionable via hasManualChanges (ACCEPTED/FALSE_POSITIVE, legacy WONTFIX/FALSE-POSITIVE, manualSeverity, user tags, or any comment; CONFIRMED & assignee are NOT triggers). waitForCloudIndexing (exp backoff 10->60s, 10 tries, non-fatal). runProjectSyncLoop (cap(Sem) concurrency, log interval 20) per actionable source -> resolveAndSyncIssue.
+      reads: getProjectIssuesFull, getRuleDetails extracts; /api/issues/search (count + per-issue)
+      writes: syncIssueMetadata output (synced/line_mismatch/not_found/actionable per project)
+      decisions: Targeted per-actionable search replaced the old fetch-all+FIFO (#356), dodging the 10k cap. Indexing wait failure is non-fatal (proceeds with 0 matches).
+      calls: loadRuleTagDefaults, forEachMigrateItem, loadMatchableIssues, hasManualChanges, classifyActionableReasons, waitForCloudIndexing, runProjectSyncLoop, resolveAndSyncIssue
+  [13] resolveAndSyncIssue -> findCloudIssueCandidates / classifyIssueCandidatesByLine / syncOnePair  (internal/migrate/tasks_issuesync.go)
+      findCloudIssueCandidates queries /api/issues/search scoped by componentKeys=cloudKey:filePath, rules=src.Rule, issueStatuses=OPEN,CONFIRMED,FALSE_POSITIVE,ACCEPTED, additionalFields=transitions. classifyIssueCandidatesByLine: 1 hit on source line = synced, 0 = not_found, >1 = line_mismatch (ambiguous, skipped). syncOnePair (skips if cloud issue already has metadataSyncTag): syncIssueTransition (resolveTransition gates the MQR 'accept' transition on its availability so an ACCEPTED issue is left OPEN rather than mislabeled Won't Fix, #322), then syncIssueComments ([Migrated from <login>] prefix idempotency), then syncIssueTags (sets source tags + metadataSyncTag marker).
+      reads: /api/issues/search candidates
+      writes: DoTransition / AddComment / SetTags on Cloud issues
+      decisions: Order is strict: transition -> comments -> tags. getFallbackTransition precedence issueStatus > resolution > status. isExpectedTransitionError absorbs 400s (already in target state).
+      calls: stripProjectKeyPrefix, e.Cloud.Issues.SearchAll, classifyIssueCandidatesByLine, resolveTransition, getFallbackTransition, e.Cloud.Issues.DoTransition, e.Cloud.Issues.AddComment, e.Cloud.Issues.SetTags
+  [14] runSyncHotspotMetadata -> syncProjectHotspots -> resolveAndSyncHotspot -> syncOneHotspot (P6)  (internal/migrate/tasks_hotspotsync.go)
+      Also depends on importProjectData; runs concurrently with syncIssueMetadata in P6. forEachMigrateItem over createProjects. Per project: loadMatchableHotspots (getProjectHotspotsFull), actionable filter hotspotHasManualChanges (REVIEWED with SAFE/ACKNOWLEDGED/FIXED resolution, or any comment), waitForCloudIndexing (Hotspots.Count), runProjectSyncLoop (cap(Sem), interval 10). resolveAndSyncHotspot: findCloudHotspotCandidates via e.Raw GetPaginated /api/hotspots/search?projectKey&files (PageLimit 5, NO rules param since the endpoint rejects it), classifyHotspotCandidatesByLine on (ruleKey,line). syncOneHotspot: if source REVIEWED -> ChangeStatus REVIEWED + mapHotspotResolution (ACKNOWLEDGED->SAFE), then comments with [Migrated from SonarQube] prefix idempotency and a fixed 100ms gap between comment POSTs.
+      reads: getProjectHotspotsFull extract; /api/hotspots/search, /api/hotspots/show
+      writes: syncHotspotMetadata output (synced/line_mismatch/not_found/actionable/error per project); ChangeStatus/AddComment on Cloud hotspots
+      decisions: Rule filter applied in-memory (search endpoint has no rules param). 100ms inter-comment sleep is a soft self-throttle. Status sync only when source REVIEWED.
+      calls: forEachMigrateItem, loadMatchableHotspots, hotspotHasManualChanges, waitForCloudIndexing, runProjectSyncLoop, resolveAndSyncHotspot, findCloudHotspotCandidates, classifyHotspotCandidatesByLine, syncOneHotspot, mapHotspotResolution, e.Cloud.Hotspots.ChangeStatus, e.Cloud.Hotspots.AddComment, e.Cloud.Hotspots.Show
+  [15] RunMigrate deferred finalizers + return  (internal/migrate/migrate.go)
+      After all 6 phases, prints 'Migration Complete: <runID>' and returns runID. Deferred (runs on every exit path): writes run_meta.json (StartedAt/CompletedAt/OverallStatus/per-phase+per-task timings), writeRunEvents (collector), LogCommandDuration('migrate'); and rateLimitTracker.WriteJSON(rate_limit_events.json). Rate limiting itself is observed at the HTTP transport via the WithRateLimitObserver callback -> RateLimitTracker.Observe (logs 'rate limiting detected' once per RateLimitKind); the sqapi transport performs the actual retry/backoff wait.
+      reads: tm timings, eventCollector, rateLimitTracker state
+      writes: run_meta.json, run_events, rate_limit_events.json
+      decisions: Artifacts written best-effort without altering retErr. runID returned to runTransferMigrate even on phase error (so reports still emit).
+      calls: computeStatus, json.MarshalIndent, os.WriteFile, writeRunEvents, common.LogCommandDuration, rateLimitTracker.WriteJSON
+DATA FILES: /Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/cmd/transfer.go, /Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/internal/migrate/migrate.go, /Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/internal/migrate/planner.go, /Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/internal/common/planner.go, /Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/internal/migrate/tasks_projectdata.go, /Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/internal/migrate/tasks_issuesync.go, /Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/internal/migrate/tasks_hotspotsync.go, /Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/internal/migrate/helpers.go, /Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/internal/migrate/ratelimit.go
+
+ASCII FRAGMENT:
++--------------------------------------------------------------------+
+|  TRANSFER PHASE 4 of 4 : migrate.RunMigrate (TargetTasks=transfer) |
++--------------------------------------------------------------------+
+   cmd/transfer.go:runTransferMigrate
+     | MigrateConfig{TargetTasks=transferTargetTasks(14 leaves),
+     |   IncludeProjectData, SkipIssueSync, SkipProjectDataMigration}
+     v
+   migrate.RunMigrate (migrate.go)
+     | applyDefaults (concurrency=25 default); slog+eventCollector
+     | applyOrgMapping -> validateOrgsExist (Cloud + api.Cloud clients)
+     | rateLimitTracker.Observe -> "rate limiting detected" (1/kind)
+     | runID = generateRunID(dir)  = "YYYY-MM-DD-NN", NN = maxN+1
+     | RegisterAll -> BuildMigrateRegistry -> FilterByEdition
+     | if SkipProjectDataMigration: SkipIssueSync=true (log both)
+     v
+   MigrateTargetTasks(reg, "", ..., TargetTasks)  (planner.go)
+     | TargetTasks non-empty -> return list AS-IS, minus skip gates
+     |   (migrateProjectDataTasks / migrateIssueSyncTasks filters)
+     v
+   ResolveDependencies(targets,reg) = ResolveDependenciesGeneric (DFS)
+     |   transitive closure of 14 leaves -> ~25-task set
+     v
+   PlanPhases = PlanPhasesGeneric (topo / Kahn; sort names in-phase)
+     v
+   +------- DAG (6 phases) ----------------------------------------+
+   | P1 generate{Project,Profile,Gate,Group,Organization}Mappings |
+   | P2 create{Projects,Profiles,Gates,Groups}, getMigrationUser  |
+   | P3 grantMigrationUserProjectPermissions, getGateConditions,  |
+   |    getProfileBackups, setProfileParent, analyzeProfileRules   |
+   | P4 restoreProfiles, addGateConditions,  <-- BEFORE import     |
+   |    setProject{Profiles,Gates,GroupPermissions,Settings,Tags,  |
+   |               Links,Webhooks}, setNewCodePeriods              |
+   | P5 importProjectData  (createProjects+setProjectProfiles dep) |
+   | P6 syncIssueMetadata , syncHotspotMetadata (dep importPD)     |
+   +--------------------------------------------------------------+
+     v  for i,phase := range plan:  runPhase (errgroup, 1 goroutine/task)
+   runPhase -> def.Run(taskCtx,e) ; store.MarkComplete per task
+     | importProjectData: per-proj fan-out (g.SetLimit=cap(Sem));
+     |   main branch first (gate), then non-main sequential; CE submit
+     |   + PollCETask; non-main = PreCreateAnalysis handshake(field19)
+     | syncIssue/Hotspot: forEachMigrateItem(createProjects) ->
+     |   waitForCloudIndexing -> runProjectSyncLoop(cap(Sem), 20/10)
+     v
+   run_meta.json + rate_limit_events.json + plan.json ; return runID
+     v
+   cmd/transfer.go: emitReports(exportDir,runID) -> PDF + MD summary
++--------------------------------------------------------------------+
+
+NOTES: TRANSFER LEAF SET (cmd/transfer.go transferTargetTasks, lines 70-83): 14 task strings — setProjectProfiles, setProjectGates, setProjectGroupPermissions, setProjectSettings, setProjectTags, setProjectLinks, setProjectWebhooks, setNewCodePeriods, restoreProfiles, addGateConditions, analyzeProfileRules, importProjectData, syncIssueMetadata, syncHotspotMetadata. (The cmd comment refers to these loosely as "leaf tasks"; the slice actually holds 14 names.) Global-scope migrate tasks (portfolios, global settings/webhooks/new-code-period, permission templates, org/profile group permissions, setDefault*, rule tag/description updates, ALM bindings, createMigrationGroups) are intentionally OMITTED so transfer touches only the one project + its gate/profiles/perms.
+
+ACTUAL TASK DAG (transitive closure computed via ResolveDependenciesGeneric DFS in internal/common/planner.go, then PlanPhasesGeneric topo-sort; verified deps grepped from tasks_setup.go/create.go/read.go/configure.go/associate.go/permissions.go):
+  generate*Mappings: NO deps (tasks_setup.go) — generateProjectMappings, generateProfileMappings, generateGateMappings, generateGroupMappings, generateOrganizationMappings.
+  createProjects<-generateProjectMappings; createProfiles<-generateProfileMappings; createGates<-generateGateMappings; createGroups<-generateGroupMappings (tasks_create.go).
+  getMigrationUser<-generateOrganizationMappings; getGateConditions<-createGates; getProfileBackups<-createProfiles (tasks_read.go).
+  grantMigrationUserProjectPermissions<-{createProjects,getMigrationUser} (tasks_permissions.go:74).
+  setProfileParent<-createProfiles; analyzeProfileRules<-createProfiles; restoreProfiles<-{createProfiles,setProfileParent,getProfileBackups}; addGateConditions<-{createGates,getGateConditions} (tasks_configure.go).
+  All setProject*<-{createProjects,grantMigrationUserProjectPermissions} (+createProfiles for setProjectProfiles, +createGates for setProjectGates) (tasks_associate.go:34-81).
+  importProjectData<-{createProjects,setProjectProfiles} (tasks_projectdata.go:28).
+  syncIssueMetadata<-importProjectData (tasks_issuesync.go:33); syncHotspotMetadata<-importProjectData (tasks_hotspotsync.go:27).
+RESULTING 6 PHASES (alphabetical within phase, per slices.Sort in PlanPhasesGeneric):
+  P1: generateGateMappings, generateGroupMappings, generateOrganizationMappings, generateProfileMappings, generateProjectMappings
+  P2: createGates, createGroups, createProfiles, createProjects, getMigrationUser
+  P3: analyzeProfileRules, getGateConditions, getProfileBackups, grantMigrationUserProjectPermissions, setProfileParent
+  P4: addGateConditions, restoreProfiles, setNewCodePeriods, setProjectGates, setProjectGroupPermissions, setProjectLinks, setProjectProfiles, setProjectSettings, setProjectTags, setProjectWebhooks
+  P5: importProjectData
+  P6: syncHotspotMetadata, syncIssueMetadata
+NOTE: restoreProfiles + addGateConditions land in P4 (deps satisfied at P3), strictly BEFORE importProjectData (P5) — this is the "profiles/gate configured before scan report replay" ordering the cmd comment promises. It is NOT a hardcoded ordering; it falls out of the topo-sort because importProjectData depends on setProjectProfiles which depends on createProfiles, and restoreProfiles is a sibling that resolves one phase earlier.
+
+CONCURRENCY / RATE LIMITING:
+- Within a phase, runPhase (migrate.go:272) uses errgroup with ONE goroutine per task (no SetLimit) — all tasks in a phase run in parallel.
+- Inside a task, fan-out is bounded by e.Sem = make(chan struct{}, cfg.Concurrency=25): forEachMigrateItemImpl (helpers.go:140) g.SetLimit(cap(e.Sem)); importProjectData (tasks_projectdata.go:55) g.SetLimit(cap(e.Sem)); runProjectSyncLoop (helpers.go:399) g.SetLimit(cap(e.Sem)). For a single-project transfer the per-project fan-out is effectively 1 project, so concurrency manifests inside syncIssue/Hotspot per-actionable-issue loops.
+- importProjectData per project: main branch imported first as a BLOCKING gate (importProjectBranches:153); if main fails, non-main branches recorded "skipped". Non-main branches then imported SEQUENTIALLY (loop:167). Non-main branches do a PreCreateAnalysis handshake (POST {api}/analysis/analyses -> analysisUuid stamped into metadata field 19) with BranchType="long", and reference the MAIN branch (metadata field 11) to avoid the CE "issue whilst processing report" error.
+- Rate limiting is HTTP-transport level, not task level: sqapi clients built with WithRateLimitObserver(rateLimitObs); RateLimitTracker.Observe (ratelimit.go:69) records each 429, returns firstOfKind so the logger.Warn "rate limiting detected" fires once per RateLimitKind. The transport itself performs the retry/backoff wait (WithRetryLogger logs "retrying request"); tracker only accounts cumulative/longest pause. Persisted to rate_limit_events.json on a deferred exit path.
+- syncOneHotspot adds a fixed 100ms sleep between comment POSTs (tasks_hotspotsync.go:368) as a soft self-throttle.
+
+ISSUE SYNC (tasks_issuesync.go): runSyncIssueMetadata -> loadRuleTagDefaults (getRuleDetails, used to strip rule-default tags so Tags = user-added only) -> forEachMigrateItem over createProjects -> syncProjectIssues: (1) loadMatchableIssues from getProjectIssuesFull extract, excluding CLOSED/FIXED; pre-filter to actionable via hasManualChanges (ACCEPTED/FALSE_POSITIVE issueStatus, legacy WONTFIX/FALSE-POSITIVE resolution, manualSeverity, user tags, or any comment — CONFIRMED & assignee NOT triggers). (2) waitForCloudIndexing (exp backoff 10->60s, 10 retries, non-fatal). (3+4) runProjectSyncLoop(interval 20) per actionable source -> resolveAndSyncIssue -> findCloudIssueCandidates (/api/issues/search scoped by componentKeys=cloudKey:file & rules=rule & issueStatuses=OPEN,CONFIRMED,FALSE_POSITIVE,ACCEPTED & additionalFields=transitions) -> classifyIssueCandidatesByLine (1 hit=synced, 0=not_found, >1=line_mismatch) -> syncOnePair: transition (resolveTransition gates "accept" on availability per #322), then comments ([Migrated from <login>] idempotency), then tags (+metadataSyncTag idempotency marker; presence skips the whole pair).
+
+HOTSPOT SYNC (tasks_hotspotsync.go): runSyncHotspotMetadata -> forEachMigrateItem over createProjects -> syncProjectHotspots: loadMatchableHotspots(getProjectHotspotsFull) -> actionable filter hotspotHasManualChanges (REVIEWED+SAFE/ACKNOWLEDGED/FIXED, or any comment) -> waitForCloudIndexing(Hotspots.Count) -> runProjectSyncLoop(interval 10) -> resolveAndSyncHotspot -> findCloudHotspotCandidates (/api/hotspots/search?projectKey&files via e.Raw paginated, PageLimit 5, NO rules param) -> classifyHotspotCandidatesByLine on (ruleKey,line) -> syncOneHotspot: ChangeStatus REVIEWED+mapHotspotResolution (ACKNOWLEDGED->SAFE), then comments ([Migrated from SonarQube] prefix idempotency, 100ms spacing).
+
+runID PRODUCTION: generateRunID(dir) (migrate.go:337) — today UTC "2006-01-02", scans existing dirs with that prefix, parses trailing NN, returns max+1 formatted "%s-%02d". Uses MAX (not count) to avoid the #359 gap-collision bug. runID="" path (createPlan=true) always for transfer since RunMigrate is called without RunID; runDir=exportDir/runID; plan.json written via writeMigrateMeta only when createPlan. filterCompleted skips tasks whose run-dir already exists (resumability). Returned up through runTransferMigrate -> runTransfer -> emitReports(exportDir,runID).
+
+================================================================================
+PHASE: reports (transfer command post-migrate report emission)  ENTRY: runTransfer -> emitReports -> summary.GenerateReports
+================================================================================
+STEPS:
+  [1] runTransfer  (go/cmd/transfer.go)
+      Cobra RunE for the transfer command. FIRST statement registers a deferred whole-command timer; then runs extract/structure/mappings/migrate (phases 1-4). After migrate returns runID, drives the reports phase, then prints 'Transfer complete.' The deferred timer fires last.
+      reads: cmd flags/context; runID returned by runTransferMigrate
+      writes: stdout ('Transfer complete.'); duration log line via deferred call
+      decisions: If any earlier phase errors, returns early and reports never run (the defer still logs duration). Report generation itself cannot fail the command because emitReports has no error return.
+      calls: common.LogCommandDuration (deferred), resolveTransferConfig, validateTransferConfig, runTransferExtract, runTransferStructure, runTransferMappings, runTransferMigrate, emitReports
+  [2] common.LogCommandDuration (deferred)  (go/cmd/transfer.go (registered L348))
+      Registered as `defer common.LogCommandDuration(slog.Default(), "transfer", time.Now())` at function entry, so time.Now() captures t0 immediately and the call executes on return. Bookends the ENTIRE transfer, including report emission, with a single 'Command transfer' duration line. Each sub-phase logs its own duration separately.
+      reads: t0 captured at entry; slog default logger
+      writes: structured log line with total elapsed wall time
+      decisions: Always fires on return (success or error path).
+  [3] emitReports  (go/cmd/transfer.go)
+      Builds runDir = filepath.Join(exportDir, runID) and calls summary.GenerateReports(runDir, exportDir, exportDir) — passing exportDir as BOTH outputDir and exportDir. On success prints the PDF and Markdown paths; on error returns silently (fire-and-forget, no error propagated).
+      reads: exportDir (cfg.exportDir), runID
+      writes: stdout: 'PDF summary report: <path>' and 'Markdown summary report: <path>' (only on success)
+      decisions: if err != nil { return } — swallows report errors so the transfer still completes successfully.
+      calls: filepath.Join, summary.GenerateReports, fmt.Printf
+  [4] GenerateReports  (go/internal/report/summary/generate.go)
+      Single entry for the report package. Defaults outputDir/exportDir to filepath.Dir(runDir) when empty (not the case here — transfer passes exportDir for both). Collects the summary once, then renders and writes PDF then Markdown. Returns (pdfPath, mdPath, err).
+      reads: runDir, outputDir, exportDir
+      writes: <outputDir>/migration_summary.pdf and <outputDir>/migration_summary.md (0o644)
+      decisions: Empty outputDir/exportDir -> Dir(runDir). Any error from CollectSummary/RenderPDF/WriteFile/RenderMarkdown short-circuits with a wrapped error and no/partial file output.
+      calls: CollectSummary, RenderPDF, os.WriteFile, RenderMarkdown, filepath.Join, filepath.Dir
+  [5] CollectSummary  (go/internal/report/summary/collect.go)
+      Builds the *MigrationSummary from the run's task JSONL outputs, the analysis/requests log, and the extract data. Creates a DataStore over runDir, collects failures/config-failures/project-data/NCD/sync stats, resolves the extract mapping, then iterates sectionDefs building one Section each (with Projects- and section-specific augmentation), attaches dropped-user-perm markers, assembles the summary (RunID, GeneratedAt, Sections, Limitations, RateLimit), and folds in runtime telemetry.
+      reads: runDir JSONL (importProjectData, setNewCodePeriods, syncIssueMetadata, syncHotspotMetadata, create* tasks, etc.) via common.DataStore; requests.log via analysis.ParseRequestsLog; extract JSONL via structure.GetUniqueExtracts/ReadExtractData under exportDir; run_meta.json/run_events.jsonl for runtime
+      writes: in-memory *MigrationSummary only (no files)
+      decisions: exportDir defaults to Dir(runDir) if empty. Per-section special handling: 'Global Settings' fans out via collectGlobalSettings; 'Projects' gets attachProjectData + NCD-fallback/branch-override partials + applyProjectFailures + attachSyncStats; Portfolios/Quality Gates/Quality Profiles/Groups/Permission Templates each have routing tweaks. collectRuntime errors are swallowed (predictive reports leave runtime zero-valued).
+      calls: common.NewDataStore, collectFailures, analysis.ParseRequestsLog, collectConfigFailures, collectProjectData, collectNCDFallback, collectNCDBranchOverrides, collectSyncStats, structure.GetUniqueExtracts, collectDroppedUserPermsBySection, collectSection, attachProjectData, applyNCDFallbackPartials, applyNCDBranchOverridePartials, collectProjectFailures, collectProjectSyncSkips, applyProjectFailures, attachSyncStats, attachDroppedUserPerms, extractRunID, collectLimitations, collectRateLimitReport, collectRuntime
+  [6] collectSection  (go/internal/report/summary/collect.go)
+      For each sectionDef, reads the create*/generate*Mappings task JSONL to build Succeeded/Skipped/Failed/Partial/NearPerfect EntityItems, augmenting from extract data and applying per-section routing rules (portfolio classification, gate condition remap notes, profile findings, built-in group skips, template default failures).
+      reads: store task JSONL (def.OutputTask/def.InputTask), failuresByType, configFailures, extract data under exportDir
+      writes: in-memory Section
+      decisions: Branches by def.Name (Global Settings / Portfolios / Quality Gates / Quality Profiles / Groups / Permission Templates) for special routing; generic succeeded/skipped/failed/partial path otherwise.
+      calls: collectGlobalSettings, collectSucceeded, collectSkipped, collectFailed, collectPartial, collectExtractSkipped, portfolioClassifications, applyPortfolioClassifications, collectGateMappingNotes, applyGateMappingNotes, collectProfileFindings, applyProfileFindings, appendBuiltInGroupSkips, applyTemplateDefaultFailures
+  [7] collectLimitations  (go/internal/report/summary/collect.go)
+      Builds the free-text bullet list for the 'Migration limitations' section: Applications-not-on-Cloud count, config-skipped project-data note, NCD limitations, SAST-customization, dropped user-permission notes, and SQS->SQC global-setting mapping notes — all derived from extract JSONL under exportDir.
+      reads: extract data via structure.ReadExtractData (getApplications, getNewCodePeriods, getServerSettings, getProjectSettings, getUserPermissions, template user feeds); run_meta.json for projectDataGloballySkipped
+      writes: []string of limitation bullets into summary.Limitations
+      decisions: Each sub-collector appends only when its source data is present; projectDataGloballySkipped(runDir) gates the config-skip note.
+      calls: countExtractItems, projectDataGloballySkipped, collectNCDLimitations, collectSASTCustomizationLimitation, collectUserPermissionLimitations, collectGlobalSettingMappingLimitations
+  [8] RenderPDF  (go/internal/report/summary (render*.go, same package))
+      Renders the *MigrationSummary into PDF bytes. Referenced by GenerateReports; definition lives elsewhere in the summary package (not in the cited files).
+      reads: *MigrationSummary
+      writes: []byte PDF content (returned)
+      decisions: On error, GenerateReports aborts before writing any file.
+  [9] os.WriteFile (PDF)  (go/internal/report/summary/generate.go)
+      Writes pdfBytes to pdfPath = filepath.Join(outputDir, "migration_summary.pdf") with mode 0o644, overwriting any existing file.
+      reads: pdfBytes, outputDir
+      writes: <outputDir>/migration_summary.pdf
+      decisions: Write error -> wrapped 'writing PDF' error, markdown never produced.
+      calls: filepath.Join, os.WriteFile
+  [10] RenderMarkdown  (go/internal/report/summary (render*.go, same package))
+      Renders the SAME *MigrationSummary into Markdown bytes. Definition lives elsewhere in the summary package (not in the cited files).
+      reads: *MigrationSummary
+      writes: []byte Markdown content (returned)
+      decisions: On error, GenerateReports returns before writing the .md (PDF already on disk).
+  [11] os.WriteFile (Markdown)  (go/internal/report/summary/generate.go)
+      Writes mdBytes to mdPath = filepath.Join(outputDir, "migration_summary.md") with mode 0o644; returns (pdfPath, mdPath, nil) to emitReports.
+      reads: mdBytes, outputDir
+      writes: <outputDir>/migration_summary.md
+      decisions: Write error -> wrapped 'writing Markdown' error.
+      calls: filepath.Join, os.WriteFile
+DATA FILES: <exportDir>/<runID>/  (runDir: source of task JSONL + requests.log + run_meta.json + run_events.jsonl), <exportDir>/<extract-run dirs>/ (extract JSONL read via structure.ReadExtractData for Limitations), <exportDir>/migration_summary.pdf (OUTPUT, 0o644), <exportDir>/migration_summary.md (OUTPUT, 0o644)
+
+ASCII FRAGMENT:
++--------------------------------------------------------------------+
+|  REPORTS PHASE  (cmd/transfer.go -> report/summary)                |
+|  bookended by: defer common.LogCommandDuration(slog,"transfer",t0) |
++--------------------------------------------------------------------+
+        runTransfer() :: cmd/transfer.go
+            | runID <- runTransferMigrate(ctx,cfg)   (phase 4/4)
+            v
+   emitReports(cfg.exportDir, runID)  :: cmd/transfer.go
+            | runDir = filepath.Join(exportDir, runID)
+            v
+   summary.GenerateReports(runDir, outputDir=exportDir,
+                                    exportDir)  :: generate.go
+            | outputDir/exportDir default to Dir(runDir) if ""
+            v
+   +----------------------------------------------------------+
+   | CollectSummary(runDir, exportDir)  :: collect.go         |
+   |   store = common.NewDataStore(runDir)                    |
+   |   collectFailures(runDir) <- analysis.ParseRequestsLog   |
+   |   collectConfigFailures(runDir)                          |
+   |   collectProjectData / NCDFallback / NCDBranchOverride / |
+   |     SyncStats (read task JSONL via store)                |
+   |   structure.GetUniqueExtracts(exportDir) -> mapping      |
+   |   collectDroppedUserPermsBySection(...)                  |
+   |   for def in sectionDefs: collectSection(...)            |
+   |     Projects: attachProjectData, NCD partials,           |
+   |       applyProjectFailures, attachSyncStats              |
+   |     attachDroppedUserPerms (all buckets, #353)           |
+   |   sum{RunID,GeneratedAt,Sections,Limitations,RateLimit}  |
+   |   collectRuntime(runDir) -> Started/Completed/Phases...  |
+   +----------------------------------------------------------+
+            | *MigrationSummary
+            v
+   RenderPDF(summary) --> os.WriteFile(outputDir/migration_summary.pdf,0644)
+            |
+            v
+   RenderMarkdown(summary) --> os.WriteFile(outputDir/migration_summary.md,0644)
+            | returns (pdfPath, mdPath, nil)
+            v
+   emitReports: prints "PDF summary report: <path>"
+                       "Markdown summary report: <path>"
+   (any err -> emitReports returns silently, no print)
+            v
+   runTransfer: println("Transfer complete.") ; defer fires:
+   common.LogCommandDuration logs total "Command transfer" duration
++--------------------------------------------------------------------+
+
+NOTES: Scope: this traces ONLY the reports emission that runs after migrate, per the three cited files. Render functions (RenderPDF / RenderMarkdown) and several collect* helpers (collectConfigFailures, collectRuntime, collectRateLimitReport, sectionDefs, EntityItem/Section/MigrationSummary types) live in other files of the same `summary` package and are referenced but not defined in collect.go/generate.go.
+
+Key path facts:
+- emitReports is called with NO error return; it is fire-and-forget. If GenerateReports errors, emitReports does `return` (line 478-480) and prints nothing — the transfer still prints "Transfer complete." and exits 0. Report failure never fails the transfer.
+- emitReports passes exportDir as BOTH outputDir and exportDir: summary.GenerateReports(runDir, exportDir, exportDir). So both the PDF and the markdown are written to the TOP-LEVEL export dir (cfg.exportDir), NOT inside runDir. runDir = exportDir/<runID> is only the SOURCE of the JSONL/log data.
+- File outputs are fixed names: <exportDir>/migration_summary.pdf and <exportDir>/migration_summary.md, mode 0o644. A prior run's files are overwritten (os.WriteFile truncates).
+- LogCommandDuration bookending: runTransfer's FIRST statement is `defer common.LogCommandDuration(slog.Default(), "transfer", time.Now())` (line 348), capturing t0 at function entry. It fires LAST, after emitReports and the "Transfer complete." println, logging the whole-transfer wall time. The four sub-phases (extract/structure/mappings/migrate) each log their own "Command X" duration line; this defer is the outer bookend for the entire transfer including report generation.
+- CollectSummary is the single data-collection pass; GenerateReports renders BOTH formats from that one *MigrationSummary (comment in generate.go: "collects migration data from runDir once and renders BOTH a PDF and a Markdown"). PDF is rendered+written first, then markdown.
+- collectRuntime is tolerant: missing run_meta.json/run_events.jsonl/requests.log leaves runtime fields zero (predictive-report case); for a real transfer these files exist in runDir so StartedAt/CompletedAt/TotalElapsed/Phases/Tasks/Failures/Warnings/Branches/Throughput are populated.
+- GeneratePDFReport (generate.go:59) is a back-compat wrapper that calls GenerateReports and discards mdPath; transfer does NOT use it — emitReports calls GenerateReports directly.
+- exportDir is also the root that structure.GetUniqueExtracts / structure.ReadExtractData read extract JSONL from for the Limitations section (Applications, NCD, SAST customization, dropped user perms, global-setting mappings).
+
+Relevant files (absolute):
+/Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/cmd/transfer.go (runTransfer L344-381, emitReports L475-483, LogCommandDuration defer L348)
+/Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/internal/report/summary/generate.go (GenerateReports L20-54)
+/Users/joshua.quek/Desktop/agents-sonar-migration-tool/sonar-migration-tool/go/internal/report/summary/collect.go (CollectSummary L27-125 and helpers)
+

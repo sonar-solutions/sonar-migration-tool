@@ -1,5 +1,0 @@
-time=2026-06-09T19:03:39.276+08:00 level=INFO msg="sonar-migration-tool starting" version=0.2.0
-time=2026-06-09T19:03:39.278+08:00 level=INFO msg="starting regression test suite" checks=43 concurrency=20
-time=2026-06-09T19:06:21.975+08:00 level=INFO msg="Command regtest: Duration 00:02:42.696"
-Error: regression test FAILED: 1410 failures, 1002 errors out of 2717 checks
-REGTEST_EXIT=1
