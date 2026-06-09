@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -476,6 +477,10 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 		return nil, nil, fmt.Errorf("packaging report: %w", err)
 	}
 
+	if e.DebugScannerReport {
+		dumpScannerReport(e, input.CloudKey, input.Branch, zipBytes)
+	}
+
 	e.Logger.Info("report packaged",
 		"project", input.CloudKey, "sourceBranch", input.Branch, "targetBranch", targetBranch,
 		"projectVersion", projectVersion,
@@ -489,6 +494,51 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 	)
 
 	return &branchReport{ZIP: zipBytes, ProjectVersion: projectVersion}, nil, nil
+}
+
+// dumpScannerReport writes the packaged ZIP to disk so the operator
+// can unzip and inspect source-<ref>.txt, component-<ref>.pb, etc.
+// against a known-good scanner-generated report. Enabled via
+// --debug_scanner_report. Errors are logged but do not block the
+// real submission. #358.
+func dumpScannerReport(e *Executor, cloudKey, branch string, zipBytes []byte) {
+	if e.RunDir == "" {
+		e.Logger.Warn("debug_scanner_report set but RunDir is empty; skipping dump")
+		return
+	}
+	dir := filepath.Join(e.RunDir, "scanner-reports")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		e.Logger.Warn("debug_scanner_report: mkdir failed", "dir", dir, "err", err)
+		return
+	}
+	// Sanitise the path: branch can contain slashes (release/foo) or
+	// commas (the user's "comma,branch"). Replace anything that isn't
+	// alnum / dot / dash / underscore with "_".
+	safeBranch := sanitiseScannerReportName(branch)
+	name := fmt.Sprintf("%s_%s.zip", cloudKey, safeBranch)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, zipBytes, 0o644); err != nil {
+		e.Logger.Warn("debug_scanner_report: write failed", "path", path, "err", err)
+		return
+	}
+	e.Logger.Info("debug_scanner_report: wrote ZIP", "path", path, "bytes", len(zipBytes))
+}
+
+// sanitiseScannerReportName replaces filesystem-unfriendly characters
+// in a branch name (slash, comma, colon, ...) with "_".
+func sanitiseScannerReportName(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // fixComponentLineCounts sets each component's line count to the best available
