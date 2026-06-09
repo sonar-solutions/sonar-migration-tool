@@ -82,3 +82,7 @@ regression-test/
 # Node (no longer used — frontend is Go templates + HTMX)
 node_modules/
 .gstack/
+# Transfer-verification harness: keep the reusable workflow script, ignore the
+# per-run output (logs, regtest dumps, baselines — may contain hosts/data).
+dynamic-workflows/verification-run/*
+!dynamic-workflows/verification-run/verify-workflow.js

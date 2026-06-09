@@ -1,0 +1,55 @@
+### Re-running importProjectData in the same run dir overwrites prior results.N.jsonl files, corrupting the completed-branch record
+- unit:migrate-projectdata file:internal/migrate/tasks_projectdata.go:44, 236-245 (claimed medium)
+- WHY REFUTED: REFUTED. The reviewer's mechanical description is accurate but the triggering precondition — re-entering runImportProjectData against an existing importProjectData/ dir — is unreachable in the code as written.
+
+Facts verified:
+- writer.go:18-58: NewChunkWriter zeroes chunkIdx; WriteChunk uses atomic AddInt32 then os.Create (truncating). So IF a second writer ran against a dir already holding results.N.jsonl, it would overwrite same-numbered files. That part is true.
+- store.go:39-41: Writer(task
+
+### REGEXP/TAGS portfolio PATCH never sends organizationIds, leaving the regex/tags selection unscoped to the migrated org(s)
+- unit:migrate-portfolios file:internal/migrate/tasks_portfolios.go:106-136 (claimed medium)
+- WHY REFUTED: REFUTED. The claim's load-bearing premise — that PATCH /enterprises/portfolios *requires* organizationIds when selection is regexp/tags — is false, and the code is correct without it.
+
+EVIDENCE:
+1. Official SonarQube Cloud docs (administering-portfolios) explicitly list "by name", "by tags", "by organizations", and "using regex" as FOUR independent, mutually-exclusive selection methods ("you can't mix and match"). The docs state verbatim that with regex "you don't also need to specify organizati
+
+### Side-sectioned (shape 3) config silently drops exclude_branches / default_organization / debug
+- unit:migrate-misc file:internal/migrate/config_file.go:224-250 (claimed medium)
+- WHY REFUTED: REFUTED. The mechanical observation is correct — sonarCloudBlock.toMigrateConfig (config_file.go:224-250) copies only Edition/EnterpriseKey/Token/URL/ExportDirectory/Concurrency and never sets ExcludeBranches/DefaultOrganization/Debug/RunID/TargetTask — and I empirically confirmed via a throwaway in-package test that a shape-3 config with top-level exclude_branches:["feature/*","bugfix/*"], debug:true, default_organization:"my-org" yields ExcludeBranches=[] (len 0), Debug=false, DefaultOrg="". B
+
+### GetPaginated stops after page 1 when the total count cannot be read, silently truncating full result sets
+- unit:extract-core file:internal/common/rawclient.go:150-192 (ExtractTotal 258-283) (claimed medium)
+- WHY REFUTED: REFUTED. The code mechanism the reviewer describes is accurate (ExtractTotal returns 0 on a missing/non-int dot-path -> TotalPages(0,ps)=0 -> the `for page:=2; page<=0` loop never runs -> only page 1 is returned silently, with no full-batch fallback). But the claim that this manifests at runtime fails: the bug requires a called endpoint whose response does NOT carry `paging.total`, and no such caller exists.
+
+Evidence (all ~20 GetPaginated call sites in /go/internal/extract/*.go, migrate/tasks_r
+
+### Integer measures > int32 max silently become 0 (validation uses 64-bit, parse uses 32-bit)
+- unit:scanreport file:internal/scanreport/builder.go:447-449 (claimed high)
+- WHY REFUTED: REFUTED — the flagged code is unreachable in production, and the claim also mischaracterizes Go's overflow semantics.
+
+REACHABILITY (the decisive point): buildMeasureValue (builder.go:441) is called by exactly one function, BuildMeasures (builder.go:323). I grepped the entire tree: BuildMeasures( is only ever called from internal/scanreport/builder_test.go:181 — never from production code. The upstream measures-extraction path is equally dead: the Pipeline.ExtractMetrics method exists and is imp
+
+### addDefaultGroups assigns every server's permissioned groups to every org across all servers
+- unit:structure-entities file:internal/structure/groups.go:40-67 (claimed medium)
+- WHY REFUTED: REFUTED. The reviewer's load-bearing harm claim — "during migrate those groups get created/permissioned in orgs that never had them, granting permissions on the wrong org" — does not hold, because it misreads the data flow.
+
+1. What groups.csv (addDefaultGroups output) actually drives: It feeds runCreateGroups (internal/migrate/tasks_create.go:240-288) via generateGroupMappings. That task only CREATES the group OBJECT by name+description in the org; it attaches NO permissions, handles IsAlreadyE
+
+### extractRootParent recurses infinitely on cyclic / self-referential profile parent chains
+- unit:report-common-b file:internal/report/common/profiles.go:209-221 (claimed high)
+- WHY REFUTED: REFUTED. The claim accurately describes the code: extractRootParent (internal/report/common/profiles.go:209-221) walks the parent chain by name with no visited-set and no depth guard, so a self-parent (X.parent=X) or name-cycle (A.parent=B, B.parent=A) WOULD recurse without bound. profiles[parent] resolves the parent by name within the per-language map and recurses on identical state, so the mechanism is a correct reading of Go semantics — not a misunderstanding. However, is_real hinges on REACH
+
+### Webhook delivery counted in 'deliveries' but never classified when delivery date fails to parse
+- unit:report-common-b file:internal/report/common/webhooks.go:59-74 (claimed medium)
+- WHY REFUTED: The reviewer's mechanical description of the code is accurate: in processDeliveryEntry (internal/report/common/webhooks.go:54-75), line 60 increments wh["deliveries"], then lines 62-66 parse $.at and return early on parse failure, before the success/failure classification at lines 68-74. The classification reads $.success and does not actually require the parsed date t (t is only used for last_success/last_error), so gating it behind the date parse is structurally unnecessary. The Deliveries == 
+
+### "resolved" issue folder maps to a non-existent extract task name, so open counts are never reduced by resolved issues
+- unit:report-maturity-a file:internal/report/maturity/issues.go:17-21, 36-43, 60-66 (claimed high)
+- WHY REFUTED: REFUTED. The folderMapping typo is real (issues.go:18 maps "resolved" -> "getProjectResolvedIssueTypes", but the extract task is "getProjectFixedIssueTypes" at tasks_issues.go:45-46; grep confirms no task named getProjectResolvedIssueTypes exists outside this mapping and the tests). ReadExtractData (structure/extract.go:82-95) builds path <extractID>/getProjectResolvedIssueTypes, os.ReadDir errors, the per-server loop `continue`s, and it returns ([]ExtractItem{}, nil) — so the "resolved" branch'
+
+### paginateAll has no page cap, so issues/hotspots extraction aborts entirely for projects exceeding SonarQube's 10,000-result hard limit
+- unit:pipeline file:internal/pipeline/helpers.go:31-52, 86-90 (claimed high)
+- WHY REFUTED: REFUTED. The flagged code (paginateAll in internal/pipeline/helpers.go:31-43, driven by fetchAllIssues:48-52 and fetchAllHotspots:86-90) is unreachable dead code, so the alleged bug cannot manifest at runtime.
+
+Mechanically the reviewer is partly right about the loop in isolation: paginateAll uses `for page := 1; ; page++` with stop conditions `len(items)==0 || len(all)>=total` (line 39), no page cap; fetchIssuesPage treats any non-200 as a hard error (lines 71-73). If total>10000 with pageSize 
+

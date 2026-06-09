@@ -39,6 +39,10 @@ paths = [
   # stays green for the already-mitigated leak. REMOVE this line once the file
   # is purged from git history (git filter-repo --path CONTINUE.md --invert-paths).
   '''CONTINUE\.md''',
+  # verify-transfer harness: its connection cheat-sheet shows `curl -u "$SRC_TOKEN:"`
+  # where $SRC_TOKEN is a shell var read from a gitignored config at runtime — not a
+  # literal secret. Trips the built-in curl-auth-user rule; no real token present.
+  '''dynamic-workflows/verification-run/verify-workflow\.js''',
   '''examples/.*''',
   '''.*\.example\.json''',
   '''schemas/.*''',
