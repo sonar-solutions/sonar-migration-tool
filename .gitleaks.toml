@@ -42,7 +42,10 @@ paths = [
   # verify-transfer harness: its connection cheat-sheet shows `curl -u "$SRC_TOKEN:"`
   # where $SRC_TOKEN is a shell var read from a gitignored config at runtime — not a
   # literal secret. Trips the built-in curl-auth-user rule; no real token present.
-  '''dynamic-workflows/verification-run/verify-workflow\.js''',
+  # Match the basename anywhere: the file lived at verification-run/verify-workflow.js
+  # in older commits and now at dynamic-workflows/verification-run/verify-workflow.js,
+  # so the full-history CI scan must allowlist both locations.
+  '''(^|/)verify-workflow\.js$''',
   '''examples/.*''',
   '''.*\.example\.json''',
   '''schemas/.*''',
