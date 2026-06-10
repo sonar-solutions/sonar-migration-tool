@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/migrate"
@@ -79,6 +80,10 @@ func synthesizeSetGlobalSettings(exportDir, runDir string, extractMapping struct
 	seenKey[migrate.AiCodeFixHiddenSetting] = true
 	seenKey[migrate.AiCodeFixSuggestionsSetting] = true
 
+	// #363: all sonar.auth.* keys collapse to a single Skipped row,
+	// emitted once after the main loop.
+	hasConsolidatedAuth := false
+
 	for _, it := range rawItems {
 		key := jsonStringField(it.Data, "key")
 		if key == "" || seenKey[key] {
@@ -92,6 +97,18 @@ func synthesizeSetGlobalSettings(exportDir, runDir string, extractMapping struct
 			continue
 		}
 		seenKey[key] = true
+
+		// #363: defer all sonar.auth.* keys; the consolidated row is
+		// written once after both loops. Honor the empty-value
+		// silent-skip rule by consulting EvaluateSQSOnlyGlobalSetting —
+		// when it returns isSQSOnly=false the key carries no value
+		// worth surfacing, so it shouldn't trigger the consolidated row.
+		if strings.HasPrefix(key, "sonar.auth.") {
+			if _, isSQSOnly := migrate.EvaluateSQSOnlyGlobalSetting(key, it.Data); isSQSOnly {
+				hasConsolidatedAuth = true
+			}
+			continue
+		}
 
 		// #249: sonar.dbcleaner.branchesToKeepWhenInactive migrates as
 		// a regex into the SQC org-scope sonar.branch.longLivedBranches
@@ -170,6 +187,26 @@ func synthesizeSetGlobalSettings(exportDir, runDir string, extractMapping struct
 		}
 		if err := w.WriteOne(b); err != nil {
 			return err
+		}
+	}
+
+	// #363: single consolidated sonar.auth.* row, emitted once if any
+	// auth setting carried a value worth surfacing.
+	if hasConsolidatedAuth {
+		rec := map[string]any{
+			"key": migrate.SonarAuthConsolidatedKey,
+			"outcomes": []map[string]string{{
+				"org":    "",
+				"status": "skipped",
+				"reason": "sqs-only",
+				"detail": migrate.SkipDetailSonarAuthConsolidated,
+			}},
+		}
+		b, err := json.Marshal(rec)
+		if err == nil {
+			if err := w.WriteOne(b); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

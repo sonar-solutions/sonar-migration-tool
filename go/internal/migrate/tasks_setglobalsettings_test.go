@@ -1270,6 +1270,19 @@ func TestPartitionSQSOnlySettings(t *testing.T) {
 			name: "unknown setting passes through",
 			raw:  map[string]any{"key": "sonar.exclusions", "values": []string{"a"}},
 		},
+		{
+			// #363: empty auth values stay silent.
+			name:       "sonar.auth.* with empty value is silent",
+			raw:        map[string]any{"key": "sonar.auth.saml.enabled", "value": ""},
+			wantSilent: true,
+		},
+		{
+			// #363: a single sonar.auth.* with value collapses into the
+			// consolidated row (key+wording asserted in the dedicated test below).
+			name:     "sonar.auth.* with value emits the consolidated note",
+			raw:      map[string]any{"key": "sonar.auth.saml.enabled", "value": "true"},
+			wantNote: SkipDetailSonarAuthConsolidated,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1305,6 +1318,92 @@ func TestPartitionSQSOnlySettings(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// #363: every sonar.auth.* setting with a value collapses into a single
+// synthetic row keyed "sonar.auth.*" with the dedicated wording, so the
+// Global Settings section no longer lists each auth key individually.
+// Non-auth SQS-only notes must pass through unchanged.
+func TestPartitionSQSOnlySettingsConsolidatesSonarAuth(t *testing.T) {
+	mk := func(m map[string]any) json.RawMessage {
+		b, _ := json.Marshal(m)
+		return b
+	}
+	inputs := []json.RawMessage{
+		mk(map[string]any{"key": "sonar.auth.saml.enabled", "value": "true"}),
+		mk(map[string]any{"key": "sonar.auth.github.enabled", "value": "true"}),
+		mk(map[string]any{"key": "sonar.auth.gitlab.clientId", "value": "abc"}),
+		// Empty auth value — silent, must not influence the consolidated row.
+		mk(map[string]any{"key": "sonar.auth.bitbucket.enabled", "value": ""}),
+		// Non-auth SQS-only note — must pass through with its original key.
+		mk(map[string]any{"key": "sonar.technicalDebt.ratingGrid", "value": "0.03,0.07,0.2,0.5"}),
+	}
+	rem, notes := partitionSQSOnlySettings(inputs)
+	if len(rem) != 0 {
+		t.Fatalf("all inputs are SQS-only; remaining should be 0, got %d", len(rem))
+	}
+	if len(notes) != 2 {
+		t.Fatalf("expected 2 notes (1 consolidated auth + 1 ratingGrid), got %d: %+v", len(notes), notes)
+	}
+
+	var consolidated, ratingGrid *globalSettingResult
+	for i := range notes {
+		switch notes[i].Key {
+		case SonarAuthConsolidatedKey:
+			consolidated = &notes[i]
+		case "sonar.technicalDebt.ratingGrid":
+			ratingGrid = &notes[i]
+		}
+	}
+	if consolidated == nil {
+		t.Fatalf("missing consolidated sonar.auth.* row in notes: %+v", notes)
+	}
+	if ratingGrid == nil {
+		t.Fatalf("missing ratingGrid pass-through in notes: %+v", notes)
+	}
+
+	// Consolidated row carries the new wording and one section-level outcome.
+	if len(consolidated.Outcomes) != 1 {
+		t.Fatalf("consolidated row must have exactly 1 outcome, got %d", len(consolidated.Outcomes))
+	}
+	oc := consolidated.Outcomes[0]
+	if oc.Detail != SkipDetailSonarAuthConsolidated {
+		t.Errorf("consolidated Detail = %q, want %q", oc.Detail, SkipDetailSonarAuthConsolidated)
+	}
+	if oc.Status != outcomeSkipped {
+		t.Errorf("consolidated Status = %q, want %q", oc.Status, outcomeSkipped)
+	}
+	if oc.Org != "" {
+		t.Errorf("consolidated row must be section-level (Org=\"\"), got %q", oc.Org)
+	}
+	if oc.Reason != "sqs-only" {
+		t.Errorf("consolidated Reason = %q, want \"sqs-only\"", oc.Reason)
+	}
+
+	// Non-auth note passes through with its original wording (the canonical not-on-SQC text).
+	if got := ratingGrid.Outcomes[0].Detail; got != SkipDetailNotOnSQC {
+		t.Errorf("ratingGrid Detail = %q, want %q", got, SkipDetailNotOnSQC)
+	}
+}
+
+// #363: when only empty-valued sonar.auth.* keys are present, no
+// consolidated row is emitted — there's nothing to surface.
+func TestPartitionSQSOnlySettingsSonarAuthEmptyValuesStaySilent(t *testing.T) {
+	mk := func(m map[string]any) json.RawMessage {
+		b, _ := json.Marshal(m)
+		return b
+	}
+	inputs := []json.RawMessage{
+		mk(map[string]any{"key": "sonar.auth.saml.enabled", "value": ""}),
+		mk(map[string]any{"key": "sonar.auth.github.enabled", "value": ""}),
+	}
+	rem, notes := partitionSQSOnlySettings(inputs)
+	if len(rem) != 0 {
+		t.Fatalf("auth keys must be removed from customized list, got %d remaining", len(rem))
+	}
+	if len(notes) != 0 {
+		t.Fatalf("empty auth values must not produce a consolidated row, got %d notes: %+v", len(notes), notes)
 	}
 }
 
