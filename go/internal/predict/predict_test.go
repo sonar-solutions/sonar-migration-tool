@@ -259,3 +259,96 @@ func TestGeneratePredictiveReport_NoCSVs(t *testing.T) {
 		t.Error("expected error on exportDir without any mapping CSVs")
 	}
 }
+
+// #363: the predictive Global Settings section must consolidate every
+// sonar.auth.* key carrying a value into a single Skipped row keyed
+// "sonar.auth.*" with the dedicated "must be redefined" wording.
+func TestGeneratePredictiveReport_ConsolidatesSonarAuth(t *testing.T) {
+	exportDir := t.TempDir()
+
+	writeFile(t, exportDir, "organizations.csv",
+		"sonarqube_org_key,sonarcloud_org_key,server_url\n"+
+			"default,target-org,"+testServerURL+"\n")
+	writeFile(t, exportDir, "projects.csv",
+		"name,key,server_url,sonarqube_org_key\n"+
+			"App,com.example:app,"+testServerURL+",default\n")
+	writeFile(t, exportDir, "gates.csv",
+		"name,server_url,source_gate_key,is_default,sonarqube_org_key\n")
+
+	extractID := "extract-0001"
+	extractDir := filepath.Join(exportDir, extractID)
+	writeFile(t, extractDir, "extract.json", `{"url":"`+testServerURL+`"}`)
+
+	// Three sonar.auth.* keys with values plus one with an empty value
+	// (must stay silent). The non-auth control should remain in Succeeded.
+	writeJSONL(t, filepath.Join(extractDir, "getServerSettings", "settings.jsonl"),
+		[]map[string]any{
+			{"key": "sonar.auth.saml.enabled", "value": "true"},
+			{"key": "sonar.auth.github.enabled", "value": "true"},
+			{"key": "sonar.auth.gitlab.clientId", "value": "abc"},
+			{"key": "sonar.auth.bitbucket.enabled", "value": ""},
+			{"key": "sonar.exclusions", "value": "**/vendor/**"},
+		})
+	writeJSONL(t, filepath.Join(extractDir, "getServerSettingsDefinitions", "defs.jsonl"),
+		[]map[string]any{
+			{"key": "sonar.auth.saml.enabled", "defaultValue": ""},
+			{"key": "sonar.auth.github.enabled", "defaultValue": ""},
+			{"key": "sonar.auth.gitlab.clientId", "defaultValue": ""},
+			{"key": "sonar.auth.bitbucket.enabled", "defaultValue": ""},
+			{"key": "sonar.exclusions", "defaultValue": ""},
+		})
+
+	if _, err := GeneratePredictiveReport(exportDir); err != nil {
+		t.Fatalf("GeneratePredictiveReport: %v", err)
+	}
+
+	entries, err := os.ReadDir(exportDir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	var runDir string
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "predictive-") {
+			runDir = filepath.Join(exportDir, e.Name())
+			break
+		}
+	}
+	if runDir == "" {
+		t.Fatal("no predictive run directory found")
+	}
+
+	mig, err := summary.CollectSummary(runDir, exportDir)
+	if err != nil {
+		t.Fatalf("CollectSummary: %v", err)
+	}
+	settings := findSection(mig, "Global Settings")
+	if settings == nil {
+		t.Fatal("Global Settings section missing")
+	}
+
+	// No per-key auth row may appear anywhere in the section.
+	allBuckets := append([]summary.EntityItem{}, settings.Succeeded...)
+	allBuckets = append(allBuckets, settings.NearPerfect...)
+	allBuckets = append(allBuckets, settings.Partial...)
+	allBuckets = append(allBuckets, settings.Skipped...)
+	allBuckets = append(allBuckets, settings.Failed...)
+	for _, it := range allBuckets {
+		if strings.HasPrefix(it.Name, "sonar.auth.") && it.Name != "sonar.auth.*" {
+			t.Errorf("per-key sonar.auth.* row %q must not appear; expected only the consolidated row", it.Name)
+		}
+	}
+
+	// Exactly one consolidated row in Skipped with the dedicated wording.
+	var seen int
+	for _, it := range settings.Skipped {
+		if it.Name == "sonar.auth.*" {
+			seen++
+			if it.Detail != "Settings not migrated. Authentication must be redefined from scratch on SonarQube Cloud" {
+				t.Errorf("consolidated row Detail = %q; want the #363 wording", it.Detail)
+			}
+		}
+	}
+	if seen != 1 {
+		t.Errorf("expected exactly 1 consolidated sonar.auth.* row in Skipped, got %d (skipped=%+v)", seen, settings.Skipped)
+	}
+}

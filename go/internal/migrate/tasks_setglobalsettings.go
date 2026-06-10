@@ -210,10 +210,22 @@ const (
 	skipDetailDefaultValue = "Setting is left to default on SQS, no migration needed"
 	skipDetailNotOnSQC     = "Setting does not exist (feature does not exist or setting irrelevant) on SQC, no migration possible"
 
+	// #363: all sonar.auth.* settings collapse to a single Skipped row
+	// with this wording — authentication is not portable to SQC and has
+	// to be redefined from scratch, so listing every auth key with the
+	// generic not-on-SQC note just adds noise.
+	skipDetailSonarAuthConsolidated = "Settings not migrated. Authentication must be redefined from scratch on SonarQube Cloud"
+
+	// sonarAuthConsolidatedKey is the synthetic key used in the report
+	// row that aggregates every sonar.auth.* setting (#363).
+	sonarAuthConsolidatedKey = "sonar.auth.*"
+
 	// Exported aliases — the predict pipeline consumes these so the
 	// real and predictive reports share the exact same wording.
-	SkipDetailDefaultValue = skipDetailDefaultValue
-	SkipDetailNotOnSQC     = skipDetailNotOnSQC
+	SkipDetailDefaultValue          = skipDetailDefaultValue
+	SkipDetailNotOnSQC              = skipDetailNotOnSQC
+	SkipDetailSonarAuthConsolidated = skipDetailSonarAuthConsolidated
+	SonarAuthConsolidatedKey        = sonarAuthConsolidatedKey
 )
 
 // sqsOnlyNoteText kept for backward compatibility with existing
@@ -342,7 +354,36 @@ func partitionSQSOnlySettings(values []json.RawMessage) (remaining []json.RawMes
 		}}
 		notes = append(notes, rec)
 	}
-	return remaining, notes
+	return remaining, consolidateSonarAuthNotes(notes)
+}
+
+// consolidateSonarAuthNotes collapses every sonar.auth.* per-key note
+// emitted by partitionSQSOnlySettings into a single synthetic record
+// with key=sonar.auth.* (#363). Authentication is not portable to SQC
+// and has to be redefined from scratch, so a per-key listing just adds
+// noise. Non-auth notes pass through in their original order.
+func consolidateSonarAuthNotes(notes []globalSettingResult) []globalSettingResult {
+	out := notes[:0]
+	hasAuth := false
+	for _, n := range notes {
+		if strings.HasPrefix(n.Key, "sonar.auth.") {
+			hasAuth = true
+			continue
+		}
+		out = append(out, n)
+	}
+	if hasAuth {
+		out = append(out, globalSettingResult{
+			Key: sonarAuthConsolidatedKey,
+			Outcomes: []orgOutcome{{
+				Org:    "",
+				Status: outcomeSkipped,
+				Reason: skipReasonSQSOnlyValue,
+				Detail: skipDetailSonarAuthConsolidated,
+			}},
+		})
+	}
+	return out
 }
 
 // skipReasonSQSOnlyValue is the reason marker placed on per-section
