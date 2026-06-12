@@ -13,7 +13,9 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/sonar-solutions/sonar-migration-tool/internal/extract"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/gui"
+	"github.com/sonar-solutions/sonar-migration-tool/internal/migrate"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/wizard"
 	"github.com/spf13/cobra"
 )
@@ -29,10 +31,14 @@ func init() {
 	guiCmd.Flags().String("export_directory", DefaultExportDirectory, "Root directory to output the export")
 	guiCmd.Flags().String("addr", "localhost:0", "Address to bind the HTTP server (default: random port)")
 	guiCmd.Flags().Bool("no-browser", false, "Do not open the browser automatically")
+	guiCmd.Flags().StringP("config", "c", "", "Path to JSON configuration file (same shape as extract / migrate / transfer). Pre-fills the wizard form with the URLs, enterprise key, and tokens it carries.")
 }
 
 func runGUI(cmd *cobra.Command, args []string) error {
-	exportDir, _ := cmd.Flags().GetString("export_directory")
+	exportDir, seed, err := resolveGUIDefaults(cmd)
+	if err != nil {
+		return err
+	}
 	addr, _ := cmd.Flags().GetString("addr")
 	noBrowser, _ := cmd.Flags().GetBool("no-browser")
 
@@ -72,7 +78,7 @@ func runGUI(cmd *cobra.Command, args []string) error {
 		hub.SetPrompter(prompter)
 		hub.Send(gui.ServerMessage{Type: gui.TypeWizardStarted})
 
-		go runWizardAsync(wizCtx, prompter, hub, exportDir, &wizMu, &wizActive)
+		go runWizardAsync(wizCtx, prompter, hub, exportDir, seed, &wizMu, &wizActive)
 	}
 
 	hub.OnCancelWizard = func() {
@@ -95,8 +101,8 @@ func runGUI(cmd *cobra.Command, args []string) error {
 	return <-errCh
 }
 
-func runWizardAsync(ctx context.Context, prompter *gui.WebPrompter, hub *gui.Hub, exportDir string, mu *sync.Mutex, active *bool) {
-	err := wizard.Run(ctx, prompter, exportDir)
+func runWizardAsync(ctx context.Context, prompter *gui.WebPrompter, hub *gui.Hub, exportDir string, seed *wizard.WizardState, mu *sync.Mutex, active *bool) {
+	err := wizard.RunWithSeed(ctx, prompter, exportDir, seed)
 
 	mu.Lock()
 	*active = false
@@ -112,6 +118,67 @@ func runWizardAsync(ctx context.Context, prompter *gui.WebPrompter, hub *gui.Hub
 		}
 	}
 	hub.Send(msg)
+}
+
+// resolveGUIDefaults reads --config (if any) plus --export_directory
+// and returns the export dir to use plus a wizard seed for the URLs
+// + tokens + enterprise key the config carries. Returns (exportDir,
+// nil, nil) when --config is absent — the wizard then starts with a
+// blank form, preserving the pre-#388 behaviour.
+//
+// Precedence:
+//   - --export_directory wins over config's export_directory when
+//     explicitly set on the CLI (matches the transfer command).
+//   - The seed is never persisted to disk in full — tokens travel
+//     in-memory only; URL fields end up on disk only when the wizard
+//     itself records them during a phase.
+func resolveGUIDefaults(cmd *cobra.Command) (string, *wizard.WizardState, error) {
+	exportDir, _ := cmd.Flags().GetString("export_directory")
+	configFile, _ := cmd.Flags().GetString("config")
+	if configFile == "" {
+		return exportDir, nil, nil
+	}
+
+	extractCfg, err := extract.LoadExtractConfigFile(configFile)
+	if err != nil {
+		return "", nil, fmt.Errorf("loading --config: %w", err)
+	}
+	migrateCfg, err := migrate.LoadMigrateConfigFile(configFile)
+	if err != nil {
+		return "", nil, fmt.Errorf("loading --config: %w", err)
+	}
+
+	if !cmd.Flags().Changed("export_directory") {
+		switch {
+		case extractCfg.ExportDirectory != "":
+			exportDir = extractCfg.ExportDirectory
+		case migrateCfg.ExportDirectory != "":
+			exportDir = migrateCfg.ExportDirectory
+		}
+	}
+
+	seed := &wizard.WizardState{}
+	if extractCfg.URL != "" {
+		v := extractCfg.URL
+		seed.SourceURL = &v
+	}
+	if extractCfg.Token != "" {
+		v := extractCfg.Token
+		seed.SourceToken = &v
+	}
+	if migrateCfg.URL != "" {
+		v := migrateCfg.URL
+		seed.TargetURL = &v
+	}
+	if migrateCfg.Token != "" {
+		v := migrateCfg.Token
+		seed.TargetToken = &v
+	}
+	if migrateCfg.EnterpriseKey != "" {
+		v := migrateCfg.EnterpriseKey
+		seed.EnterpriseKey = &v
+	}
+	return exportDir, seed, nil
 }
 
 func openBrowserWhenReady(ctx context.Context, srv *gui.Server) {

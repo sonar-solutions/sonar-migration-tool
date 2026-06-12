@@ -514,3 +514,142 @@ func writeExtractMeta(t *testing.T, dir string) {
 	data, _ := json.Marshal(meta)
 	os.WriteFile(filepath.Join(extractDir, "extract.json"), data, 0o644)
 }
+
+// #388: mergeSeed pre-fills wizard state fields from a config-driven
+// seed without clobbering values the wizard has already recorded
+// (disk-wins semantics for the URL / enterprise-key triple). Tokens
+// always come from the seed because the on-disk state never carries
+// them (json:"-").
+func TestMergeSeed(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+
+	cases := []struct {
+		name  string
+		state WizardState
+		seed  WizardState
+		want  WizardState
+	}{
+		{
+			name:  "empty state — every seed field applied",
+			state: WizardState{},
+			seed: WizardState{
+				SourceURL:     strPtr("https://sq"),
+				TargetURL:     strPtr("https://sc"),
+				EnterpriseKey: strPtr("ent"),
+				SourceToken:   strPtr("sq-tok"),
+				TargetToken:   strPtr("sc-tok"),
+			},
+			want: WizardState{
+				SourceURL:     strPtr("https://sq"),
+				TargetURL:     strPtr("https://sc"),
+				EnterpriseKey: strPtr("ent"),
+				SourceToken:   strPtr("sq-tok"),
+				TargetToken:   strPtr("sc-tok"),
+			},
+		},
+		{
+			name: "existing URL wins, seed token still applied",
+			state: WizardState{
+				SourceURL:     strPtr("disk-sq"),
+				TargetURL:     strPtr("disk-sc"),
+				EnterpriseKey: strPtr("disk-ent"),
+			},
+			seed: WizardState{
+				SourceURL:     strPtr("seed-sq"),
+				TargetURL:     strPtr("seed-sc"),
+				EnterpriseKey: strPtr("seed-ent"),
+				SourceToken:   strPtr("sq-tok"),
+				TargetToken:   strPtr("sc-tok"),
+			},
+			want: WizardState{
+				SourceURL:     strPtr("disk-sq"),
+				TargetURL:     strPtr("disk-sc"),
+				EnterpriseKey: strPtr("disk-ent"),
+				SourceToken:   strPtr("sq-tok"),
+				TargetToken:   strPtr("sc-tok"),
+			},
+		},
+		{
+			name: "partial fill — only nil fields touched",
+			state: WizardState{
+				SourceURL: strPtr("disk-sq"),
+			},
+			seed: WizardState{
+				SourceURL:     strPtr("seed-sq"),
+				TargetURL:     strPtr("seed-sc"),
+				EnterpriseKey: strPtr("seed-ent"),
+			},
+			want: WizardState{
+				SourceURL:     strPtr("disk-sq"),
+				TargetURL:     strPtr("seed-sc"),
+				EnterpriseKey: strPtr("seed-ent"),
+			},
+		},
+		{
+			name:  "empty-string seed values are no-ops",
+			state: WizardState{},
+			seed: WizardState{
+				SourceURL:     strPtr(""),
+				TargetURL:     strPtr(""),
+				EnterpriseKey: strPtr(""),
+				SourceToken:   strPtr(""),
+				TargetToken:   strPtr(""),
+			},
+			want: WizardState{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			state := c.state
+			mergeSeed(&state, &c.seed)
+			assertPtrEqual(t, "SourceURL", state.SourceURL, c.want.SourceURL)
+			assertPtrEqual(t, "TargetURL", state.TargetURL, c.want.TargetURL)
+			assertPtrEqual(t, "EnterpriseKey", state.EnterpriseKey, c.want.EnterpriseKey)
+			assertPtrEqual(t, "SourceToken", state.SourceToken, c.want.SourceToken)
+			assertPtrEqual(t, "TargetToken", state.TargetToken, c.want.TargetToken)
+		})
+	}
+}
+
+// #388: tokens carried in the wizard state must never reach
+// .wizard_state.json — they're json:"-" so Save() drops them. Resume
+// reloads the file and gets nil tokens.
+func TestWizardState_TokensNotPersisted(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+	dir := t.TempDir()
+	state := &WizardState{
+		SourceURL:   strPtr("https://sq"),
+		SourceToken: strPtr("secret-sq"),
+		TargetToken: strPtr("secret-sc"),
+	}
+	if err := state.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	reloaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if reloaded.SourceToken != nil {
+		t.Errorf("SourceToken must not persist; got %q on disk", *reloaded.SourceToken)
+	}
+	if reloaded.TargetToken != nil {
+		t.Errorf("TargetToken must not persist; got %q on disk", *reloaded.TargetToken)
+	}
+	if reloaded.SourceURL == nil || *reloaded.SourceURL != "https://sq" {
+		t.Errorf("SourceURL did not round-trip; got %v", reloaded.SourceURL)
+	}
+}
+
+func assertPtrEqual(t *testing.T, field string, got, want *string) {
+	t.Helper()
+	switch {
+	case got == nil && want == nil:
+		return
+	case got == nil:
+		t.Errorf("%s: got nil, want %q", field, *want)
+	case want == nil:
+		t.Errorf("%s: got %q, want nil", field, *got)
+	case *got != *want:
+		t.Errorf("%s: got %q, want %q", field, *got, *want)
+	}
+}
