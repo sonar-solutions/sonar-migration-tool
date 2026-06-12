@@ -13,6 +13,18 @@ import (
 // Run is the main entry point for the wizard. It loads state, handles
 // resume, and runs phases sequentially until complete or interrupted.
 func Run(ctx context.Context, p Prompter, exportDir string) error {
+	return RunWithSeed(ctx, p, exportDir, nil)
+}
+
+// RunWithSeed is the same as Run but pre-fills the in-memory state
+// with values from `seed` before prompting. Disk state wins over the
+// seed — re-running `gui --config <file>` against a partially
+// completed wizard never silently rewrites progress. Tokens carried
+// in the seed (SourceToken / TargetToken) are merged into the
+// in-memory state only; they are NEVER persisted to
+// .wizard_state.json. The cmd/gui.go config-load path uses this to
+// honour `--config` per issue #388.
+func RunWithSeed(ctx context.Context, p Prompter, exportDir string, seed *WizardState) error {
 	if err := os.MkdirAll(exportDir, 0o755); err != nil {
 		return fmt.Errorf("creating export directory: %w", err)
 	}
@@ -22,6 +34,9 @@ func Run(ctx context.Context, p Prompter, exportDir string) error {
 	state, err := Load(exportDir)
 	if err != nil {
 		return fmt.Errorf("loading wizard state: %w", err)
+	}
+	if seed != nil {
+		mergeSeed(state, seed)
 	}
 
 	state, shouldContinue := handleResume(p, state, exportDir)
@@ -35,6 +50,31 @@ func Run(ctx context.Context, p Prompter, exportDir string) error {
 	}
 
 	return runPhaseLoop(ctx, p, state, exportDir, startPhase)
+}
+
+// mergeSeed copies any field from seed into state when state's
+// corresponding field is unset. The disk-wins rule preserves resume
+// semantics: a previously-completed phase keeps the values it
+// recorded even if a new --config supplies different ones.
+func mergeSeed(state, seed *WizardState) {
+	if state.SourceURL == nil && seed.SourceURL != nil && *seed.SourceURL != "" {
+		state.SourceURL = seed.SourceURL
+	}
+	if state.TargetURL == nil && seed.TargetURL != nil && *seed.TargetURL != "" {
+		state.TargetURL = seed.TargetURL
+	}
+	if state.EnterpriseKey == nil && seed.EnterpriseKey != nil && *seed.EnterpriseKey != "" {
+		state.EnterpriseKey = seed.EnterpriseKey
+	}
+	// Tokens are always seeded when supplied — disk never has them
+	// (json:"-"), so the "disk wins" rule degenerates to "seed wins
+	// when present" for these two fields.
+	if seed.SourceToken != nil && *seed.SourceToken != "" {
+		state.SourceToken = seed.SourceToken
+	}
+	if seed.TargetToken != nil && *seed.TargetToken != "" {
+		state.TargetToken = seed.TargetToken
+	}
 }
 
 // handleResume prompts the user when a previous session exists.

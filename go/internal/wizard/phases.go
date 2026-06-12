@@ -70,9 +70,15 @@ func promptExtractCredentials(p Prompter, state *WizardState) (string, string, e
 			}
 		}
 
-		token, err := p.PromptPassword("Admin token:")
-		if err != nil {
-			return "", "", err
+		// #388: --config can pre-fill the token; only prompt when it
+		// hasn't been seeded.
+		token := ptrStr(state.SourceToken)
+		if token == "" {
+			var err error
+			token, err = p.PromptPassword("Admin token:")
+			if err != nil {
+				return "", "", err
+			}
 		}
 
 		ok, err := p.ConfirmReview("Source Server Credentials", []KV{
@@ -86,6 +92,9 @@ func promptExtractCredentials(p Prompter, state *WizardState) (string, string, e
 			return sourceURL, token, nil
 		}
 		state.SourceURL = nil
+		// Reject + re-prompt for the token too — operator may have
+		// confirmed because the typed value was wrong.
+		state.SourceToken = nil
 	}
 }
 
@@ -409,9 +418,15 @@ func phaseMigrate(ctx context.Context, p Prompter, state *WizardState, exportDir
 		return fmt.Errorf("migration declined by user")
 	}
 
-	token, err := p.PromptPassword("Cloud admin token:")
-	if err != nil {
-		return err
+	// #388: --config can pre-fill the cloud token; only prompt when
+	// the wizard wasn't seeded with one.
+	token := ptrStr(state.TargetToken)
+	if token == "" {
+		var err error
+		token, err = p.PromptPassword("Cloud admin token:")
+		if err != nil {
+			return err
+		}
 	}
 
 	return runMigrateWithRetry(ctx, p, state, exportDir, token)

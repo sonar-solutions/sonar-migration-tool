@@ -29,16 +29,27 @@ const (
 
 // WizardState holds the persistent state of a migration wizard session.
 // JSON serialization persists to .wizard_state.json for resume support.
+//
+// SourceToken / TargetToken are deliberately tagged json:"-" so they
+// never reach disk. They exist only so `gui --config <file>` (#388)
+// can pre-fill the corresponding password prompts in memory via
+// RunWithSeed — the wizard reads them when present and prompts
+// otherwise. Resume reloads the state from disk, where these fields
+// will be empty, and the user is asked to retype the tokens.
 type WizardState struct {
-	Phase              WizardPhase `json:"phase"`
-	ExtractID          *string     `json:"extract_id"`
-	SourceURL          *string     `json:"source_url"`
-	TargetURL          *string     `json:"target_url"`
-	EnterpriseKey      *string     `json:"enterprise_key"`
-	OrganizationsMapped bool       `json:"organizations_mapped"`
-	ValidationPassed   bool        `json:"validation_passed"`
-	MigrationRunID     *string     `json:"migration_run_id"`
-	SkippedProjects    []string    `json:"skipped_projects,omitempty"`
+	Phase               WizardPhase `json:"phase"`
+	ExtractID           *string     `json:"extract_id"`
+	SourceURL           *string     `json:"source_url"`
+	TargetURL           *string     `json:"target_url"`
+	EnterpriseKey       *string     `json:"enterprise_key"`
+	OrganizationsMapped bool        `json:"organizations_mapped"`
+	ValidationPassed    bool        `json:"validation_passed"`
+	MigrationRunID      *string     `json:"migration_run_id"`
+	SkippedProjects     []string    `json:"skipped_projects,omitempty"`
+
+	// Tokens — in-memory only. See type-level comment for rationale.
+	SourceToken *string `json:"-"`
+	TargetToken *string `json:"-"`
 }
 
 // NewWizardState returns a WizardState initialized to the INIT phase.
