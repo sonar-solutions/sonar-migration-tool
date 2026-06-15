@@ -36,11 +36,22 @@ func hotspotMetadataSyncTasks() []TaskDef {
 
 // matchableHotspot is a normalised hotspot representation used for FIFO
 // matching between source (SonarQube Server) and target (SonarQube Cloud).
+//
+// Offset is the textRange.startOffset (column) and disambiguates
+// co-located hotspots on the same line (#392 follow-up). Two
+// hotspots of the same rule firing on different columns of the same
+// line — e.g., `sys.argv[1]` and `sys.argv[2]` on a single line —
+// must NOT be collapsed to a single representative; without an
+// offset key they would race and one cloud counterpart would
+// silently stay TO_REVIEW. Offset is 0 when the source data
+// predates `textRange` or the cloud endpoint omits it; callers
+// fall back to coarser matching in that case.
 type matchableHotspot struct {
 	Key        string
 	RuleKey    string
 	Component  string
 	Line       int
+	Offset     int
 	Status     string
 	Resolution string
 	Comments   []hotspotComment
@@ -122,12 +133,20 @@ func hotspotResolutionPriority(h matchableHotspot) int {
 }
 
 // dedupeActionableHotspots collapses cross-branch duplicate source
-// hotspots — same (component, ruleKey, line) but different SQS keys —
-// into a single representative whose Comments are the union of all
-// duplicates' comments. The representative carries the highest-
-// priority (most cautious) status/resolution per hotspotResolutionPriority
-// so an ACKNOWLEDGED branch always wins over a SAFE sibling. Iteration
-// order is stable (sorted by source key) so the result is deterministic.
+// hotspots — same (component, ruleKey, line, offset) but different
+// SQS keys — into a single representative whose Comments are the
+// union of all duplicates' comments. The representative carries the
+// highest-priority (most cautious) status/resolution per
+// hotspotResolutionPriority so an ACKNOWLEDGED branch always wins
+// over a SAFE sibling. Iteration order is stable (sorted by source
+// key) so the result is deterministic.
+//
+// Offset is part of the key (#392 follow-up) so two hotspots of the
+// same rule firing on different columns of the same line — e.g.
+// `sys.argv[1]` and `sys.argv[2]` on a single line — stay as two
+// distinct source reps. Collapsing them caused half the cloud
+// counterparts to silently stay TO_REVIEW (live evidence:
+// 6 of 31 SAFE hotspots stuck on python:S4823).
 func dedupeActionableHotspots(in []matchableHotspot) []matchableHotspot {
 	if len(in) < 2 {
 		return in
@@ -136,6 +155,7 @@ func dedupeActionableHotspots(in []matchableHotspot) []matchableHotspot {
 		Component string
 		RuleKey   string
 		Line      int
+		Offset    int
 	}
 	sorted := make([]matchableHotspot, len(in))
 	copy(sorted, in)
@@ -145,7 +165,7 @@ func dedupeActionableHotspots(in []matchableHotspot) []matchableHotspot {
 	order := make([]groupKey, 0, len(sorted))
 	for i := range sorted {
 		h := sorted[i]
-		k := groupKey{Component: h.Component, RuleKey: h.RuleKey, Line: h.Line}
+		k := groupKey{Component: h.Component, RuleKey: h.RuleKey, Line: h.Line, Offset: h.Offset}
 		rep, ok := groups[k]
 		if !ok {
 			cp := h
@@ -358,7 +378,7 @@ func resolveAndSyncHotspot(ctx context.Context, e *Executor, cloudKey, orgKey, s
 			"project", cloudKey, "source_key", src.Key, "file", filePath)
 		return syncOutcomeLookupError
 	}
-	target, outcome := classifyHotspotCandidatesByLine(candidates, src.RuleKey, src.Line)
+	target, outcome := classifyHotspotCandidatesByLine(candidates, src.RuleKey, src.Line, src.Offset)
 	switch outcome {
 	case syncOutcomeSynced:
 		pair := hotspotPair{source: src, cloud: target}
@@ -382,7 +402,7 @@ func resolveAndSyncHotspot(ctx context.Context, e *Executor, cloudKey, orgKey, s
 	case syncOutcomeLineMismatch:
 		keys := make([]string, 0)
 		for _, c := range candidates {
-			if c.RuleKey == src.RuleKey && c.Line == src.Line {
+			if c.Line == src.Line && (c.RuleKey == "" || c.RuleKey == src.RuleKey) {
 				keys = append(keys, c.Key)
 			}
 		}
@@ -391,14 +411,82 @@ func resolveAndSyncHotspot(ctx context.Context, e *Executor, cloudKey, orgKey, s
 	return outcome
 }
 
-// classifyHotspotCandidatesByLine is the hotspot counterpart of
-// classifyIssueCandidatesByLine. The hotspot search isn't scoped by
-// rule on the cloud side, so we filter on (ruleKey, line) here.
-func classifyHotspotCandidatesByLine(candidates []matchableHotspot, sourceRule string, sourceLine int) (matchableHotspot, syncOutcome) {
+// classifyHotspotCandidatesByLine resolves a cloud counterpart for one
+// source hotspot from the per-file candidate set returned by
+// /api/hotspots/search?files=<filePath>.
+//
+// Three-phase match (#392 + follow-up):
+//
+//  1. PRECISE — (ruleKey, line, offset) match. textRange.startOffset
+//     disambiguates two hotspots of the same rule firing on different
+//     columns of the same line (e.g. `sys.argv[1]` and `sys.argv[2]`).
+//     Without it, those collapse to syncOutcomeLineMismatch and stay
+//     TO_REVIEW. Skipped when either side has Offset == 0 (older API
+//     shapes that omit textRange).
+//
+//  2. RULE+LINE — (ruleKey, line) match. The common case: rule
+//     populated on both sides, no column ambiguity needed. Restores
+//     the pre-offset behaviour that already covered 25 of the 31
+//     SAFE hotspots in the live run.
+//
+//  3. EMPTY-RULE FALLBACK — line-only against cloud candidates whose
+//     ruleKey is empty. The 2026-06-09 audit recorded a case where
+//     every cloud hotspot parsed with RuleKey == "" (per-version /
+//     per-endpoint omission); without this fallback the entire
+//     project's REVIEWED hotspots stay TO_REVIEW. Candidates with a
+//     non-empty ruleKey that doesn't match the source are deliberately
+//     NOT considered here — they're a different rule firing on the
+//     same line.
+//
+// Returns syncOutcomeSynced when exactly one candidate qualifies,
+// syncOutcomeLineMismatch when several do (caller skips rather than
+// guess), and syncOutcomeNotFound when none do.
+func classifyHotspotCandidatesByLine(candidates []matchableHotspot, sourceRule string, sourceLine, sourceOffset int) (matchableHotspot, syncOutcome) {
+	// Phase 1: precise (ruleKey, line, offset). Both sides must carry
+	// a non-zero offset for this phase to be considered.
+	if sourceOffset > 0 {
+		var pick matchableHotspot
+		matches := 0
+		for _, c := range candidates {
+			if c.RuleKey == sourceRule && c.Line == sourceLine && c.Offset > 0 && c.Offset == sourceOffset {
+				matches++
+				if matches == 1 {
+					pick = c
+				}
+			}
+		}
+		if matches == 1 {
+			return pick, syncOutcomeSynced
+		}
+		// matches == 0 (offset not present or no exact column hit) →
+		// fall through to phase 2. matches > 1 means duplicate offsets
+		// on the cloud (extremely unusual) — also fall through and let
+		// phase 2's rule+line check resolve to line_mismatch.
+	}
+
+	// Phase 2: (ruleKey, line) match.
 	var pick matchableHotspot
 	matches := 0
 	for _, c := range candidates {
 		if c.RuleKey == sourceRule && c.Line == sourceLine {
+			matches++
+			if matches == 1 {
+				pick = c
+			}
+		}
+	}
+	if matches > 0 {
+		if matches == 1 {
+			return pick, syncOutcomeSynced
+		}
+		return matchableHotspot{}, syncOutcomeLineMismatch
+	}
+
+	// Phase 3: cloud candidates with no ruleKey are eligible for a
+	// line-only fallback.
+	matches = 0
+	for _, c := range candidates {
+		if c.RuleKey == "" && c.Line == sourceLine {
 			matches++
 			if matches == 1 {
 				pick = c
@@ -650,6 +738,7 @@ func parseMatchableHotspot(data json.RawMessage) matchableHotspot {
 	status := extractField(data, "status")
 	resolution := extractField(data, "resolution")
 	line := extractHotspotLine(data)
+	offset := extractHotspotStartOffset(data)
 
 	// ruleKey may be at top level or nested inside a "rule" object.
 	ruleKey := extractField(data, "ruleKey")
@@ -664,6 +753,7 @@ func parseMatchableHotspot(data json.RawMessage) matchableHotspot {
 		RuleKey:    ruleKey,
 		Component:  component,
 		Line:       line,
+		Offset:     offset,
 		Status:     status,
 		Resolution: resolution,
 		Comments:   comments,
@@ -689,6 +779,35 @@ func extractHotspotLine(data json.RawMessage) int {
 	if json.Unmarshal(raw, &s) == nil {
 		n, _ := strconv.Atoi(s)
 		return n
+	}
+	return 0
+}
+
+// extractHotspotStartOffset reads the textRange.startOffset column
+// from a hotspot JSON object. Returns 0 when the field is absent —
+// callers MUST treat 0 as "unknown" rather than "column 0" so the
+// matcher's offset-based disambiguation falls back gracefully on
+// older API shapes.
+func extractHotspotStartOffset(data json.RawMessage) int {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return 0
+	}
+	tr, ok := obj["textRange"]
+	if !ok {
+		return 0
+	}
+	var inner map[string]json.RawMessage
+	if err := json.Unmarshal(tr, &inner); err != nil {
+		return 0
+	}
+	raw, ok := inner["startOffset"]
+	if !ok {
+		return 0
+	}
+	var v int
+	if json.Unmarshal(raw, &v) == nil {
+		return v
 	}
 	return 0
 }
