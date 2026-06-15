@@ -47,63 +47,176 @@ func TestHotspotHasManualChanges(t *testing.T) {
 	}
 }
 
-// #356: hotspot classifier uses (ruleKey, line) because /api/hotspots/search
-// doesn't accept a rules filter — we fetch by file and resolve in
-// memory. 1 → synced, 0 → not_found, n>1 → line_mismatch; mismatched
-// rules / lines are skipped.
+// #392: the hotspot classifier is three-phase:
+//
+//  1. Precise (ruleKey, line, offset) — disambiguates co-located
+//     hotspots of the same rule on different columns (sys.argv[1] and
+//     sys.argv[2] on a single line). Only considered when both sides
+//     carry a non-zero offset.
+//  2. (ruleKey, line) — covers the common case where rule is enough.
+//  3. Empty-ruleKey line-only — fallback for the 2026-06-09 audit
+//     case where the cloud response omits ruleKey.
 func TestClassifyHotspotCandidatesByLine(t *testing.T) {
-	cand := func(key, rule string, line int) matchableHotspot {
-		return matchableHotspot{Key: key, RuleKey: rule, Line: line}
+	cand := func(key, rule string, line, offset int) matchableHotspot {
+		return matchableHotspot{Key: key, RuleKey: rule, Line: line, Offset: offset}
 	}
 	tests := []struct {
-		name        string
-		candidates  []matchableHotspot
-		sourceRule  string
-		sourceLine  int
-		wantKey     string
-		wantOutcome syncOutcome
+		name         string
+		candidates   []matchableHotspot
+		sourceRule   string
+		sourceLine   int
+		sourceOffset int
+		wantKey      string
+		wantOutcome  syncOutcome
 	}{
+		// --- Phase 1: precise (rule, line, offset) ---
 		{
-			name:        "exactly one rule+line match — synced (a)",
-			candidates:  []matchableHotspot{cand("h-1", "javasecurity:S1", 42)},
-			sourceRule:  "javasecurity:S1",
-			sourceLine:  42,
-			wantKey:     "h-1",
-			wantOutcome: syncOutcomeSynced,
+			// Live scenario from #392 follow-up: two cloud hotspots of
+			// the same rule on the same line, different startOffsets.
+			// Without offset they collapse to line_mismatch; with it,
+			// each source resolves cleanly to its column-matched peer.
+			name: "co-located cloud hotspots disambiguated by offset",
+			candidates: []matchableHotspot{
+				cand("h-MF", "python:S4823", 35, 35),
+				cand("h-MG", "python:S4823", 35, 17),
+			},
+			sourceRule:   "python:S4823",
+			sourceLine:   35,
+			sourceOffset: 17,
+			wantKey:      "h-MG",
+			wantOutcome:  syncOutcomeSynced,
 		},
 		{
-			name:        "match among other rules on same file — synced (a)",
-			candidates:  []matchableHotspot{cand("h-1", "javasecurity:S1", 10), cand("h-2", "javasecurity:S1", 42), cand("h-3", "javasecurity:S2", 42)},
-			sourceRule:  "javasecurity:S1",
-			sourceLine:  42,
-			wantKey:     "h-2",
-			wantOutcome: syncOutcomeSynced,
+			// Same call shape, source on the OTHER column.
+			name: "co-located cloud hotspots — pick by offset 35",
+			candidates: []matchableHotspot{
+				cand("h-MF", "python:S4823", 35, 35),
+				cand("h-MG", "python:S4823", 35, 17),
+			},
+			sourceRule:   "python:S4823",
+			sourceLine:   35,
+			sourceOffset: 35,
+			wantKey:      "h-MF",
+			wantOutcome:  syncOutcomeSynced,
+		},
+
+		// --- Phase 2: (rule, line) match (offset unavailable / zero) ---
+		{
+			name:         "exact rule + line match — synced (offset absent)",
+			candidates:   []matchableHotspot{cand("h-1", "javasecurity:S1", 42, 0)},
+			sourceRule:   "javasecurity:S1",
+			sourceLine:   42,
+			sourceOffset: 0,
+			wantKey:      "h-1",
+			wantOutcome:  syncOutcomeSynced,
 		},
 		{
-			name:        "two same-rule+line — line_mismatch (b)",
-			candidates:  []matchableHotspot{cand("h-1", "javasecurity:S1", 42), cand("h-2", "javasecurity:S1", 42)},
-			sourceRule:  "javasecurity:S1",
-			sourceLine:  42,
-			wantOutcome: syncOutcomeLineMismatch,
+			name: "rule disambiguates among same-line candidates (#392 regression guard)",
+			candidates: []matchableHotspot{
+				cand("h-1", "javasecurity:S1", 42, 0),
+				cand("h-2", "javasecurity:S2", 42, 0),
+			},
+			sourceRule:   "javasecurity:S2",
+			sourceLine:   42,
+			sourceOffset: 0,
+			wantKey:      "h-2",
+			wantOutcome:  syncOutcomeSynced,
 		},
 		{
-			name:        "different rule on the line — not_found (c)",
-			candidates:  []matchableHotspot{cand("h-1", "javasecurity:S2", 42)},
-			sourceRule:  "javasecurity:S1",
-			sourceLine:  42,
-			wantOutcome: syncOutcomeNotFound,
+			name: "two same-rule same-line candidates with NO offset — line_mismatch",
+			candidates: []matchableHotspot{
+				cand("h-1", "javasecurity:S1", 42, 0),
+				cand("h-2", "javasecurity:S1", 42, 0),
+			},
+			sourceRule:   "javasecurity:S1",
+			sourceLine:   42,
+			sourceOffset: 0,
+			wantOutcome:  syncOutcomeLineMismatch,
 		},
 		{
-			name:        "rule matches but on different line — not_found (c)",
-			candidates:  []matchableHotspot{cand("h-1", "javasecurity:S1", 40)},
-			sourceRule:  "javasecurity:S1",
-			sourceLine:  42,
-			wantOutcome: syncOutcomeNotFound,
+			// Source has offset but cloud doesn't — phase 1 yields
+			// nothing, phase 2 falls back and picks the single
+			// rule+line match.
+			name: "source has offset, cloud doesn't — phase 2 still resolves",
+			candidates: []matchableHotspot{
+				cand("h-1", "javasecurity:S1", 42, 0),
+			},
+			sourceRule:   "javasecurity:S1",
+			sourceLine:   42,
+			sourceOffset: 17,
+			wantKey:      "h-1",
+			wantOutcome:  syncOutcomeSynced,
+		},
+
+		// --- Phase 3: empty-ruleKey fallback ---
+		{
+			name:         "empty-ruleKey candidate falls back to line-only — synced",
+			candidates:   []matchableHotspot{cand("h-1", "", 42, 0)},
+			sourceRule:   "javasecurity:S1",
+			sourceLine:   42,
+			sourceOffset: 0,
+			wantKey:      "h-1",
+			wantOutcome:  syncOutcomeSynced,
+		},
+		{
+			name: "two empty-ruleKey candidates on the same line — line_mismatch",
+			candidates: []matchableHotspot{
+				cand("h-1", "", 42, 0),
+				cand("h-2", "", 42, 0),
+			},
+			sourceRule:   "javasecurity:S1",
+			sourceLine:   42,
+			sourceOffset: 0,
+			wantOutcome:  syncOutcomeLineMismatch,
+		},
+		{
+			// Non-empty cloud rule that doesn't match the source's rule
+			// must NOT be picked by phase 3.
+			name: "non-matching cloud rule on the line — not picked by fallback",
+			candidates: []matchableHotspot{
+				cand("h-1", "javasecurity:S2", 42, 0),
+			},
+			sourceRule:   "javasecurity:S1",
+			sourceLine:   42,
+			sourceOffset: 0,
+			wantOutcome:  syncOutcomeNotFound,
+		},
+		{
+			// Earlier phase wins: a precise rule+line match must not
+			// be undone by an empty-rule candidate on the same line.
+			name: "phase 2 match wins over phase 3 candidate on same line",
+			candidates: []matchableHotspot{
+				cand("h-1", "javasecurity:S1", 42, 0),
+				cand("h-2", "", 42, 0),
+			},
+			sourceRule:   "javasecurity:S1",
+			sourceLine:   42,
+			sourceOffset: 0,
+			wantKey:      "h-1",
+			wantOutcome:  syncOutcomeSynced,
+		},
+
+		// --- General negatives ---
+		{
+			name:         "no candidate on the source line — not_found",
+			candidates:   []matchableHotspot{cand("h-1", "javasecurity:S1", 40, 0)},
+			sourceRule:   "javasecurity:S1",
+			sourceLine:   42,
+			sourceOffset: 0,
+			wantOutcome:  syncOutcomeNotFound,
+		},
+		{
+			name:         "empty candidate set — not_found",
+			candidates:   nil,
+			sourceRule:   "javasecurity:S1",
+			sourceLine:   42,
+			sourceOffset: 0,
+			wantOutcome:  syncOutcomeNotFound,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, outcome := classifyHotspotCandidatesByLine(tc.candidates, tc.sourceRule, tc.sourceLine)
+			got, outcome := classifyHotspotCandidatesByLine(tc.candidates, tc.sourceRule, tc.sourceLine, tc.sourceOffset)
 			if outcome != tc.wantOutcome {
 				t.Errorf("outcome = %v, want %v", outcome, tc.wantOutcome)
 			}
@@ -397,6 +510,32 @@ func TestDedupeActionableHotspotsNoCollisions(t *testing.T) {
 	out := dedupeActionableHotspots(in)
 	if len(out) != 4 {
 		t.Errorf("expected 4 distinct groups (no dedup), got %d", len(out))
+	}
+}
+
+// #392 follow-up: two hotspots of the same rule firing on different
+// columns of the same line (e.g. sys.argv[1] and sys.argv[2]) must
+// stay as TWO distinct source reps post-dedup. Cross-branch copies
+// of the SAME (component, rule, line, offset) still collapse.
+func TestDedupeActionableHotspotsOffsetDistinguishesCoLocated(t *testing.T) {
+	in := []matchableHotspot{
+		// Branch main: two hotspots at line 35, columns 17 and 35.
+		{Key: "main-a", Component: "p:f.py", RuleKey: "py:S4823", Line: 35, Offset: 17, Status: "REVIEWED", Resolution: "SAFE"},
+		{Key: "main-b", Component: "p:f.py", RuleKey: "py:S4823", Line: 35, Offset: 35, Status: "REVIEWED", Resolution: "SAFE"},
+		// Branch develop: same two hotspots — should collapse with main's siblings.
+		{Key: "dev-a", Component: "p:f.py", RuleKey: "py:S4823", Line: 35, Offset: 17, Status: "REVIEWED", Resolution: "SAFE"},
+		{Key: "dev-b", Component: "p:f.py", RuleKey: "py:S4823", Line: 35, Offset: 35, Status: "REVIEWED", Resolution: "SAFE"},
+	}
+	out := dedupeActionableHotspots(in)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 distinct (line, offset) groups, got %d: %+v", len(out), out)
+	}
+	offsets := map[int]bool{}
+	for _, h := range out {
+		offsets[h.Offset] = true
+	}
+	if !offsets[17] || !offsets[35] {
+		t.Errorf("expected both column offsets (17, 35) preserved as distinct reps, got %v", offsets)
 	}
 }
 
