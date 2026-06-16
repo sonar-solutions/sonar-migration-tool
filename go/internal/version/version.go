@@ -4,6 +4,6 @@
 
 package version
 
-const Version = "v2026.06.16-BETA"
+const Version = "v1.0.0-SNAPSHOT"
 
 const ToolName = "sonar-migration-tool"
