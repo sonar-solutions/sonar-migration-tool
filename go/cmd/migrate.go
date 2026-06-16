@@ -14,19 +14,19 @@ import (
 )
 
 var migrateCmd = &cobra.Command{
-	Use:   "migrate [token] [enterprise_key]",
+	Use:   "migrate",
 	Short: "Migrate configurations to SonarQube Cloud",
 	Long: `Migrate SonarQube Server configurations to SonarQube Cloud.
 User must run structure and mappings commands and add SonarQube Cloud
 organization keys to organizations.csv.`,
-	Args: cobra.MaximumNArgs(2),
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := buildMigrateConfig(cmd, args)
 		if err != nil {
 			return err
 		}
 		if cfg.Token == "" || cfg.EnterpriseKey == "" {
-			return fmt.Errorf("TOKEN and ENTERPRISE_KEY are required (either as arguments or in config file)")
+			return fmt.Errorf("TOKEN and ENTERPRISE_KEY are required (--token/--enterprise_key flags or in config file)")
 		}
 		runID, err := migrate.RunMigrate(cmd.Context(), cfg)
 		// Attempt the summary report whenever a run directory exists, even
@@ -50,6 +50,8 @@ organization keys to organizations.csv.`,
 func init() {
 	f := migrateCmd.Flags()
 	f.String("config", "", "Path to JSON configuration file")
+	f.String("token", "", "SonarQube Cloud authentication token")
+	f.String("enterprise_key", "", "SonarQube Cloud enterprise key")
 	f.String("edition", "", "SonarQube Cloud license edition")
 	f.String("url", "", "URL of SonarQube Cloud")
 	f.String("run_id", "", "ID of a run to resume in case of failures")
@@ -78,15 +80,9 @@ func buildMigrateConfig(cmd *cobra.Command, args []string) (migrate.MigrateConfi
 		cfg = loaded
 	}
 
-	// CLI args override config file.
-	if len(args) > 0 && args[0] != "" {
-		cfg.Token = args[0]
-	}
-	if len(args) > 1 && args[1] != "" {
-		cfg.EnterpriseKey = args[1]
-	}
-
-	// Flags override everything.
+	// Flags override config file.
+	overrideString(cmd, "token", &cfg.Token)
+	overrideString(cmd, "enterprise_key", &cfg.EnterpriseKey)
 	overrideString(cmd, "edition", &cfg.Edition)
 	overrideString(cmd, "url", &cfg.URL)
 	overrideString(cmd, "run_id", &cfg.RunID)

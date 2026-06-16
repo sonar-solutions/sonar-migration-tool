@@ -91,12 +91,14 @@ CLI flags **override** the corresponding config field when both are set.
 ### `extract`
 
 ```bash
-sonar-migration-tool extract [url] [token] [flags]
+sonar-migration-tool extract --url <url> --token <token> [flags]
 ```
 
 | Flag | Description |
 |---|---|
 | `-c, --config <path>` | Path to JSON configuration file. |
+| `--url <url>` | SonarQube Server URL. |
+| `--token <token>` | SonarQube Server authentication token. |
 | `--export_directory <dir>` | Output directory (default `./migration-files`). |
 | `--extract_type <name>` | Type of extract to run (default `all`). |
 | `--extract_id <id>` | Resume a previous extraction. |
@@ -104,6 +106,7 @@ sonar-migration-tool extract [url] [token] [flags]
 | `--concurrency <n>` | Max concurrent requests. |
 | `--timeout <s>` | Request timeout in seconds. |
 | `--skip_project_data_migration` | Skip the issue / source / SCM-blame extract (extracted by default). |
+| `--skip_issue_sync` | Drop the per-issue / per-hotspot sync metadata from the extract (no `additionalFields=_all`, no per-hotspot detail). Pair with migrate-side `--skip_issue_sync`. #398. |
 | `--exclude_branches <pattern>` | Glob pattern for non-main branches to skip during project data import. Repeatable (pass multiple times for multiple patterns). Main branch is never excluded. |
 | `--pem_file_path <path>` | mTLS PEM file. |
 | `--key_file_path <path>` | mTLS key file. |
@@ -125,12 +128,14 @@ sonar-migration-tool predictive-report --config config.json
 ### `migrate`
 
 ```bash
-sonar-migration-tool migrate [token] [enterprise_key] [flags]
+sonar-migration-tool migrate --token <token> --enterprise_key <key> [flags]
 ```
 
 | Flag | Description |
 |---|---|
 | `-c, --config <path>` | Path to JSON configuration file. |
+| `--token <token>` | SonarQube Cloud authentication token. |
+| `--enterprise_key <key>` | SonarQube Cloud enterprise key. |
 | `--url <url>` | SonarQube Cloud URL (default `https://sonarcloud.io/`). |
 | `--export_directory <dir>` | Directory containing the extract output. |
 | `--edition <name>` | SonarQube Cloud license edition. |

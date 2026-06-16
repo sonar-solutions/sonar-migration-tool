@@ -16,6 +16,8 @@ func newMigrateTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "migrate"}
 	f := cmd.Flags()
 	f.String("config", "", "")
+	f.String("token", "", "")
+	f.String("enterprise_key", "", "")
 	f.String("edition", "", "")
 	f.String("url", "", "")
 	f.String("run_id", "", "")
@@ -86,11 +88,16 @@ func TestBuildMigrateConfig_DefaultOrganization_ConfigOnly(t *testing.T) {
 // Neither config nor CLI → empty.
 func TestBuildMigrateConfig_DefaultOrganization_Unset(t *testing.T) {
 	cmd := newMigrateTestCmd()
-	cfg, err := buildMigrateConfig(cmd, []string{"tok", "ent"})
+	_ = cmd.Flags().Set("token", "tok")
+	_ = cmd.Flags().Set("enterprise_key", "ent")
+	cfg, err := buildMigrateConfig(cmd, nil)
 	if err != nil {
 		t.Fatalf("buildMigrateConfig: %v", err)
 	}
 	if cfg.DefaultOrganization != "" {
 		t.Errorf("expected empty, got %q", cfg.DefaultOrganization)
+	}
+	if cfg.Token != "tok" || cfg.EnterpriseKey != "ent" {
+		t.Errorf("expected token/enterprise_key from flags, got %q / %q", cfg.Token, cfg.EnterpriseKey)
 	}
 }

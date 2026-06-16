@@ -105,10 +105,10 @@ Connect to SonarQube Server and export all the data needed for migration.
 
 ```bash
 # From source
-go run . extract <URL> <TOKEN> --export_directory ./files/ [--concurrency 25] [--timeout 60]
+go run . extract --url <URL> --token <TOKEN> --export_directory ./files/ [--concurrency 25] [--timeout 60]
 
 # Built binary
-sonar-migration-tool extract <URL> <TOKEN> --export_directory ./files/ [--concurrency 25] [--timeout 60]
+sonar-migration-tool extract --url <URL> --token <TOKEN> --export_directory ./files/ [--concurrency 25] [--timeout 60]
 ```
 
 | Flag | Description |
@@ -198,10 +198,10 @@ Push everything to SonarQube Cloud. You'll need your SonarQube Cloud admin token
 
 ```bash
 # From source
-go run . migrate <TOKEN> <ENTERPRISE_KEY> --export_directory ./files/ [--run_id <id>] [--skip_profiles]
+go run . migrate --token <TOKEN> --enterprise_key <ENTERPRISE_KEY> --export_directory ./files/ [--run_id <id>] [--skip_profiles]
 
 # Built binary
-sonar-migration-tool migrate <TOKEN> <ENTERPRISE_KEY> --export_directory ./files/ [--run_id <id>] [--skip_profiles]
+sonar-migration-tool migrate --token <TOKEN> --enterprise_key <ENTERPRISE_KEY> --export_directory ./files/ [--run_id <id>] [--skip_profiles]
 ```
 
 | Flag | Description |
@@ -235,10 +235,10 @@ If a step fails partway through, you can pick up where you left off:
 
 ```bash
 # Resume an extraction
-sonar-migration-tool extract <URL> <TOKEN> --extract_id <PREVIOUS_EXTRACT_ID> --export_directory ./files/
+sonar-migration-tool extract --url <URL> --token <TOKEN> --extract_id <PREVIOUS_EXTRACT_ID> --export_directory ./files/
 
 # Resume a migration
-sonar-migration-tool migrate <TOKEN> <ENTERPRISE_KEY> --run_id <PREVIOUS_RUN_ID> --export_directory ./files/
+sonar-migration-tool migrate --token <TOKEN> --enterprise_key <ENTERPRISE_KEY> --run_id <PREVIOUS_RUN_ID> --export_directory ./files/
 ```
 
 The tool tracks which tasks have already completed and skips them automatically.
@@ -326,7 +326,7 @@ sonar-migration-tool reset <TOKEN> <ENTERPRISE_KEY> --export_directory ./files/
 - Use `--config` with a JSON file for repeatable, scripted migrations.
 - For large instances (50,000+ projects), lower concurrency and increase timeout:
   ```bash
-  sonar-migration-tool extract <URL> <TOKEN> --concurrency 10 --timeout 120 --export_directory ./files/
+  sonar-migration-tool extract --url <URL> --token <TOKEN> --concurrency 10 --timeout 120 --export_directory ./files/
   ```
 
 ---

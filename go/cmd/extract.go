@@ -13,17 +13,17 @@ import (
 )
 
 var extractCmd = &cobra.Command{
-	Use:   "extract [url] [token]",
+	Use:   "extract",
 	Short: "Extract data from a SonarQube Server instance",
 	Long:  "Extracts data from a SonarQube Server instance and stores it in the export directory as new line delimited json files.",
-	Args:  cobra.MaximumNArgs(2),
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := buildExtractConfig(cmd, args)
 		if err != nil {
 			return err
 		}
 		if cfg.URL == "" || cfg.Token == "" {
-			return fmt.Errorf("URL and TOKEN are required (either as arguments or in config file)")
+			return fmt.Errorf("URL and TOKEN are required (--url/--token flags or in config file)")
 		}
 		skipped, err := extract.RunExtract(cmd.Context(), cfg)
 		if err != nil {
@@ -43,6 +43,8 @@ var extractCmd = &cobra.Command{
 func init() {
 	f := extractCmd.Flags()
 	f.String("config", "", "Path to JSON configuration file")
+	f.String("url", "", "URL of the SonarQube Server")
+	f.String("token", "", "Authentication token for the SonarQube Server")
 	f.String("pem_file_path", "", "Path to client certificate pem file")
 	f.String("key_file_path", "", "Path to client certificate key file")
 	f.String("cert_password", "", "Password for client certificate")
@@ -53,6 +55,7 @@ func init() {
 	f.String("extract_id", "", "ID of an extract to resume in case of failures")
 	f.String("target_task", "", "Target task to complete; all dependent tasks will be included")
 	f.Bool(flagSkipProjectDataMigration, false, "Skip extracting project data (issues, hotspots, source code, SCM blame). Defaults to false — project data is extracted by default. #303.")
+	f.Bool(flagSkipIssueSync, false, "Skip extracting per-issue and per-hotspot sync metadata (comments, changelog, hotspot detail). Pair with migrate-side --skip_issue_sync. Defaults to false. #398.")
 }
 
 func buildExtractConfig(cmd *cobra.Command, args []string) (extract.ExtractConfig, error) {
@@ -69,15 +72,9 @@ func buildExtractConfig(cmd *cobra.Command, args []string) (extract.ExtractConfi
 		cfg = loaded
 	}
 
-	// CLI args override config file.
-	if len(args) > 0 && args[0] != "" {
-		cfg.URL = args[0]
-	}
-	if len(args) > 1 && args[1] != "" {
-		cfg.Token = args[1]
-	}
-
-	// Flags override everything.
+	// Flags override config file.
+	overrideString(cmd, "url", &cfg.URL)
+	overrideString(cmd, "token", &cfg.Token)
 	overrideString(cmd, "pem_file_path", &cfg.PEMFilePath)
 	overrideString(cmd, "key_file_path", &cfg.KeyFilePath)
 	overrideString(cmd, "cert_password", &cfg.CertPassword)
@@ -95,6 +92,14 @@ func buildExtractConfig(cmd *cobra.Command, args []string) (extract.ExtractConfi
 		v, _ := cmd.Flags().GetBool(flagSkipProjectDataMigration)
 		if v {
 			cfg.SkipProjectDataMigration = true
+		}
+	}
+	// --skip_issue_sync is one-way: passing the flag forces opt-out,
+	// CLI false does NOT undo a config-file skip_issue_sync: true. #398.
+	if cmd.Flags().Changed(flagSkipIssueSync) {
+		v, _ := cmd.Flags().GetBool(flagSkipIssueSync)
+		if v {
+			cfg.SkipIssueSync = true
 		}
 	}
 	cfg.IncludeProjectData = !cfg.SkipProjectDataMigration

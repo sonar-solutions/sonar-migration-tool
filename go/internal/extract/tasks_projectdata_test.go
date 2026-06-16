@@ -237,6 +237,112 @@ func TestProjectIssuesFullTask(t *testing.T) {
 	}
 }
 
+// #398: with SkipIssueSync=true the issue search must NOT request
+// additionalFields=_all (which is what brings comments / changelog).
+// Without that gate, the heavy payload would still be fetched even
+// though the operator opted out of the downstream sync.
+func TestProjectIssuesFullTaskSkipIssueSync(t *testing.T) {
+	var (
+		mu     sync.Mutex
+		params []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		params = append(params, r.URL.Query().Get("additionalFields"))
+		mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{
+			"issues": []map[string]any{
+				{"key": "issue-1", "rule": "java:S100"},
+			},
+			"paging": map[string]any{"total": 1, "pageIndex": 1, "pageSize": 500},
+		})
+	}))
+	defer srv.Close()
+
+	e := newTestExecutor(t)
+	e.ServerURL = "http://test/"
+	e.Raw = NewRawClient(srv.Client(), srv.URL+"/")
+	e.SkipIssueSync = true
+
+	w, _ := e.Store.Writer("getProjects")
+	b, _ := json.Marshal(map[string]any{"key": "p1"})
+	w.WriteOne(b)
+	e.Store.Writer("getBranches")
+
+	if err := projectIssuesFullTask()(ctx(t), e); err != nil {
+		t.Fatalf("projectIssuesFullTask: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(params) == 0 {
+		t.Fatal("expected at least one /api/issues/search call")
+	}
+	for _, p := range params {
+		if p != "" {
+			t.Errorf("expected additionalFields to be unset with SkipIssueSync=true, got %q", p)
+		}
+	}
+}
+
+// #398: with SkipIssueSync=true the hotspot task must NOT fetch
+// /api/hotspots/show per REVIEWED hotspot — that round-trip exists
+// only to enrich the record with comments + rule for the migrate-side
+// sync.
+func TestProjectHotspotsFullTaskSkipsDetailEnrichment(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		showHits int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/hotspots/search":
+			status := r.URL.Query().Get("status")
+			if status == "REVIEWED" {
+				json.NewEncoder(w).Encode(map[string]any{
+					"hotspots": []map[string]any{
+						{"key": "hs-1", "status": "REVIEWED", "resolution": "ACKNOWLEDGED"},
+					},
+					"paging": map[string]any{"pageIndex": 1, "pageSize": 500, "total": 1},
+				})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"hotspots": []map[string]any{},
+				"paging":   map[string]any{"pageIndex": 1, "pageSize": 500, "total": 0},
+			})
+		case "/api/hotspots/show":
+			mu.Lock()
+			showHits++
+			mu.Unlock()
+			json.NewEncoder(w).Encode(map[string]any{"key": "hs-1"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	e := newTestExecutor(t)
+	e.ServerURL = "http://test/"
+	e.Raw = NewRawClient(srv.Client(), srv.URL+"/")
+	e.SkipIssueSync = true
+
+	pw, _ := e.Store.Writer("getProjects")
+	b, _ := json.Marshal(map[string]any{"key": "p1"})
+	pw.WriteOne(b)
+	e.Store.Writer("getBranches")
+
+	if err := projectHotspotsFullTask()(ctx(t), e); err != nil {
+		t.Fatalf("projectHotspotsFullTask: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if showHits != 0 {
+		t.Errorf("expected zero /api/hotspots/show calls with SkipIssueSync=true, got %d", showHits)
+	}
+}
+
 // #323: SonarQube Server's /api/hotspots/search defaults to TO_REVIEW
 // on several versions when `status` is omitted, silently dropping
 // REVIEWED (incl. ACKNOWLEDGED) hotspots from the extract — so the
