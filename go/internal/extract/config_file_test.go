@@ -91,7 +91,8 @@ func TestLoadExtractConfigFileSnakeCaseFields(t *testing.T) {
 		"timeout": 90,
 		"extract_id": "resume-me",
 		"target_task": "getRules",
-		"skip_project_data_migration": true
+		"skip_project_data_migration": true,
+		"skip_issue_sync": true
 	}`)
 	f.Close()
 
@@ -113,6 +114,7 @@ func TestLoadExtractConfigFileSnakeCaseFields(t *testing.T) {
 		ExtractID:                "resume-me",
 		TargetTask:               "getRules",
 		SkipProjectDataMigration: true,
+		SkipIssueSync:            true,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("snake_case round-trip mismatch\n got=%+v\nwant=%+v", got, want)

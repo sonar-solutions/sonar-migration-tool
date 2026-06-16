@@ -38,7 +38,14 @@ type ExtractConfig struct {
 	TargetTask               string
 	IncludeProjectData       bool
 	SkipProjectDataMigration bool // #303. Set true to skip project-data tasks (issues, source, SCM blame).
-	Debug                    bool // Enable HTTP request/response logging via SDK debug transport
+	// SkipIssueSync, when true, omits the per-issue / per-hotspot sync
+	// metadata from the extract: drops additionalFields=_all on
+	// /api/issues/search (no comments/changelog) and skips the
+	// /api/hotspots/show round-trip used to enrich REVIEWED hotspots
+	// with comments. Pair with migrate-side --skip_issue_sync so the
+	// trailing sync also skips. #398.
+	SkipIssueSync bool
+	Debug         bool // Enable HTTP request/response logging via SDK debug transport
 	// ProjectKeys, when non-empty, limits extraction to these project keys.
 	// The /api/projects/search endpoint filters server-side, so only the
 	// requested projects are fetched and all downstream per-project tasks
@@ -48,14 +55,15 @@ type ExtractConfig struct {
 
 // Executor is the runtime context passed to every task function.
 type Executor struct {
-	Raw         *RawClient
-	Store       *DataStore
-	ServerURL   string
-	Edition     Edition
-	Version     common.Version
-	Sem         chan struct{}
-	Logger      *slog.Logger
-	ProjectKeys []string // non-empty → limit extraction to these project keys
+	Raw           *RawClient
+	Store         *DataStore
+	ServerURL     string
+	Edition       Edition
+	Version       common.Version
+	Sem           chan struct{}
+	Logger        *slog.Logger
+	ProjectKeys   []string // non-empty → limit extraction to these project keys
+	SkipIssueSync bool     // drop additionalFields=_all + hotspot detail enrichment. #398.
 
 	mu              sync.Mutex
 	skippedProjects map[string]bool
@@ -129,6 +137,7 @@ func RunExtract(ctx context.Context, cfg ExtractConfig) ([]string, error) {
 
 	executor := newExecutor(raw, store, client.BaseURL(), edition, version, cfg.Concurrency)
 	executor.ProjectKeys = cfg.ProjectKeys
+	executor.SkipIssueSync = cfg.SkipIssueSync
 	if err := executePhases(ctx, executor, plan, registry, store); err != nil {
 		return nil, err
 	}

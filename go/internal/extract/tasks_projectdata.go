@@ -70,10 +70,16 @@ func projectIssuesFullTask() func(ctx context.Context, e *Executor) error {
 		return forEachProjectBranch(ctx, e, "getProjectIssuesFull",
 			func(ctx context.Context, projectKey, branch string, w *ChunkWriter) error {
 				params := url.Values{
-					"components":       {projectKey},
-					"branch":           {branch},
-					"ps":               {"500"},
-					"additionalFields": {"_all"},
+					"components": {projectKey},
+					"branch":     {branch},
+					"ps":         {"500"},
+				}
+				// additionalFields=_all is what brings comments and
+				// changelog into the response — the data only the
+				// migrate-side per-issue sync would consume. Skip it
+				// when the operator opted out of that sync. #398.
+				if !e.SkipIssueSync {
+					params.Set("additionalFields", "_all")
 				}
 				if e.Version.Less(issueStatusesRename) {
 					params.Set("statuses", "OPEN,CONFIRMED,REOPENED,RESOLVED")
@@ -163,7 +169,13 @@ func projectHotspotsFullTask() func(ctx context.Context, e *Executor) error {
 				}
 
 				enriched := enrichAll(all, meta)
-				enrichHotspotDetails(ctx, e, enriched)
+				// enrichHotspotDetails issues one /api/hotspots/show
+				// call per REVIEWED hotspot purely to pick up comments
+				// + rule — data only the migrate-side hotspot sync
+				// would consume. Skip when opted out. #398.
+				if !e.SkipIssueSync {
+					enrichHotspotDetails(ctx, e, enriched)
+				}
 				return w.WriteChunk(enriched)
 			})
 	}
