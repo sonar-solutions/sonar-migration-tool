@@ -66,6 +66,15 @@ var retryableStatusCodes = map[int]bool{
 // current attempt number (1-based), and total attempts.
 type RetryLogFunc func(method, url string, status, attempt, total int)
 
+// RecoveryLogFunc is called once when a request that was paused by one or
+// more 429 rate-limit responses finally completes with a non-429 outcome —
+// i.e. the throttling cleared and this request got through. It receives the
+// HTTP method, URL path, the number of retries that preceded the recovery,
+// and the cumulative time this request spent waiting on rate-limit backoff.
+// It is NOT called when a request exhausts its retry schedule still seeing
+// 429 (that is a failure, not a resume), nor for 5xx/network-error retries.
+type RecoveryLogFunc func(method, url string, retries int, waited time.Duration)
+
 // rateLimitGate is a shared barrier that holds new requests when an
 // SQC-classified 429 has been observed, until the chosen backoff has
 // elapsed. Concurrent workers all park on the same deadline instead of
@@ -132,6 +141,7 @@ type retryTransport struct {
 	sqcBackoff    []time.Duration
 	nonSQCBackoff []time.Duration
 	logFn         RetryLogFunc
+	recoveryFn    RecoveryLogFunc
 	observer      RateLimitObserver
 	gate          *rateLimitGate
 }
@@ -142,11 +152,23 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		err  error
 	)
 
+	// pausedForRateLimit records whether this request slept for at least one
+	// 429 backoff; totalWaited accumulates that backoff. They drive the
+	// recovery callback so we log a resume only for requests that were
+	// genuinely throttled (not 5xx/network retries) and then got through.
+	var (
+		pausedForRateLimit bool
+		totalWaited        time.Duration
+	)
+
 	for attempt := 0; ; attempt++ {
 		t.waitOnGate(req.Context())
 
 		resp, err = t.inner.RoundTrip(req)
 		if !shouldRetry(resp, err) {
+			if pausedForRateLimit {
+				t.fireRecovery(req, attempt, totalWaited)
+			}
 			return resp, err
 		}
 
@@ -166,6 +188,10 @@ func (t *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		t.fireObserver(rl, chosenWait, wallClockAdded)
 		if !more {
 			return resp, err
+		}
+		if rl.is429 {
+			pausedForRateLimit = true
+			totalWaited += chosenWait
 		}
 
 		t.logAttempt(req, resp, attempt, total)
@@ -303,6 +329,17 @@ func (t *retryTransport) extendGate(until time.Time) time.Duration {
 		return 0
 	}
 	return t.gate.extend(until)
+}
+
+// fireRecovery delivers a one-shot "throttling cleared, request got through"
+// signal to the configured RecoveryLogFunc. retries is the number of failed
+// attempts that preceded the successful one; waited is the cumulative
+// rate-limit backoff this request slept through.
+func (t *retryTransport) fireRecovery(req *http.Request, retries int, waited time.Duration) {
+	if t.recoveryFn == nil {
+		return
+	}
+	t.recoveryFn(req.Method, req.URL.Path, retries, waited)
 }
 
 func (t *retryTransport) logAttempt(req *http.Request, resp *http.Response, attempt, total int) {

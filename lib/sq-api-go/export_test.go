@@ -73,6 +73,7 @@ type RetryTransportConfig struct {
 	SQCBackoff    []time.Duration
 	NonSQCBackoff []time.Duration
 	Logger        RetryLogFunc
+	Recovery      RecoveryLogFunc
 	Observer      RateLimitObserver
 }
 
@@ -84,6 +85,7 @@ func NewRetryTransportFull(cfg RetryTransportConfig) http.RoundTripper {
 		sqcBackoff:    cfg.SQCBackoff,
 		nonSQCBackoff: cfg.NonSQCBackoff,
 		logFn:         cfg.Logger,
+		recoveryFn:    cfg.Recovery,
 		observer:      cfg.Observer,
 		gate:          &rateLimitGate{},
 	}

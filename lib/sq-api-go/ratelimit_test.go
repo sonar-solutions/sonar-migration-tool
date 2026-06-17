@@ -212,6 +212,131 @@ func TestRetryTransportRetryAfterHonored(t *testing.T) {
 		"Retry-After: 1 should produce at least one second of wall-clock pause")
 }
 
+// recoveryCall captures one invocation of the RecoveryLogFunc.
+type recoveryCall struct {
+	retries int
+	waited  time.Duration
+}
+
+func TestRetryTransportRecoveryFiresAfter429(t *testing.T) {
+	var attempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"errors":[{"msg":"rate limit exceeded"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	var (
+		mu    sync.Mutex
+		calls []recoveryCall
+	)
+	transport := sqapi.NewRetryTransportFull(sqapi.RetryTransportConfig{
+		Inner:      http.DefaultTransport,
+		Backoff:    []time.Duration{0},
+		SQCBackoff: []time.Duration{5 * time.Millisecond, 5 * time.Millisecond},
+		Recovery: func(_, _ string, retries int, waited time.Duration) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, recoveryCall{retries: retries, waited: waited})
+		},
+	})
+
+	client := &http.Client{Transport: transport}
+	resp, err := client.Get(ts.URL)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Len(t, calls, 1, "recovery must fire exactly once when a 429 clears")
+	assert.Equal(t, 1, calls[0].retries, "one retry preceded the recovery")
+	assert.Greater(t, calls[0].waited, time.Duration(0), "recovery must report the time spent paused")
+}
+
+func TestRetryTransportRecoveryNotFiredFor5xx(t *testing.T) {
+	var attempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	var fired atomic.Int32
+	transport := sqapi.NewRetryTransportFull(sqapi.RetryTransportConfig{
+		Inner:   http.DefaultTransport,
+		Backoff: []time.Duration{0},
+		Recovery: func(_, _ string, _ int, _ time.Duration) {
+			fired.Add(1)
+		},
+	})
+
+	client := &http.Client{Transport: transport}
+	resp, err := client.Get(ts.URL)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, int32(0), fired.Load(), "5xx retries are not rate limiting — recovery must not fire")
+}
+
+func TestRetryTransportRecoveryNotFiredWhenScheduleExhausted(t *testing.T) {
+	var attempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"errors":[{"msg":"still limited"}]}`))
+	}))
+	defer ts.Close()
+
+	var fired atomic.Int32
+	transport := sqapi.NewRetryTransportFull(sqapi.RetryTransportConfig{
+		Inner:      http.DefaultTransport,
+		Backoff:    []time.Duration{0},
+		SQCBackoff: []time.Duration{0, 0},
+		Recovery: func(_, _ string, _ int, _ time.Duration) {
+			fired.Add(1)
+		},
+	})
+
+	client := &http.Client{Transport: transport}
+	resp, err := client.Get(ts.URL)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	assert.Equal(t, int32(0), fired.Load(), "a request that never clears the 429 has not recovered")
+}
+
+func TestRetryTransportRecoveryNotFiredOnImmediateSuccess(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	var fired atomic.Int32
+	transport := sqapi.NewRetryTransportFull(sqapi.RetryTransportConfig{
+		Inner:   http.DefaultTransport,
+		Backoff: []time.Duration{0},
+		Recovery: func(_, _ string, _ int, _ time.Duration) {
+			fired.Add(1)
+		},
+	})
+
+	client := &http.Client{Transport: transport}
+	resp, err := client.Get(ts.URL)
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, int32(0), fired.Load(), "a request that was never throttled has not recovered")
+}
+
 func TestRateLimitGateExtend(t *testing.T) {
 	gate := sqapi.NewRateLimitGate()
 	gate.Extend(time.Now().Add(50 * time.Millisecond))

@@ -20,6 +20,7 @@ type clientConfig struct {
 	maxConns       int
 	timeoutSecs    int
 	retryLogFn     RetryLogFunc
+	recoveryLogFn  RecoveryLogFunc
 	debugLogFn     DebugLogFunc
 	rateLimitObsFn RateLimitObserver
 }
@@ -90,6 +91,17 @@ func WithTimeout(seconds int) Option {
 func WithRetryLogger(fn RetryLogFunc) Option {
 	return func(cfg *clientConfig) {
 		cfg.retryLogFn = fn
+	}
+}
+
+// WithRateLimitRecoveryLogger sets a callback that fires once per request
+// that was paused by one or more 429 rate-limit responses and then completed
+// successfully — letting the caller log that throttling has cleared and work
+// is flowing again. It is not called for 5xx/network retries, nor when a
+// request exhausts its retry schedule still seeing 429.
+func WithRateLimitRecoveryLogger(fn RecoveryLogFunc) Option {
+	return func(cfg *clientConfig) {
+		cfg.recoveryLogFn = fn
 	}
 }
 

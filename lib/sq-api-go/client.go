@@ -133,6 +133,7 @@ func buildTransport(cfg *clientConfig, token string, version float64) http.Round
 		sqcBackoff:    sqc429Backoff,
 		nonSQCBackoff: nonSQC429Backoff,
 		logFn:         cfg.retryLogFn,
+		recoveryFn:    cfg.recoveryLogFn,
 		observer:      cfg.rateLimitObsFn,
 		gate:          &rateLimitGate{},
 	}

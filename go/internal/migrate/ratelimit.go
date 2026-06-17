@@ -6,12 +6,57 @@ package migrate
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
 
 	sqapi "github.com/sonar-solutions/sq-api-go"
 )
+
+// rateLimitEpisodeLogger emits exactly one "paused" / "resuming" log pair per
+// rate-limit episode. It is edge-triggered: onHit logs only on the
+// not-throttled → throttled transition and onResume only on the reverse, so a
+// burst of concurrent workers all parking on the same rate-limit window
+// produces a single readable pair rather than one log line per request. A
+// migration that hits rate limiting several times over its lifetime produces
+// one pair per distinct episode.
+type rateLimitEpisodeLogger struct {
+	mu        sync.Mutex
+	logger    *slog.Logger
+	throttled bool
+}
+
+// onHit records a 429 observation. On the rising edge (first hit of a fresh
+// episode) it logs a single warning; subsequent hits while still throttled are
+// silent so the log is not flooded.
+func (l *rateLimitEpisodeLogger) onHit(event sqapi.RateLimitEvent) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.throttled {
+		return
+	}
+	l.throttled = true
+	l.logger.Warn("API rate limiting hit — pausing requests and retrying with backoff",
+		"kind", event.Kind.String(),
+		"retryAfter", event.RetryAfter,
+		"waitChosen", event.WaitChosen)
+}
+
+// onResume records that a previously throttled request got through. On the
+// falling edge it logs that the migration has resumed; calls while not
+// throttled are no-ops.
+func (l *rateLimitEpisodeLogger) onResume(retries int, waited time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.throttled {
+		return
+	}
+	l.throttled = false
+	l.logger.Info("API rate limiting cleared — migration resuming",
+		"pausedFor", waited,
+		"retries", retries)
+}
 
 // RateLimitEventsFile is the filename written under the run directory
 // when one or more 429 responses were observed during the run. The PDF
