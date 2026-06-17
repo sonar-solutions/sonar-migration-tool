@@ -22,10 +22,12 @@ func newResetTestCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.String("config", "", "")
 	f.String("edition", "enterprise", "")
-	f.String("url", "https://sonarcloud.io/", "")
+	f.String(flagTargetURL, "https://sonarcloud.io/", "")
 	f.Int("concurrency", 25, "")
 	f.String("export_directory", "/app/files/", "")
 	f.Bool("debug", false, "")
+	// Deprecated alias — registered so tests can exercise back-compat (#406).
+	f.String("url", "https://sonarcloud.io/", "")
 	return cmd
 }
 
@@ -88,7 +90,7 @@ func TestBuildResetConfigFlagsOverrideConfig(t *testing.T) {
 
 	cmd := newResetTestCmd()
 	_ = cmd.Flags().Set("config", path)
-	_ = cmd.Flags().Set("url", "https://flag.example.com/")
+	_ = cmd.Flags().Set(flagTargetURL, "https://flag.example.com/")
 	_ = cmd.Flags().Set("concurrency", "99")
 	_ = cmd.Flags().Set("debug", "true")
 
@@ -136,7 +138,7 @@ func TestBuildResetConfigPositionalArgsOverrideConfig(t *testing.T) {
 
 func TestBuildResetConfigNoConfigUsesPositionalAndFlags(t *testing.T) {
 	cmd := newResetTestCmd()
-	_ = cmd.Flags().Set("url", "https://manual.example.com/")
+	_ = cmd.Flags().Set(flagTargetURL, "https://manual.example.com/")
 	_ = cmd.Flags().Set("export_directory", "/manual/dir")
 
 	cfg, err := buildResetConfig(cmd, []string{"tok", "ent"})
@@ -155,6 +157,33 @@ func TestBuildResetConfigNoConfigUsesPositionalAndFlags(t *testing.T) {
 	}
 	if cfg.ExportDirectory != "/manual/dir" {
 		t.Errorf("ExportDirectory: got %q", cfg.ExportDirectory)
+	}
+}
+
+// Issue #406: the deprecated --url flag must still work so existing scripts
+// don't break. The new --target_url wins when both are passed.
+func TestBuildResetConfig_DeprecatedURLStillWorks(t *testing.T) {
+	cmd := newResetTestCmd()
+	_ = cmd.Flags().Set("url", "https://legacy.example.com/")
+	cfg, err := buildResetConfig(cmd, []string{"tok", "ent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.URL != "https://legacy.example.com/" {
+		t.Errorf("deprecated --url should populate cfg.URL, got %q", cfg.URL)
+	}
+}
+
+func TestBuildResetConfig_NewURLWinsOverDeprecated(t *testing.T) {
+	cmd := newResetTestCmd()
+	_ = cmd.Flags().Set("url", "https://legacy.example.com/")
+	_ = cmd.Flags().Set(flagTargetURL, "https://new.example.com/")
+	cfg, err := buildResetConfig(cmd, []string{"tok", "ent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.URL != "https://new.example.com/" {
+		t.Errorf("--target_url should win over deprecated --url, got %q", cfg.URL)
 	}
 }
 

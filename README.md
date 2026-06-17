@@ -91,7 +91,11 @@ The minimal JSON configuration file should look like this
     }
 }
 ```
-**Note**: If you don't want to disclose tokens or URL in the configuration file, you can pass them on the tool command line (as `--url` and `--token` parameters)
+**Note**: If you don't want to disclose tokens or URL in the configuration file, you can pass them on the tool command line:
+- `--source_url` and `--source_token` for `extract`
+- `--target_url` and `--target_token` for `migrate` and `reset`.
+- `--source_url`, `--source_token`, `--target_url`, `--target_token` for `transfer`.
+
 **Note**: SQS = SonarQube Server, SQC = SonarQube Cloud
 
 
@@ -110,20 +114,20 @@ Or use a **config file** to keep tokens out of your shell history:
 
 ```bash
 # Example with URL and Token passed on the command line if not in the configuration file
-./sonar-migration-tool extract --url <YOUR_SQS_URL> --token <YOUR_SQS_TOKEN>
+./sonar-migration-tool extract --source_url <YOUR_SQS_URL> --source_token <YOUR_SQS_TOKEN>
 ./sonar-migration-tool structure
 ./sonar-migration-tool mappings
 
 # → edit organizations.csv to set sonarcloud_org_key per row
 
-./sonar-migration-tool migrate --url <YOUR_SQC_URL> --token <YOUR_SQC_TOKEN>
+./sonar-migration-tool migrate --target_url <YOUR_SQC_URL> --target_token <YOUR_SQC_TOKEN>
 ```
 **Note**: SQS = SonarQube Server, SQC = SonarQube Cloud
 
 
-The config file uses the same unified shape as every other command — one top-level block of shared defaults plus `source` and `target` sub-objects. `concurrency`, `timeout`, `export_directory`, mTLS (`pem_file_path` / `key_file_path` / `cert_password`), and `--default_organization` / `--enterprise_key` are all honored either via the JSON file or as CLI overrides.
+The config file uses the same unified shape as every other command — one top-level block of shared defaults plus `source` and `target` sub-objects. `concurrency`, `timeout`, `export_directory`, mTLS (`pem_file_path`, `key_file_path`, `cert_password`), and `--default_organization` / `--enterprise_key` are all honored either via the JSON file or as CLI overrides.
 
-Add `--url` to target a different SonarQube Cloud instance (e.g. `--target_url https://sc-staging.io` for staging).
+Add `--target_url` to target a different SonarQube Cloud instance (e.g. `--target_url https://sc-staging.io` for staging).
 
 Full reference, flags, multi-server migration, and resume support:
 👉 **[Using `migrate` — Migrate All Projects](docs/MIGRATE.md)**
@@ -212,17 +216,17 @@ You may want to rerun the command with the extra `--debug` flag to get more trou
 * Run `migration` 
 
 ```bash
-./sonar-migration-tool extract --url <YOUR_SQS_1_URL> --token <YOUR_SQS_1_TOKEN>
-./sonar-migration-tool extract --url <YOUR_SQS_2_URL> --token <YOUR_SQS_n_TOKEN>
+./sonar-migration-tool extract --source_url <YOUR_SQS_1_URL> --source_token <YOUR_SQS_1_TOKEN>
+./sonar-migration-tool extract --source_url <YOUR_SQS_2_URL> --source_token <YOUR_SQS_n_TOKEN>
 ...
-./sonar-migration-tool extract --url <YOUR_SQS_n_URL> --token <YOUR_SQS_n_TOKEN>
+./sonar-migration-tool extract --source_url <YOUR_SQS_n_URL> --source_token <YOUR_SQS_n_TOKEN>
 
 ./sonar-migration-tool structure
 ./sonar-migration-tool mappings
 
 # → edit organizations.csv to set sonarcloud_org_key per row (column 2)
 
-./sonar-migration-tool migrate --enterprise_key <YOUR_SQC_ENTERPRISE_KEY> --url <SQC_URL> --token <SQC_TOKEN>
+./sonar-migration-tool migrate --enterprise_key <YOUR_SQC_ENTERPRISE_KEY> --target_url <SQC_URL> --target_token <SQC_TOKEN>
 ```
 **Note**: SQS = SonarQube Server, SQC = SonarQube Cloud
 

@@ -26,7 +26,7 @@ organization keys to organizations.csv.`,
 			return err
 		}
 		if cfg.Token == "" || cfg.EnterpriseKey == "" {
-			return fmt.Errorf("TOKEN and ENTERPRISE_KEY are required (--token/--enterprise_key flags or in config file)")
+			return fmt.Errorf("TOKEN and ENTERPRISE_KEY are required (--target_token/--enterprise_key flags or in config file)")
 		}
 		runID, err := migrate.RunMigrate(cmd.Context(), cfg)
 		// Attempt the summary report whenever a run directory exists, even
@@ -50,10 +50,15 @@ organization keys to organizations.csv.`,
 func init() {
 	f := migrateCmd.Flags()
 	f.String("config", "", "Path to JSON configuration file")
-	f.String("token", "", "SonarQube Cloud authentication token")
+	f.String(flagTargetToken, "", "SonarQube Cloud authentication token")
 	f.String("enterprise_key", "", "SonarQube Cloud enterprise key")
 	f.String("edition", "", "SonarQube Cloud license edition")
-	f.String("url", "", "URL of SonarQube Cloud")
+	f.String(flagTargetURL, "", "URL of SonarQube Cloud")
+	// Deprecated aliases (#406): kept so existing scripts keep working.
+	f.String("url", "", "")
+	f.String("token", "", "")
+	_ = f.MarkDeprecated("url", "use --target_url instead")
+	_ = f.MarkDeprecated("token", "use --target_token instead")
 	f.String("run_id", "", "ID of a run to resume in case of failures")
 	f.Int("concurrency", 0, "Maximum number of concurrent requests")
 	f.Int("timeout", 0, "Per-HTTP-request timeout in seconds (default: 60). Maps to the top-level timeout config field.")
@@ -80,11 +85,15 @@ func buildMigrateConfig(cmd *cobra.Command, args []string) (migrate.MigrateConfi
 		cfg = loaded
 	}
 
-	// Flags override config file.
+	// Flags override config file. Apply the deprecated --url/--token
+	// aliases first so the primary --target_url/--target_token wins when
+	// both are passed (#406).
 	overrideString(cmd, "token", &cfg.Token)
+	overrideString(cmd, "url", &cfg.URL)
+	overrideString(cmd, flagTargetToken, &cfg.Token)
+	overrideString(cmd, flagTargetURL, &cfg.URL)
 	overrideString(cmd, "enterprise_key", &cfg.EnterpriseKey)
 	overrideString(cmd, "edition", &cfg.Edition)
-	overrideString(cmd, "url", &cfg.URL)
 	overrideString(cmd, "run_id", &cfg.RunID)
 	overrideString(cmd, "export_directory", &cfg.ExportDirectory)
 	overrideString(cmd, "target_task", &cfg.TargetTask)

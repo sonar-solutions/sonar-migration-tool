@@ -23,7 +23,7 @@ var extractCmd = &cobra.Command{
 			return err
 		}
 		if cfg.URL == "" || cfg.Token == "" {
-			return fmt.Errorf("URL and TOKEN are required (--url/--token flags or in config file)")
+			return fmt.Errorf("URL and TOKEN are required (--source_url/--source_token flags or in config file)")
 		}
 		skipped, err := extract.RunExtract(cmd.Context(), cfg)
 		if err != nil {
@@ -43,8 +43,14 @@ var extractCmd = &cobra.Command{
 func init() {
 	f := extractCmd.Flags()
 	f.String("config", "", "Path to JSON configuration file")
-	f.String("url", "", "URL of the SonarQube Server")
-	f.String("token", "", "Authentication token for the SonarQube Server")
+	f.String(flagSourceURL, "", "URL of the SonarQube Server")
+	f.String(flagSourceToken, "", "Authentication token for the SonarQube Server")
+	// Deprecated aliases (#406): kept so existing scripts keep working.
+	// MarkDeprecated hides the flag from --help and prints a warning when used.
+	f.String("url", "", "")
+	f.String("token", "", "")
+	_ = f.MarkDeprecated("url", "use --source_url instead")
+	_ = f.MarkDeprecated("token", "use --source_token instead")
 	f.String("pem_file_path", "", "Path to client certificate pem file")
 	f.String("key_file_path", "", "Path to client certificate key file")
 	f.String("cert_password", "", "Password for client certificate")
@@ -72,9 +78,13 @@ func buildExtractConfig(cmd *cobra.Command, args []string) (extract.ExtractConfi
 		cfg = loaded
 	}
 
-	// Flags override config file.
+	// Flags override config file. Apply the deprecated --url/--token
+	// aliases first so the primary --source_url/--source_token wins when
+	// both are passed (#406).
 	overrideString(cmd, "url", &cfg.URL)
 	overrideString(cmd, "token", &cfg.Token)
+	overrideString(cmd, flagSourceURL, &cfg.URL)
+	overrideString(cmd, flagSourceToken, &cfg.Token)
 	overrideString(cmd, "pem_file_path", &cfg.PEMFilePath)
 	overrideString(cmd, "key_file_path", &cfg.KeyFilePath)
 	overrideString(cmd, "cert_password", &cfg.CertPassword)
