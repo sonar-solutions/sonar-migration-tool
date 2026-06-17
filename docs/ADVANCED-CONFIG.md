@@ -9,6 +9,7 @@ This page lists **every** option `sonar-migration-tool` accepts — JSON config 
 - [`source` block — consumed by `extract`](#source-block--consumed-by-extract)
 - [`target` block — consumed by `migrate` / `reset`](#target-block--consumed-by-migrate--reset)
 - [Per-command CLI flags](#per-command-cli-flags)
+- [SonarQube Cloud API rate limiting handling](#sonarqube-cloud-api-rate-limiting-handling)
 - [Legacy config shapes](#legacy-config-shapes)
 - [Security tips](#security-tips)
 
@@ -218,6 +219,88 @@ Available on every command:
 | `--debug` | Verbose request/response logging. |
 | `-h, --help` | Help for the command. |
 | `-v, --version` | Print version and exit. |
+
+---
+
+## SonarQube Cloud API rate limiting handling
+
+The `migrate` step is highly API-intensive, and the production SonarQube Cloud platform
+protects its API with rate limiting. A large migration will likely hit that limit. The tool
+handles this automatically — there is nothing to configure — by retrying throttled requests
+with backoff and pausing affected work until the limit clears. This section documents what it
+does and what you will see in the logs.
+
+### What gets retried
+
+| Outcome | Retried? |
+|---|---|
+| `429 Too Many Requests` | Yes |
+| `500`, `502`, `503`, `504` | Yes |
+| Network / connection errors | Yes |
+| Other `4xx` (e.g. `400`, `401`, `403`, `404`) | No — these indicate a caller mistake and fail immediately |
+
+### Backoff schedules
+
+The wait between attempts depends on why the request failed. Every wait also gets up to
+**+50 % random jitter** added, so concurrent workers don't retry in lockstep.
+
+| Trigger | Waits between attempts | Retries |
+|---|---|---|
+| `5xx` / network error | 100 ms, 200 ms, 400 ms | 3 |
+| SonarQube Cloud `429` (application rate limit) | 5 s, 15 s, 30 s, 60 s, 120 s, 300 s | 6 |
+| Cloudflare / unclassified `429` | 2 s | 1 (fail fast) |
+
+A `429` may carry a `Retry-After` header; when present, the tool honors it (using the larger of
+the header value and the scheduled wait), capped at **300 s** to guard against a misconfigured
+proxy asking for an unreasonable delay.
+
+For a sustained SonarQube Cloud rate limit, the worst-case pause for a single request before it
+gives up is the sum of its schedule — roughly **8.8 minutes** (plus jitter). When a request
+exhausts its schedule still seeing `429`, that request fails and the error is reported; the tool
+does not abort the whole migration.
+
+### Classification and coordinated pausing
+
+Each `429` is classified by its body and headers as one of:
+
+- **SonarQube Cloud rate limit** — the documented application limit (JSON error envelope). Uses
+  the long schedule above.
+- **Cloudflare rate limit** — identified by Cloudflare headers (`CF-Ray`, `CF-Mitigated`,
+  `Server: cloudflare`) or its branded HTML error page. Fails fast, since this often needs
+  operator attention rather than waiting.
+- **Unknown 429** — anything else; surfaced in the report for review.
+
+When a SonarQube Cloud rate limit is hit, a **shared gate** makes all concurrent workers pause on
+the same window rather than each independently hammering an already-exhausted quota.
+
+### What you'll see in the logs
+
+When rate limiting is encountered, the tool logs the pause and, once a throttled request gets
+through, logs that the migration has resumed:
+
+```
+WARN  API rate limiting hit — pausing requests and retrying with backoff  kind=sqc-rate-limit retryAfter=… waitChosen=…
+INFO  API rate limiting cleared — migration resuming  pausedFor=… retries=…
+```
+
+These two lines are emitted **once per rate-limiting episode** — a burst of many throttled
+requests produces a single pause/resume pair, not one line per request. Individual retries are
+also logged at `WARN` as `retrying request` (with `attempt`/`maxAttempts`), and the first hit of
+each kind logs a one-time `rate limiting detected` line including a snippet of the response body.
+
+### Report artifact
+
+If any `429` was observed during a run, the tool writes a `rate_limit_events.json` artifact into
+the run directory (counts per kind, cumulative and longest pause, and a snapshot of the first
+event of each kind). Clean runs produce no artifact.
+
+The PDF migration report stays quiet about rate limiting that was handled gracefully — if the
+tool paused and resumed without failing any task, there is **no banner**, regardless of how long
+it paused. An amber rate-limit notice is shown only when rate limiting was *not* worked around:
+
+- a task failed with `429` as its terminal status (re-run with `--run-id` to resume), or
+- a non-standard `429` (Cloudflare / WAF / unclassified) was seen, which may need operator
+  action even if it resolved on its own.
 
 ---
 

@@ -35,7 +35,7 @@ func TestCollectRateLimitReport_NoFileReturnsNil(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-func TestCollectRateLimitReport_SingleBlipBelowThreshold(t *testing.T) {
+func TestCollectRateLimitReport_GracefulResumeReturnsNil(t *testing.T) {
 	dir := t.TempDir()
 	writeRateLimitArtefact(t, dir, migrate.RateLimitState{
 		Total:                  1,
@@ -46,10 +46,10 @@ func TestCollectRateLimitReport_SingleBlipBelowThreshold(t *testing.T) {
 		},
 	})
 	got := collectRateLimitReport(dir, nil)
-	assert.Nil(t, got, "single 5s SQC blip below 30s threshold should not surface")
+	assert.Nil(t, got, "an SQC rate limit that paused and resumed without failing a task must not surface")
 }
 
-func TestCollectRateLimitReport_CumulativeAboveThreshold(t *testing.T) {
+func TestCollectRateLimitReport_LongGracefulPauseReturnsNil(t *testing.T) {
 	dir := t.TempDir()
 	writeRateLimitArtefact(t, dir, migrate.RateLimitState{
 		Total:                  3,
@@ -60,10 +60,7 @@ func TestCollectRateLimitReport_CumulativeAboveThreshold(t *testing.T) {
 		},
 	})
 	got := collectRateLimitReport(dir, nil)
-	require.NotNil(t, got)
-	assert.Equal(t, 3, got.SQCHits)
-	assert.InDelta(t, 65.0, got.CumulativePauseSeconds, 0.001)
-	assert.False(t, got.CausedTaskFailure)
+	assert.Nil(t, got, "pause duration no longer matters — a graceful SQC resume never surfaces, however long it paused")
 }
 
 func TestCollectRateLimitReport_TaskFailureWith429(t *testing.T) {
@@ -115,14 +112,6 @@ func TestRateLimitMessageVariants(t *testing.T) {
 		contains []string
 	}{
 		{
-			name: "sqc recovered slow",
-			report: &RateLimitReport{
-				TotalHits: 4, SQCHits: 4,
-				CumulativePauseSeconds: 95,
-			},
-			contains: []string{"SonarQube Cloud", "4 times", "paused and resumed", "minute"},
-		},
-		{
 			name: "sqc task failure",
 			report: &RateLimitReport{
 				TotalHits: 2, SQCHits: 2,
@@ -165,14 +154,6 @@ func TestFormatHeaders(t *testing.T) {
 	assert.Equal(t, "CF-Ray: abc; Server: cloudflare", got)
 	assert.Empty(t, formatHeaders(nil))
 	assert.Empty(t, formatHeaders(map[string]string{}))
-}
-
-func TestFormatSeconds(t *testing.T) {
-	assert.Equal(t, "5.0 seconds", formatSeconds(5))
-	assert.Equal(t, "29.5 seconds", formatSeconds(29.5))
-	assert.Equal(t, "55.0 seconds", formatSeconds(55))   // still under the 60s threshold
-	assert.Equal(t, "about 1 minute", formatSeconds(70)) // rounds to 1 min
-	assert.Equal(t, "about 5 minutes", formatSeconds(300))
 }
 
 func TestSnippetForMessage(t *testing.T) {

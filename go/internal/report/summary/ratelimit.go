@@ -7,7 +7,6 @@ package summary
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,23 +18,18 @@ import (
 	sqapi "github.com/sonar-solutions/sq-api-go"
 )
 
-// rateLimitImpactPauseThreshold is the cumulative pause time (in
-// seconds) above which the orange warning is rendered even when the
-// migration completed cleanly. A short blip that recovered in under
-// half a minute is not worth a callout — operators see the JSON in the
-// run dir if they want details.
-const rateLimitImpactPauseThreshold = 30.0
-
 // collectRateLimitReport reads rate_limit_events.json from runDir and
 // returns a *RateLimitReport only when rate limiting materially
-// impacted the run. Returns nil for clean runs, missing files, or
-// recoverable single-blip runs.
+// impacted the run. Returns nil for clean runs and missing files, and —
+// crucially — for runs where rate limiting was hit but the tool paused
+// and resumed gracefully without failing any task. A migration that
+// slowed down but still completed needs no callout.
 //
 // The "materially impacted" predicate is satisfied when ANY of the
 // following hold:
 //   - one or more tasks failed with HTTP 429 as the terminal status,
-//   - cumulative pause time exceeded rateLimitImpactPauseThreshold,
-//   - any non-SQC-classified 429 was observed (Cloudflare or unknown).
+//   - any non-SQC-classified 429 was observed (Cloudflare or unknown),
+//     since those may signal an upstream proxy/WAF needing operator action.
 func collectRateLimitReport(runDir string, failuresByType map[string][]analysis.ReportRow) *RateLimitReport {
 	state, ok := readRateLimitState(runDir)
 	if !ok {
@@ -100,16 +94,13 @@ var nonSQCKindsInPDFOrder = []sqapi.RateLimitKind{
 }
 
 // rateLimitImpacted is the "Only on impact" predicate gating the PDF
-// warning. See the package-level constant for the cumulative-pause
-// cutoff; the other branches are unconditional.
+// warning. A graceful SQC rate-limit episode — hit, paused, resumed,
+// no task failed — is deliberately NOT surfaced: the tool handled it,
+// so the report stays quiet. The warning shows only when rate limiting
+// failed a task, or when a non-SQC 429 (Cloudflare/WAF/unknown) was
+// seen, which may need operator action even if it resolved.
 func rateLimitImpacted(r *RateLimitReport) bool {
-	if r.CloudflareHits > 0 || r.UnknownHits > 0 {
-		return true
-	}
-	if r.CausedTaskFailure {
-		return true
-	}
-	return r.CumulativePauseSeconds > rateLimitImpactPauseThreshold
+	return r.CloudflareHits > 0 || r.UnknownHits > 0 || r.CausedTaskFailure
 }
 
 // anyFailureWas429 reports whether any failed request recorded in the
@@ -147,30 +138,19 @@ func formatHeaders(headers map[string]string) string {
 }
 
 // rateLimitMessage assembles the body text shown inside the orange
-// callout box. The three variants correspond to the impact branches in
-// rateLimitImpacted: clean-but-slow SQC throttling, SQC throttling that
-// killed at least one task, and any non-SQC 429 observation.
+// callout box. The two variants correspond to the impact branches in
+// rateLimitImpacted: any non-SQC 429 observation (preferred when present,
+// as it is more diagnostic), and SQC throttling that killed at least one
+// task. Graceful SQC throttling that recovered is never surfaced, so it
+// has no message variant.
 //
 // The function is pure so it can be unit-tested without touching fpdf
 // or the disk.
 func rateLimitMessage(r *RateLimitReport) string {
-	hasNonSQC := r.CloudflareHits > 0 || r.UnknownHits > 0
-	switch {
-	case hasNonSQC:
+	if r.CloudflareHits > 0 || r.UnknownHits > 0 {
 		return nonSQCMessage(r)
-	case r.CausedTaskFailure:
-		return sqcFailureMessage(r)
-	default:
-		return sqcRecoveredMessage(r)
 	}
-}
-
-func sqcRecoveredMessage(r *RateLimitReport) string {
-	return fmt.Sprintf(
-		"SonarQube Cloud's API rate limit was reached %s during this run. "+
-			"The tool paused and resumed automatically; total pause time was %s. "+
-			"The migration completed successfully but ran slower than usual.",
-		pluralHits(r.SQCHits), formatSeconds(r.CumulativePauseSeconds))
+	return sqcFailureMessage(r)
 }
 
 func sqcFailureMessage(r *RateLimitReport) string {
@@ -198,20 +178,6 @@ func pluralHits(n int) string {
 		return "1 time"
 	}
 	return fmt.Sprintf("%d times", n)
-}
-
-// formatSeconds prints a duration count as a human-friendly string.
-// Sub-minute durations stay in seconds with one decimal; minute+ values
-// round to whole minutes so the callout doesn't read like a stopwatch.
-func formatSeconds(secs float64) string {
-	if secs < 60 {
-		return fmt.Sprintf("%.1f seconds", secs)
-	}
-	mins := int(math.Round(secs / 60))
-	if mins == 1 {
-		return "about 1 minute"
-	}
-	return fmt.Sprintf("about %d minutes", mins)
 }
 
 func snippetForMessage(snippet string) string {

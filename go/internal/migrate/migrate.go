@@ -123,7 +123,11 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) (runIDOut string, retErr
 			"status", status, "attempt", attempt, "maxAttempts", total)
 	}
 	rateLimitTracker := NewRateLimitTracker()
+	rlEpisode := &rateLimitEpisodeLogger{logger: logger}
 	rateLimitObs := func(event sqapi.RateLimitEvent) {
+		// Observe feeds the run-wide stats persisted to rate_limit_events.json
+		// for the PDF report; the first event of each kind also carries the
+		// body snippet, which we log once for operator review.
 		if rateLimitTracker.Observe(event) {
 			logger.Warn("rate limiting detected",
 				"kind", event.Kind.String(),
@@ -131,11 +135,18 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) (runIDOut string, retErr
 				"waitChosen", event.WaitChosen,
 				"bodySnippet", event.BodySnippet)
 		}
+		// Edge-triggered per-episode "paused" log (deduplicated across
+		// concurrent workers).
+		rlEpisode.onHit(event)
+	}
+	rateLimitRecovery := func(_, _ string, retries int, waited time.Duration) {
+		rlEpisode.onResume(retries, waited)
 	}
 	clientOpts := []sqapi.Option{
 		sqapi.WithTimeout(cfg.Timeout),
 		sqapi.WithRetryLogger(retryLog),
 		sqapi.WithRateLimitObserver(rateLimitObs),
+		sqapi.WithRateLimitRecoveryLogger(rateLimitRecovery),
 	}
 	if cfg.Debug {
 		clientOpts = append(clientOpts, sqapi.WithDebugLogger(common.NewHTTPDebugLogger(logger)))
