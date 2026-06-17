@@ -105,10 +105,10 @@ Connect to SonarQube Server and export all the data needed for migration.
 
 ```bash
 # From source
-go run . extract --url <URL> --token <TOKEN> --export_directory ./files/ [--concurrency 25] [--timeout 60]
+go run . extract --source_url <URL> --source_token <TOKEN> --export_directory ./files/ [--concurrency 25] [--timeout 60]
 
 # Built binary
-sonar-migration-tool extract --url <URL> --token <TOKEN> --export_directory ./files/ [--concurrency 25] [--timeout 60]
+sonar-migration-tool extract --source_url <URL> --source_token <TOKEN> --export_directory ./files/ [--concurrency 25] [--timeout 60]
 ```
 
 | Flag | Description |
@@ -198,10 +198,10 @@ Push everything to SonarQube Cloud. You'll need your SonarQube Cloud admin token
 
 ```bash
 # From source
-go run . migrate --token <TOKEN> --enterprise_key <ENTERPRISE_KEY> --export_directory ./files/ [--run_id <id>] [--skip_profiles]
+go run . migrate --target_token <TOKEN> --enterprise_key <ENTERPRISE_KEY> --export_directory ./files/ [--run_id <id>] [--skip_profiles]
 
 # Built binary
-sonar-migration-tool migrate --token <TOKEN> --enterprise_key <ENTERPRISE_KEY> --export_directory ./files/ [--run_id <id>] [--skip_profiles]
+sonar-migration-tool migrate --target_token <TOKEN> --enterprise_key <ENTERPRISE_KEY> --export_directory ./files/ [--run_id <id>] [--skip_profiles]
 ```
 
 | Flag | Description |
@@ -212,7 +212,7 @@ sonar-migration-tool migrate --token <TOKEN> --enterprise_key <ENTERPRISE_KEY> -
 | `--skip_profiles` | Skip quality profile migration/provisioning |
 | `--default_organization` | SonarQube Cloud organization key applied to every project when `organizations.csv` has no mapping. Ignored (with a WARN) if any row already carries a `sonarcloud_org_key`. Useful for small instances where every SQS project migrates into one SQC org. |
 | `--edition` | SonarQube Cloud license edition |
-| `--url` | SonarQube Cloud URL (default: `https://sonarcloud.io/`) |
+| `--target_url` | SonarQube Cloud URL (default: `https://sonarcloud.io/`) |
 | `--concurrency` | Max concurrent requests |
 | `--export_directory` | Directory containing SonarQube exports (default: `./migration-files`) |
 
@@ -235,10 +235,10 @@ If a step fails partway through, you can pick up where you left off:
 
 ```bash
 # Resume an extraction
-sonar-migration-tool extract --url <URL> --token <TOKEN> --extract_id <PREVIOUS_EXTRACT_ID> --export_directory ./files/
+sonar-migration-tool extract --source_url <URL> --source_token <TOKEN> --extract_id <PREVIOUS_EXTRACT_ID> --export_directory ./files/
 
 # Resume a migration
-sonar-migration-tool migrate --token <TOKEN> --enterprise_key <ENTERPRISE_KEY> --run_id <PREVIOUS_RUN_ID> --export_directory ./files/
+sonar-migration-tool migrate --target_token <TOKEN> --enterprise_key <ENTERPRISE_KEY> --run_id <PREVIOUS_RUN_ID> --export_directory ./files/
 ```
 
 The tool tracks which tasks have already completed and skips them automatically.
@@ -326,7 +326,7 @@ sonar-migration-tool reset <TOKEN> <ENTERPRISE_KEY> --export_directory ./files/
 - Use `--config` with a JSON file for repeatable, scripted migrations.
 - For large instances (50,000+ projects), lower concurrency and increase timeout:
   ```bash
-  sonar-migration-tool extract --url <URL> --token <TOKEN> --concurrency 10 --timeout 120 --export_directory ./files/
+  sonar-migration-tool extract --source_url <URL> --source_token <TOKEN> --concurrency 10 --timeout 120 --export_directory ./files/
   ```
 
 ---

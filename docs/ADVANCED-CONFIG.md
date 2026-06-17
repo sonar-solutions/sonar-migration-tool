@@ -91,14 +91,14 @@ CLI flags **override** the corresponding config field when both are set.
 ### `extract`
 
 ```bash
-sonar-migration-tool extract --url <url> --token <token> [flags]
+sonar-migration-tool extract --source_url <url> --source_token <token> [flags]
 ```
 
 | Flag | Description |
 |---|---|
 | `-c, --config <path>` | Path to JSON configuration file. |
-| `--url <url>` | SonarQube Server URL. |
-| `--token <token>` | SonarQube Server authentication token. |
+| `--source_url <url>` | SonarQube Server URL. (Legacy `--url` is still accepted but deprecated.) |
+| `--source_token <token>` | SonarQube Server authentication token. (Legacy `--token` is still accepted but deprecated.) |
 | `--export_directory <dir>` | Output directory (default `./migration-files`). |
 | `--extract_type <name>` | Type of extract to run (default `all`). |
 | `--extract_id <id>` | Resume a previous extraction. |
@@ -128,15 +128,15 @@ sonar-migration-tool predictive-report --config config.json
 ### `migrate`
 
 ```bash
-sonar-migration-tool migrate --token <token> --enterprise_key <key> [flags]
+sonar-migration-tool migrate --target_token <token> --enterprise_key <key> [flags]
 ```
 
 | Flag | Description |
 |---|---|
 | `-c, --config <path>` | Path to JSON configuration file. |
-| `--token <token>` | SonarQube Cloud authentication token. |
+| `--target_token <token>` | SonarQube Cloud authentication token. (Legacy `--token` is still accepted but deprecated.) |
 | `--enterprise_key <key>` | SonarQube Cloud enterprise key. |
-| `--url <url>` | SonarQube Cloud URL (default `https://sonarcloud.io/`). |
+| `--target_url <url>` | SonarQube Cloud URL (default `https://sonarcloud.io/`). (Legacy `--url` is still accepted but deprecated.) |
 | `--export_directory <dir>` | Directory containing the extract output. |
 | `--edition <name>` | SonarQube Cloud license edition. |
 | `--run_id <id>` | Resume a failed migration. |

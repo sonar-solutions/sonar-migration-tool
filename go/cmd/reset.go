@@ -59,7 +59,10 @@ func init() {
 	f := resetCmd.Flags()
 	f.String("config", "", "Path to JSON configuration file (same format as migrate --config)")
 	f.String("edition", "enterprise", "SonarQube Cloud license edition")
-	f.String("url", "https://sonarcloud.io/", "URL of SonarQube Cloud")
+	f.String(flagTargetURL, "https://sonarcloud.io/", "URL of SonarQube Cloud")
+	// Deprecated alias (#406): kept so existing scripts keep working.
+	f.String("url", "https://sonarcloud.io/", "")
+	_ = f.MarkDeprecated("url", "use --target_url instead")
 	f.Int("concurrency", 25, "Maximum number of concurrent requests")
 	f.String("export_directory", DefaultExportDirectory, "Directory to place all interim files")
 	f.Bool(flagResetYes, false, "Skip the interactive confirmation prompt and reset every listed organization (intended for non-interactive / scripted use). #381.")
@@ -85,9 +88,11 @@ func buildResetConfig(cmd *cobra.Command, args []string) (migrate.ResetConfig, e
 		cfg.EnterpriseKey = args[1]
 	}
 
-	// Flags override everything.
+	// Flags override everything. Apply the deprecated --url alias first
+	// so the primary --target_url wins when both are passed (#406).
 	overrideString(cmd, "edition", &cfg.Edition)
 	overrideString(cmd, "url", &cfg.URL)
+	overrideString(cmd, flagTargetURL, &cfg.URL)
 	overrideString(cmd, "export_directory", &cfg.ExportDirectory)
 	overrideInt(cmd, "concurrency", &cfg.Concurrency)
 	if cmd.Flags().Changed("debug") {

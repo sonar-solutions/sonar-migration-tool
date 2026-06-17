@@ -49,7 +49,7 @@ This guide covers common issues when using the SonarQube to SonarCloud migration
 **Solution**: Increase the timeout:
 
 ```bash
-sonar-migration-tool extract --url <URL> --token <TOKEN> --timeout 120 --export_directory ./files/
+sonar-migration-tool extract --source_url <URL> --source_token <TOKEN> --timeout 120 --export_directory ./files/
 ```
 
 ---
@@ -65,7 +65,7 @@ sonar-migration-tool extract --url <URL> --token <TOKEN> --timeout 120 --export_
 2. For self-signed certificates, use mTLS options:
 
 ```bash
-sonar-migration-tool extract --url <URL> --token <TOKEN> \
+sonar-migration-tool extract --source_url <URL> --source_token <TOKEN> \
   --pem_file_path ./certs/client.pem \
   --key_file_path ./certs/client.key \
   --export_directory ./files/
@@ -81,7 +81,7 @@ sonar-migration-tool extract --url <URL> --token <TOKEN> \
 **Solution**: Resume using the `--run_id` flag:
 
 ```bash
-sonar-migration-tool migrate --token <TOKEN> --enterprise_key <ENTERPRISE_KEY> --run_id <RUN_ID> --export_directory ./files/
+sonar-migration-tool migrate --target_token <TOKEN> --enterprise_key <ENTERPRISE_KEY> --run_id <RUN_ID> --export_directory ./files/
 ```
 
 Completed tasks are skipped automatically.
@@ -113,7 +113,7 @@ Completed tasks are skipped automatically.
 Reduce concurrency and increase timeout:
 
 ```bash
-sonar-migration-tool extract --url <URL> --token <TOKEN> --concurrency 5 --timeout 120 --export_directory ./files/
+sonar-migration-tool extract --source_url <URL> --source_token <TOKEN> --concurrency 5 --timeout 120 --export_directory ./files/
 ```
 
 ---
@@ -124,7 +124,7 @@ sonar-migration-tool extract --url <URL> --token <TOKEN> --concurrency 5 --timeo
 For large instances (50,000+ projects), lower the concurrency:
 
 ```bash
-sonar-migration-tool extract --url <URL> --token <TOKEN> --concurrency 10 --export_directory ./files/
+sonar-migration-tool extract --source_url <URL> --source_token <TOKEN> --concurrency 10 --export_directory ./files/
 ```
 
 ---

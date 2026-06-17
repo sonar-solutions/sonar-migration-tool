@@ -181,10 +181,10 @@ print_step "Step 5: Migrating to SonarCloud"
 print_warning "This step may take several minutes depending on the number of projects..."
 
 if ! (cd "$GO_DIR" && go run . migrate \
-    "$SONARCLOUD_TOKEN" \
-    "$SONARCLOUD_ENTERPRISE_KEY" \
-    --url="$SONARCLOUD_URL" \
+    --target_url="$SONARCLOUD_URL" \
+    --target_token="$SONARCLOUD_TOKEN" \
     --export_directory="$EXPORT_DIR_ABS" \
+    --enterprise_key="$SONARCLOUD_ENTERPRISE_KEY" \
     --concurrency="$CONCURRENCY"); then
     print_error "Migration failed"
     exit 1
