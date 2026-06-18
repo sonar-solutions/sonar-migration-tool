@@ -250,6 +250,61 @@ func TestMapHotspotResolution(t *testing.T) {
 	}
 }
 
+// #321: syncOneHotspot appends a back-link comment to the original
+// SonarQube Server hotspot, using the provided base URL. The link is added
+// even when the hotspot has no source comments, and is idempotent.
+func TestSyncOneHotspotAddsSourceLink(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		comments []string
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/hotspots/change_status", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /api/hotspots/show", func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"comment": []map[string]any{}})
+	})
+	mux.HandleFunc("POST /api/hotspots/add_comment", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		// api/hotspots/add_comment names the body parameter "comment".
+		comments = append(comments, r.FormValue("comment"))
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cloudSrv := httptest.NewServer(mux)
+	defer cloudSrv.Close()
+	apiSrv := newMockAPIServer()
+	defer apiSrv.Close()
+
+	dir := t.TempDir()
+	e := newTestExecutor(cloudSrv, apiSrv, dir)
+
+	// A REVIEWED/SAFE hotspot on a feature branch with NO source comments —
+	// the link must still be added and carry the branch.
+	pair := hotspotPair{
+		source: matchableHotspot{Key: "HS-7", Status: "REVIEWED", Resolution: "SAFE", Branch: "feature/x"},
+		cloud:  matchableHotspot{Key: "cloud-1"},
+	}
+	if err := syncOneHotspot(context.Background(), e, pair, "https://sqs.example.com", "my-proj"); err != nil {
+		t.Fatalf("syncOneHotspot: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := "Link to [Original hotspot](https://sqs.example.com/security_hotspots?id=my-proj&hotspots=HS-7&branch=feature%2Fx)"
+	found := false
+	for _, c := range comments {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected source-link comment %q, got %v", want, comments)
+	}
+}
+
 // #323: when the source hotspot is REVIEWED/ACKNOWLEDGED, syncOneHotspot
 // must call /api/hotspots/change_status with status=TO_REVIEW and no
 // resolution — this resets a cloud hotspot left in SAFE by a previous
@@ -298,7 +353,7 @@ func TestSyncOneHotspotAcknowledgedResetsToToReview(t *testing.T) {
 			Comments: []hotspotComment{{Login: "alice", Markdown: "needs review"}}},
 		cloud: matchableHotspot{Key: "cloud-1"},
 	}
-	if err := syncOneHotspot(context.Background(), e, pair); err != nil {
+	if err := syncOneHotspot(context.Background(), e, pair, "", ""); err != nil {
 		t.Fatalf("syncOneHotspot: %v", err)
 	}
 
@@ -577,7 +632,7 @@ func TestSyncOneHotspotSafeCallsChangeStatus(t *testing.T) {
 		source: matchableHotspot{Key: "src-1", Status: "REVIEWED", Resolution: "SAFE"},
 		cloud:  matchableHotspot{Key: "cloud-1"},
 	}
-	if err := syncOneHotspot(context.Background(), e, pair); err != nil {
+	if err := syncOneHotspot(context.Background(), e, pair, "", ""); err != nil {
 		t.Fatalf("syncOneHotspot: %v", err)
 	}
 

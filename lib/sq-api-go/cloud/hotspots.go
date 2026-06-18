@@ -77,10 +77,13 @@ func (c *HotspotsClient) ChangeStatus(ctx context.Context, hotspotKey, status, r
 	return c.postForm(ctx, "api/hotspots/change_status", form, nil)
 }
 
-// AddComment adds a comment to a hotspot.
+// AddComment adds a comment to a hotspot. Note the text parameter is named
+// "comment" for api/hotspots/add_comment (unlike api/issues/add_comment,
+// which uses "text") — sending "text" yields a 400 "The 'comment' parameter
+// is missing".
 func (c *HotspotsClient) AddComment(ctx context.Context, hotspotKey, text string) error {
 	form := url.Values{}
 	form.Set("hotspot", hotspotKey)
-	form.Set("text", text)
+	form.Set("comment", text)
 	return c.postForm(ctx, "api/hotspots/add_comment", form, nil)
 }

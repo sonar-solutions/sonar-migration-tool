@@ -4,6 +4,8 @@
 
 package types
 
+import "encoding/json"
+
 // Hotspot represents a single security hotspot returned by /api/hotspots/search.
 type Hotspot struct {
 	Key                      string `json:"key"`
@@ -22,10 +24,15 @@ type Hotspot struct {
 }
 
 // HotspotDetail is the full detail returned by /api/hotspots/show.
+//
+// Unlike /api/hotspots/search (where component and project are plain key
+// strings), /api/hotspots/show returns them as nested objects. They are kept
+// as json.RawMessage so the response unmarshals regardless of shape — the
+// migrate-side hotspot sync only consumes Comment and Rule from this type.
 type HotspotDetail struct {
 	Key                      string           `json:"key"`
-	Component                string           `json:"component"`
-	Project                  string           `json:"project"`
+	Component                json.RawMessage  `json:"component"`
+	Project                  json.RawMessage  `json:"project"`
 	SecurityCategory         string           `json:"securityCategory"`
 	VulnerabilityProbability string           `json:"vulnerabilityProbability"`
 	Status                   string           `json:"status"`

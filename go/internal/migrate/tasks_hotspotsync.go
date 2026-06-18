@@ -55,6 +55,10 @@ type matchableHotspot struct {
 	Status     string
 	Resolution string
 	Comments   []hotspotComment
+	// Branch is the source SonarQube Server branch the hotspot was
+	// extracted from (enriched into the extract record). Used to build a
+	// branch-correct back-link to the original hotspot (#321).
+	Branch string
 }
 
 // hotspotComment captures a single comment attached to a hotspot.
@@ -336,11 +340,15 @@ func syncProjectHotspots(ctx context.Context, e *Executor, input syncHotspotInpu
 	// (ruleKey, line). Race-safety: actionable is read-only, each
 	// goroutine takes one hotspot by value, stats counters are
 	// atomic.
+	// Public base URL for back-links — prefer the SQS sonar.core.serverBaseURL
+	// setting over the (often localhost) connection URL (#321).
+	baseURL := resolveSourceBaseURL(e, input.ServerURL)
+
 	var a, b, c, ack atomic.Int64
 	label := "Project key " + input.CloudKey + " hotspot sync:"
 	runProjectSyncLoop(ctx, e, actionable, label, 10,
 		func(gctx context.Context, src matchableHotspot) {
-			outcome := resolveAndSyncHotspot(gctx, e, input.CloudKey, input.OrgKey, input.ServerKey, src, counter)
+			outcome := resolveAndSyncHotspot(gctx, e, input.CloudKey, input.OrgKey, baseURL, input.ServerKey, src, counter)
 			switch outcome {
 			case syncOutcomeSynced:
 				a.Add(1)
@@ -362,7 +370,7 @@ func syncProjectHotspots(ctx context.Context, e *Executor, input syncHotspotInpu
 // resolveAndSyncHotspot searches Cloud for hotspots in the source
 // hotspot's file, then resolves by (ruleKey, line). Returns the case
 // a/b/c/lookup outcome.
-func resolveAndSyncHotspot(ctx context.Context, e *Executor, cloudKey, orgKey, sourceKey string, src matchableHotspot, counter *TaskCounter) syncOutcome {
+func resolveAndSyncHotspot(ctx context.Context, e *Executor, cloudKey, orgKey, baseURL, sourceKey string, src matchableHotspot, counter *TaskCounter) syncOutcome {
 	filePath := src.Component
 	prefix := sourceKey + ":"
 	if strings.HasPrefix(filePath, prefix) {
@@ -382,7 +390,7 @@ func resolveAndSyncHotspot(ctx context.Context, e *Executor, cloudKey, orgKey, s
 	switch outcome {
 	case syncOutcomeSynced:
 		pair := hotspotPair{source: src, cloud: target}
-		if err := syncOneHotspot(ctx, e, pair); err != nil {
+		if err := syncOneHotspot(ctx, e, pair, baseURL, sourceKey); err != nil {
 			counter.Fail()
 			logAPIWarn(e.Logger, "syncHotspotMetadata: hotspot sync failed", err,
 				"source_key", src.Key, "cloud_key", target.Key)
@@ -560,9 +568,11 @@ func findCloudHotspotCandidates(ctx context.Context, e *Executor, cloudKey, orgK
 // Per-hotspot sync
 // ---------------------------------------------------------------------------
 
-// syncOneHotspot synchronises a single hotspot's status and comments.
-// Operations are sequential within each hotspot: status first, then comments.
-func syncOneHotspot(ctx context.Context, e *Executor, pair hotspotPair) error {
+// syncOneHotspot synchronises a single hotspot's status and comments, then
+// appends a back-link to the original SonarQube Server hotspot (#321).
+// Operations are sequential within each hotspot: status first, then comments,
+// then the source-link comment.
+func syncOneHotspot(ctx context.Context, e *Executor, pair hotspotPair, baseURL, projectKey string) error {
 	// 1. Sync status. Three branches when the source is REVIEWED:
 	//   - SAFE/FIXED → mapHotspotResolution returns the SQC resolution;
 	//     post change_status REVIEWED+<resolution>.
@@ -572,25 +582,30 @@ func syncOneHotspot(ctx context.Context, e *Executor, pair hotspotPair) error {
 	//     may have left on SQC. Idempotent — TO_REVIEW is also the
 	//     cloud default for a never-touched hotspot. #323.
 	//   - Unknown resolution → no API call (defensive).
+	// A status-sync failure is recorded but does NOT short-circuit the
+	// rest of the function — the comment and source-link steps must still
+	// run. Returning early here was why already-synced hotspots (whose
+	// change_status is rejected because they're already REVIEWED on a
+	// re-run) never got a back-link (#321).
+	var statusErr error
 	if strings.ToUpper(pair.source.Status) == "REVIEWED" {
 		resolution := mapHotspotResolution(pair.source.Resolution)
 		switch {
 		case resolution != "":
 			if err := e.Cloud.Hotspots.ChangeStatus(ctx, pair.cloud.Key, "REVIEWED", resolution); err != nil {
-				return fmt.Errorf("change status: %w", err)
+				statusErr = fmt.Errorf("change status: %w", err)
 			}
 		case IsAcknowledgedResolution(pair.source.Resolution):
 			if err := e.Cloud.Hotspots.ChangeStatus(ctx, pair.cloud.Key, "TO_REVIEW", ""); err != nil {
-				return fmt.Errorf("reset ACKNOWLEDGED to TO_REVIEW: %w", err)
+				statusErr = fmt.Errorf("reset ACKNOWLEDGED to TO_REVIEW: %w", err)
 			}
 		}
 	}
 
-	// 2. Sync comments: fetch Cloud detail first for idempotency check.
-	if len(pair.source.Comments) == 0 {
-		return nil
-	}
-
+	// 2. Sync comments + the source-link comment. Cloud detail is fetched
+	// once up front for the idempotency checks of both. Unlike before, we
+	// fetch even when the source has no comments, because the source-link
+	// comment (#321) is always appended for a matched hotspot.
 	cloudComments := fetchCloudHotspotComments(ctx, e, pair.cloud.Key)
 	for _, comment := range pair.source.Comments {
 		if isAlreadyMigratedComment(comment, cloudComments) {
@@ -617,7 +632,65 @@ func syncOneHotspot(ctx context.Context, e *Executor, pair hotspotPair) error {
 		}
 	}
 
-	return nil
+	// 3. Append a back-link to the original SonarQube Server hotspot so
+	// engineers can click through to its origin (#321). Best-effort and
+	// idempotent — consistent with the migrated-comment handling above.
+	// Always attempted, even if the status sync above failed.
+	addHotspotSourceLink(ctx, e, pair.cloud.Key, baseURL, projectKey, pair.source.Key, pair.source.Branch, cloudComments)
+
+	return statusErr
+}
+
+// hotspotSourceLinkURL builds the SonarQube Server deep link back to the
+// original hotspot, or "" when any component is missing. #321.
+func hotspotSourceLinkURL(baseURL, projectKey, hotspotKey, branch string) string {
+	if baseURL == "" || projectKey == "" || hotspotKey == "" {
+		return ""
+	}
+	base := strings.TrimRight(baseURL, "/")
+	u := fmt.Sprintf("%s/security_hotspots?id=%s&hotspots=%s",
+		base, url.QueryEscape(projectKey), url.QueryEscape(hotspotKey))
+	if branch != "" {
+		u += "&branch=" + url.QueryEscape(branch)
+	}
+	return u
+}
+
+// hotspotSourceLinkMarker is the stable, per-hotspot-unique prefix used to
+// detect an already-added source-link comment (see issueSourceLinkMarker for
+// why we match on the marker rather than the full URL).
+const hotspotSourceLinkMarker = "Link to [Original hotspot]"
+
+// addHotspotSourceLink posts a one-line "Link to [Original hotspot](…)"
+// comment pointing back to the source hotspot (#321). Best-effort and
+// idempotent: skipped when a cloud comment already carries the marker.
+func addHotspotSourceLink(ctx context.Context, e *Executor, cloudKey, baseURL, projectKey, sourceHotspotKey, branch string, cloudComments []hotspotComment) {
+	link := hotspotSourceLinkURL(baseURL, projectKey, sourceHotspotKey, branch)
+	if link == "" {
+		return
+	}
+	if hotspotCommentsContain(cloudComments, hotspotSourceLinkMarker) {
+		return
+	}
+	text := hotspotSourceLinkMarker + "(" + link + ")"
+	if err := e.Cloud.Hotspots.AddComment(ctx, cloudKey, text); err != nil {
+		e.Logger.Warn("syncHotspotMetadata: could not add source-link comment (non-fatal)",
+			"cloud_key", cloudKey, "reason", sourceLinkErrSummary(err))
+	}
+}
+
+// hotspotCommentsContain reports whether any cloud comment's text contains substr.
+func hotspotCommentsContain(cloudComments []hotspotComment, substr string) bool {
+	for _, cc := range cloudComments {
+		t := cc.Markdown
+		if t == "" {
+			t = cc.HTMLText
+		}
+		if strings.Contains(t, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchCloudHotspotComments retrieves comments for a Cloud hotspot via the
@@ -757,6 +830,9 @@ func parseMatchableHotspot(data json.RawMessage) matchableHotspot {
 		Status:     status,
 		Resolution: resolution,
 		Comments:   comments,
+		// Present on source-side records (enriched at extract time);
+		// absent/empty on cloud candidates, which don't need it.
+		Branch: extractField(data, "branch"),
 	}
 }
 

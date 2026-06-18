@@ -1534,3 +1534,48 @@ func TestBaseClientHTTPError(t *testing.T) {
 	require.ErrorAs(t, err, &apiErr)
 	assert.Equal(t, 500, apiErr.StatusCode)
 }
+
+// #321 regression: api/hotspots/add_comment names the body parameter
+// "comment" (not "text" as api/issues/add_comment does). Sending the wrong
+// name yields a 400 "The 'comment' parameter is missing".
+func TestHotspotsAddCommentUsesCommentParam(t *testing.T) {
+	var gotHotspot, gotComment, gotText string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/hotspots/add_comment", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		gotHotspot = r.FormValue("hotspot")
+		gotComment = r.FormValue("comment")
+		gotText = r.FormValue("text")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cc := newTestCloud(t, mux)
+	if err := cc.Hotspots.AddComment(context.Background(), "HS-1", "hello"); err != nil {
+		t.Fatalf("AddComment: %v", err)
+	}
+	assert.Equal(t, "HS-1", gotHotspot)
+	assert.Equal(t, "hello", gotComment, "body must be sent as the 'comment' parameter")
+	assert.Empty(t, gotText, "the 'text' parameter must not be used for hotspots")
+}
+
+// #321 regression: /api/hotspots/show returns component and project as
+// nested objects; HotspotDetail must unmarshal them (as json.RawMessage)
+// rather than failing the whole response, so Comment is recovered.
+func TestHotspotsShowParsesObjectComponent(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/hotspots/show", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, map[string]any{
+			"key":       "HS-1",
+			"component": map[string]any{"key": "proj:src/Foo.java", "qualifier": "FIL", "path": "src/Foo.java"},
+			"project":   map[string]any{"key": "proj", "qualifier": "TRK", "name": "Proj"},
+			"status":    "REVIEWED",
+			"comment": []map[string]any{
+				{"key": "c1", "login": "alice", "markdown": "looks safe"},
+			},
+		})
+	})
+	cc := newTestCloud(t, mux)
+	detail, err := cc.Hotspots.Show(context.Background(), "HS-1")
+	require.NoError(t, err)
+	require.Len(t, detail.Comment, 1)
+	assert.Equal(t, "looks safe", detail.Comment[0].Markdown)
+}
