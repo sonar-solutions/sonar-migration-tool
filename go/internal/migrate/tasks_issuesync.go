@@ -513,11 +513,15 @@ func syncProjectIssues(ctx context.Context, e *Executor, cloudKey, orgKey, serve
 	// dispatch. Counted via atomics on the shared stats. Race-safety:
 	// the actionable slice is read-only, each goroutine receives one
 	// source by value, and stats.{A,B,C} use atomic adds.
+	// Public base URL for back-links — prefer the SQS sonar.core.serverBaseURL
+	// setting over the (often localhost) connection URL (#321).
+	baseURL := resolveSourceBaseURL(e, serverURL)
+
 	var a, b, c atomic.Int64
 	label := "Project key " + cloudKey + " issue sync:"
 	runProjectSyncLoop(ctx, e, actionable, label, 20,
 		func(gctx context.Context, src matchableIssue) {
-			outcome := resolveAndSyncIssue(gctx, e, cloudKey, orgKey, src, counter)
+			outcome := resolveAndSyncIssue(gctx, e, cloudKey, orgKey, baseURL, serverKey, src, counter)
 			switch outcome {
 			case syncOutcomeSynced:
 				a.Add(1)
@@ -563,7 +567,7 @@ const (
 // resolveAndSyncIssue searches Cloud for counterparts of src, resolves
 // to one by line, and dispatches the sync. Returns the case-a/b/c/lookup
 // outcome.
-func resolveAndSyncIssue(ctx context.Context, e *Executor, cloudKey, orgKey string, src matchableIssue, counter *TaskCounter) syncOutcome {
+func resolveAndSyncIssue(ctx context.Context, e *Executor, cloudKey, orgKey, baseURL, projectKey string, src matchableIssue, counter *TaskCounter) syncOutcome {
 	filePath := stripProjectKeyPrefix(src.Component)
 	if filePath == "" || src.Rule == "" || src.Line <= 0 {
 		e.Logger.Debug("syncIssueMetadata: source issue not matchable", "key", src.Key, "rule", src.Rule, "component", src.Component, "line", src.Line)
@@ -578,7 +582,7 @@ func resolveAndSyncIssue(ctx context.Context, e *Executor, cloudKey, orgKey stri
 	target, outcome := classifyIssueCandidatesByLine(candidates, src.Line)
 	switch outcome {
 	case syncOutcomeSynced:
-		syncOnePair(ctx, e, issuePair{source: src, cloud: target}, counter)
+		syncOnePair(ctx, e, issuePair{source: src, cloud: target}, baseURL, projectKey, counter)
 	case syncOutcomeNotFound:
 		e.Logger.Debug("syncIssueMetadata: no cloud counterpart on source line", "source_key", src.Key, "rule", src.Rule, "file", filePath, "line", src.Line)
 	case syncOutcomeLineMismatch:
@@ -634,8 +638,11 @@ func findCloudIssueCandidates(ctx context.Context, e *Executor, cloudKey, orgKey
 	// state already).
 	params.Set("issueStatuses", "OPEN,CONFIRMED,FALSE_POSITIVE,ACCEPTED")
 	// Ask for the per-issue available-transition list so we can verify
-	// the "accept" transition is offered before applying it (#322).
-	params.Set("additionalFields", "transitions")
+	// the "accept" transition is offered before applying it (#322), and
+	// the comment list so the source-link comment can be added
+	// idempotently — including on issues already carrying the
+	// metadata-synchronized tag from an earlier run (#321).
+	params.Set("additionalFields", "transitions,comments")
 	apiIssues, err := e.Cloud.Issues.SearchAll(ctx, params)
 	if err != nil {
 		return nil, err
@@ -657,14 +664,27 @@ func findCloudIssueCandidates(ctx context.Context, e *Executor, cloudKey, orgKey
 //
 // Idempotency: if the cloud issue already carries the metadataSyncTag
 // the pair is skipped entirely.
-func syncOnePair(ctx context.Context, e *Executor, pair issuePair, counter *TaskCounter) {
+func syncOnePair(ctx context.Context, e *Executor, pair issuePair, baseURL, projectKey string, counter *TaskCounter) {
+	cloudKey := pair.cloud.Key
+
+	// The metadata-synchronized tag means the expensive metadata sync
+	// (transition, comments, tags) already ran in a previous run. We still
+	// ensure the source-link comment exists, because issues synced by an
+	// earlier tool version carry the tag but no back-link (#321). The link
+	// is idempotent — skipped when a cloud comment already contains it.
 	if slices.Contains(pair.cloud.Tags, metadataSyncTag) {
+		syncIssueSourceLink(ctx, e, cloudKey, baseURL, projectKey, pair.source.Key, pair.source.Branch, pair.cloud.Comments)
 		return
 	}
 
-	cloudKey := pair.cloud.Key
 	transFailed := syncIssueTransition(ctx, e, cloudKey, pair.source, pair.cloud.Transitions)
 	commentFailed := syncIssueComments(ctx, e, cloudKey, pair.source.Comments, pair.cloud.Comments)
+	// Source-link back to the original SonarQube Server issue, added as
+	// the final comment so traceability survives the migration (#321).
+	// Best-effort: a failure here (e.g. an upstream CDN/WAF rejecting the
+	// URL-bearing comment body) must NOT fail the pair — the status,
+	// comments and tags have already synced successfully.
+	syncIssueSourceLink(ctx, e, cloudKey, baseURL, projectKey, pair.source.Key, pair.source.Branch, pair.cloud.Comments)
 	tagsFailed := syncIssueTags(ctx, e, cloudKey, pair.source.Tags)
 
 	if transFailed || commentFailed || tagsFailed {
@@ -672,6 +692,107 @@ func syncOnePair(ctx context.Context, e *Executor, pair issuePair, counter *Task
 	} else {
 		counter.Success()
 	}
+}
+
+// resolveSourceBaseURL returns the public base URL of the source SonarQube
+// Server, used to build issue/hotspot back-links (#321). Preference order:
+//
+//  1. the SQS `sonar.core.serverBaseURL` global setting captured at extract
+//     time (the operator-configured public URL), when non-empty;
+//  2. the URL the tool connected to (source_url / --source_url).
+//
+// The connection URL is frequently http://localhost:9000 — useless as a
+// click-through for engineers and liable to trip an upstream WAF's SSRF
+// rules — so the configured public base URL is preferred. Trailing slash is
+// trimmed. Safe for concurrent use (read-only extract access).
+func resolveSourceBaseURL(e *Executor, serverURL string) string {
+	if items, err := readExtractItems(e, "getServerSettings"); err == nil {
+		for _, it := range items {
+			if it.ServerURL != serverURL {
+				continue
+			}
+			if extractField(it.Data, "key") != "sonar.core.serverBaseURL" {
+				continue
+			}
+			if v := strings.TrimSpace(extractField(it.Data, "value")); v != "" {
+				return strings.TrimRight(v, "/")
+			}
+		}
+	}
+	return strings.TrimRight(serverURL, "/")
+}
+
+// issueSourceLinkURL builds the SonarQube Server deep link back to the
+// original issue, or "" when any component is missing. baseURL is the
+// resolved public server base (see resolveSourceBaseURL); branch, when
+// non-empty, scopes the link to the issue's source branch. #321.
+func issueSourceLinkURL(baseURL, projectKey, issueKey, branch string) string {
+	if baseURL == "" || projectKey == "" || issueKey == "" {
+		return ""
+	}
+	base := strings.TrimRight(baseURL, "/")
+	u := fmt.Sprintf("%s/project/issues?id=%s&issues=%s&open=%s",
+		base, url.QueryEscape(projectKey), url.QueryEscape(issueKey), url.QueryEscape(issueKey))
+	if branch != "" {
+		u += "&branch=" + url.QueryEscape(branch)
+	}
+	return u
+}
+
+// issueSourceLinkMarker is the stable, per-issue-unique prefix used to
+// detect an already-added source-link comment. Matching on this rather than
+// the full URL avoids false negatives when the cloud API returns the comment
+// with the URL's "&" HTML-escaped (which would duplicate the link on re-run).
+const issueSourceLinkMarker = "Link to [Original issue]"
+
+// syncIssueSourceLink posts a one-line "Link to [Original issue](…)" comment
+// pointing back to the source SonarQube Server issue (#321). Idempotent:
+// skipped when a comment already carries the marker. Best-effort — a failure
+// (e.g. an upstream CDN/WAF rejecting the URL-bearing body) is logged
+// concisely and never fails the issue sync.
+func syncIssueSourceLink(ctx context.Context, e *Executor, cloudKey, baseURL, projectKey, sourceIssueKey, branch string, cloudComments []issueComment) {
+	link := issueSourceLinkURL(baseURL, projectKey, sourceIssueKey, branch)
+	if link == "" {
+		return
+	}
+	if issueCommentsContain(cloudComments, issueSourceLinkMarker) {
+		return
+	}
+	text := issueSourceLinkMarker + "(" + link + ")"
+	if err := e.Cloud.Issues.AddComment(ctx, cloudKey, text); err != nil {
+		e.Logger.Warn("syncIssueMetadata: could not add source-link comment (non-fatal)",
+			"issue", cloudKey, "reason", sourceLinkErrSummary(err))
+	}
+}
+
+// sourceLinkErrSummary collapses the verbose HTML body an upstream CDN/WAF
+// (e.g. AWS CloudFront) returns on a 403 block into a short, actionable
+// note, so the log isn't flooded with an HTML error page per issue.
+func sourceLinkErrSummary(err error) string {
+	s := err.Error()
+	low := strings.ToLower(s)
+	if strings.Contains(low, "<html") || strings.Contains(low, "cloudfront") ||
+		strings.Contains(low, "request blocked") || strings.Contains(low, "403 error") {
+		return "blocked by an upstream CDN/WAF (the comment body contains a URL the WAF rejected)"
+	}
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
+}
+
+// issueCommentsContain reports whether any cloud comment's text contains substr.
+func issueCommentsContain(cloudComments []issueComment, substr string) bool {
+	for _, cc := range cloudComments {
+		t := cc.Markdown
+		if t == "" {
+			t = cc.HTMLText
+		}
+		if strings.Contains(t, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // syncIssueTransition applies the status transition on the Cloud issue.
