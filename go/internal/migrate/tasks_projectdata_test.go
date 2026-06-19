@@ -232,7 +232,7 @@ func TestBuildChangesetMap(t *testing.T) {
 	cr.Get("p1:src/Empty.java")
 
 	now := time.Now()
-	result := buildChangesetMap(cr, components, nil, now)
+	result := buildChangesetMap(cr, components, nil, nil, now)
 
 	// Lines > 0 should produce changesets.
 	mainRef, _ := cr.Refs()["p1:src/Main.java"]

@@ -48,39 +48,63 @@ func BackdateChangesets(issues []ExtractedIssue, changesets map[string]*pb.Chang
 		if !ok {
 			continue
 		}
-		lineCount := len(cs.ChangesetIndexByLine)
-		if lineCount == 0 {
+		if len(cs.ChangesetIndexByLine) == 0 {
 			continue
 		}
-		rebuildChangesetForFile(cs, lineDateMap, lineCount)
+		rebuildChangesetForFile(cs, lineDateMap)
 	}
 }
 
-// rebuildChangesetForFile replaces the changeset entries and line index for a
-// single file based on the per-line date map.
-func rebuildChangesetForFile(cs *pb.Changesets, lineDateMap map[int32]int64, lineCount int) {
-	uniqueDates := collectSortedDates(lineDateMap)
-	dateToIdx := make(map[int64]int32, len(uniqueDates))
-	entries := make([]*pb.Changesets_Changeset, len(uniqueDates))
-	for i, dateMs := range uniqueDates {
-		dateToIdx[dateMs] = int32(i)
-		entries[i] = &pb.Changesets_Changeset{
-			Revision: "migration-date-" + time.UnixMilli(dateMs).Format("20060102"),
-			Author:   stubAuthor,
-			Date:     dateMs,
+// rebuildChangesetForFile overrides the changeset DATE for each line that
+// carries an issue, so SonarCloud's CE assigns each issue its original
+// SonarQube creation date — while PRESERVING the real SCM author and revision
+// already attributed to that line (from BuildChangesetsFromBlame). Lines
+// without issues keep their real blame untouched, so the Code view still shows
+// the true author/date for the rest of the file.
+//
+// Because buildFileLineDates fills every line of a multi-line issue's range
+// with the same (oldest-wins) date, all of an issue's lines share one date and
+// the CE's MAX-over-lines collapses to that date — no inflation.
+func rebuildChangesetForFile(cs *pb.Changesets, lineDateMap map[int32]int64) {
+	type csKey struct {
+		rev, author string
+		date        int64
+	}
+	index := make(map[csKey]int32, len(cs.Changeset))
+	for i, e := range cs.Changeset {
+		index[csKey{e.Revision, e.Author, e.Date}] = int32(i)
+	}
+	findOrAppend := func(rev, author string, date int64) int32 {
+		k := csKey{rev, author, date}
+		if i, ok := index[k]; ok {
+			return i
 		}
+		i := int32(len(cs.Changeset))
+		cs.Changeset = append(cs.Changeset, &pb.Changesets_Changeset{
+			Revision: rev,
+			Author:   author,
+			Date:     date,
+		})
+		index[k] = i
+		return i
 	}
 
-	newIdx := make([]int32, lineCount)
-	for i := range lineCount {
-		if dateMs, ok := lineDateMap[int32(i+1)]; ok {
-			newIdx[i] = dateToIdx[dateMs]
+	n := len(cs.ChangesetIndexByLine)
+	for ln, dateMs := range lineDateMap {
+		i := int(ln) - 1
+		if i < 0 || i >= n {
+			continue
 		}
-		// else 0 — oldest date, prevents MAX inflation
+		// Carry over the real author/revision on this line; only the date
+		// changes to the issue's creation date. Falls back to the synthetic
+		// stub author when the line had no blame entry.
+		rev, author := "", stubAuthor
+		if base := cs.ChangesetIndexByLine[i]; int(base) >= 0 && int(base) < len(cs.Changeset) {
+			rev = cs.Changeset[base].Revision
+			author = cs.Changeset[base].Author
+		}
+		cs.ChangesetIndexByLine[i] = findOrAppend(rev, author, dateMs)
 	}
-
-	cs.Changeset = entries
-	cs.ChangesetIndexByLine = newIdx
 }
 
 // collectSortedDates returns sorted unique date values from a line-date map.

@@ -250,6 +250,51 @@ func TestBuildDefaultChangesets(t *testing.T) {
 	}
 }
 
+func TestBuildChangesetsFromBlame(t *testing.T) {
+	fallback := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	dA := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	dB := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	// Run-length blame: line 1 (commit A), line 4 (commit B), line 6 (commit A
+	// again). Total 8 source lines.
+	runs := []BlameRun{
+		{StartLine: 1, Author: "a@co.com", Date: dA, Revision: "rA"},
+		{StartLine: 4, Author: "b@co.com", Date: dB, Revision: "rB"},
+		{StartLine: 6, Author: "a@co.com", Date: dA, Revision: "rA"},
+	}
+	cs := BuildChangesetsFromBlame(2, runs, 8, fallback)
+	if cs == nil {
+		t.Fatal("expected changesets, got nil")
+	}
+	if cs.ComponentRef != 2 {
+		t.Errorf("expected ref 2, got %d", cs.ComponentRef)
+	}
+	// rA appears twice but must dedup to a single entry → 2 unique entries.
+	if len(cs.Changeset) != 2 {
+		t.Fatalf("expected 2 unique changeset entries, got %d", len(cs.Changeset))
+	}
+	if len(cs.ChangesetIndexByLine) != 8 {
+		t.Fatalf("expected 8 line indices, got %d", len(cs.ChangesetIndexByLine))
+	}
+	// Expand the runs: lines 1-3 = rA, 4-5 = rB, 6-8 = rA.
+	want := map[int]string{1: "rA", 2: "rA", 3: "rA", 4: "rB", 5: "rB", 6: "rA", 7: "rA", 8: "rA"}
+	for ln, rev := range want {
+		entry := cs.Changeset[cs.ChangesetIndexByLine[ln-1]]
+		if entry.Revision != rev {
+			t.Errorf("line %d: expected revision %q, got %q", ln, rev, entry.Revision)
+		}
+	}
+	// A run with a zero date falls back to the provided date.
+	csZero := BuildChangesetsFromBlame(3, []BlameRun{{StartLine: 1, Author: "x", Revision: "rX"}}, 3, fallback)
+	if csZero.Changeset[0].Date != fallback.UnixMilli() {
+		t.Errorf("expected zero-date run to use fallback %d, got %d", fallback.UnixMilli(), csZero.Changeset[0].Date)
+	}
+	// No runs → nil.
+	if BuildChangesetsFromBlame(4, nil, 5, fallback) != nil {
+		t.Error("expected nil for empty runs")
+	}
+}
+
 func TestMapSeverity(t *testing.T) {
 	cases := []struct {
 		input    string
