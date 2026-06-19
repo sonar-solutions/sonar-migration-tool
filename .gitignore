@@ -62,6 +62,9 @@ lib/sq-api-go/coverage.out
 
 # Logs
 *.log
+# Transfer run output (runtime log artifact; may contain hosts/data)
+transfer-run.out
+transfer-*.out
 
 # Temporary working directory
 tmp/
