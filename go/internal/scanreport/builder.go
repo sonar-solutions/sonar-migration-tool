@@ -381,6 +381,75 @@ func BuildActiveRules(rules []ActiveRuleInput, defaultTSMillis int64) []*pb.Acti
 	return result
 }
 
+// BlameRun is one run-length SCM blame entry from /api/sources/scm. The API
+// lists a line only when its blame differs from the previous line, so each run
+// begins at StartLine and continues until the next run's StartLine.
+type BlameRun struct {
+	StartLine int32
+	Author    string
+	Date      time.Time
+	Revision  string
+}
+
+// BuildChangesetsFromBlame builds a Changesets message for a component from
+// run-length SCM blame, expanding each run forward so every one of lineCount
+// source lines is attributed to a real (revision, author, date). This makes
+// the SonarCloud Code view show who changed each line and when, matching
+// SonarQube Server. Lines before the first run inherit the first run; a run
+// with a zero date falls back to the provided date. Returns nil if there are
+// no runs or lineCount is non-positive.
+func BuildChangesetsFromBlame(compRef int32, runs []BlameRun, lineCount int, fallback time.Time) *pb.Changesets {
+	if len(runs) == 0 || lineCount <= 0 {
+		return nil
+	}
+	fallbackMs := fallback.UnixMilli()
+
+	// Deduplicate (revision, author, date) tuples into changeset entries and
+	// record which entry each run maps to.
+	type key struct {
+		rev, author string
+		date        int64
+	}
+	idxByKey := make(map[key]int32)
+	var entries []*pb.Changesets_Changeset
+	runIdx := make([]int32, len(runs))
+	for i, r := range runs {
+		dateMs := fallbackMs
+		if !r.Date.IsZero() {
+			dateMs = r.Date.UnixMilli()
+		}
+		k := key{r.Revision, r.Author, dateMs}
+		if j, ok := idxByKey[k]; ok {
+			runIdx[i] = j
+			continue
+		}
+		j := int32(len(entries))
+		entries = append(entries, &pb.Changesets_Changeset{
+			Revision: r.Revision,
+			Author:   r.Author,
+			Date:     dateMs,
+		})
+		idxByKey[k] = j
+		runIdx[i] = j
+	}
+
+	// Expand runs across every line. runs are assumed sorted by StartLine.
+	indexByLine := make([]int32, lineCount)
+	pos := 0
+	for line := 1; line <= lineCount; line++ {
+		for pos+1 < len(runs) && int(runs[pos+1].StartLine) <= line {
+			pos++
+		}
+		indexByLine[line-1] = runIdx[pos]
+	}
+
+	return &pb.Changesets{
+		ComponentRef:         compRef,
+		Changeset:            entries,
+		ChangesetIndexByLine: indexByLine,
+	}
+}
+
 // BuildDefaultChangesets creates a Changesets message for a component with
 // lineCount lines, all attributed to a single date. Use BackdateChangesets
 // to rewrite these with per-issue dates afterward.

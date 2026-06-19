@@ -317,6 +317,11 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 	components := loadExtractedComponents(e, input.ServerURL, input.ServerKey, input.Branch)
 	sources := loadExtractedSources(e, input.ServerURL, input.ServerKey, input.Branch)
 	activeRules := loadExtractedActiveRules(e, input.ServerURL, input.ServerKey)
+	// Per-file measures (ncloc et al.) — without these the branch renders as
+	// "main branch is empty". Real per-line SCM blame — without it the Code
+	// view shows no author/date per line.
+	componentMeasures := loadComponentMeasures(e, input.ServerURL, input.ServerKey, input.Branch)
+	scmByComponent := loadExtractedSCM(e, input.ServerURL, input.ServerKey, input.Branch)
 
 	if len(components) == 0 {
 		return nil, &importResult{Status: "skipped"}, nil
@@ -382,7 +387,7 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 		}
 	}
 
-	changesets := buildChangesetMap(cr, components, pbSources, now)
+	changesets := buildChangesetMap(cr, components, pbSources, scmByComponent, now)
 
 	// Backdate changesets so each issue gets its original SonarQube creation date.
 	// Build a component-key-keyed alias map (same pointers) for BackdateChangesets.
@@ -446,7 +451,7 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 		FileComponents: fileComps,
 		Issues:         scanreport.BuildIssues(issues, cr),
 		ExternalIssues: scanreport.BuildExternalIssues(extIssues, cr),
-		Measures:       make(map[int32][]*pb.Measure),
+		Measures:       scanreport.BuildMeasures(componentMeasures, cr),
 		Changesets:     changesets,
 		ActiveRules:    scanreport.BuildActiveRules(activeRules, now.UnixMilli()),
 		AdHocRules:     scanreport.BuildAdHocRules(adHocRules),
@@ -907,6 +912,196 @@ func loadExtractedComponents(e *Executor, serverURL, serverKey, branch string) [
 	return components
 }
 
+// loadComponentMeasures reads the per-file measures extracted from
+// /api/measures/component_tree (ncloc, comment_lines, complexity, ...) and
+// returns them as MeasureInputs keyed by component. Without these, the
+// packaged report carries no measures-*.pb, SonarCloud's CE computes a null
+// project ncloc, and the migrated branch renders as "main branch is empty".
+func loadComponentMeasures(e *Executor, serverURL, serverKey, branch string) []scanreport.MeasureInput {
+	items, err := readExtractItems(e, "getProjectComponentTree")
+	if err != nil {
+		return nil
+	}
+	var measures []scanreport.MeasureInput
+	for _, item := range items {
+		if item.ServerURL != serverURL {
+			continue
+		}
+		if extractField(item.Data, "projectKey") != serverKey {
+			continue
+		}
+		if extractField(item.Data, "branch") != branch {
+			continue
+		}
+		key := extractField(item.Data, "key")
+		if key == "" {
+			continue
+		}
+		for _, m := range extractMeasurePairs(item.Data) {
+			measures = append(measures, scanreport.MeasureInput{
+				Component: key,
+				MetricKey: m.metric,
+				Value:     m.value,
+			})
+		}
+	}
+	return measures
+}
+
+type measurePair struct {
+	metric string
+	value  string
+}
+
+// extractMeasurePairs reads the "measures":[{"metric":..,"value":..}] array
+// from a component-tree record. Measures with an empty value are skipped.
+func extractMeasurePairs(data json.RawMessage) []measurePair {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil
+	}
+	raw, ok := obj["measures"]
+	if !ok {
+		return nil
+	}
+	var arr []struct {
+		Metric string `json:"metric"`
+		Value  string `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return nil
+	}
+	out := make([]measurePair, 0, len(arr))
+	for _, m := range arr {
+		if m.Metric == "" || m.Value == "" {
+			continue
+		}
+		out = append(out, measurePair{metric: m.Metric, value: m.Value})
+	}
+	return out
+}
+
+// blameLine is one run-length SCM entry: the source line where a commit run
+// begins, plus its author/date/revision. /api/sources/scm omits lines whose
+// blame matches the previous line, so each entry starts a run that continues
+// until the next listed line (handled by scanreport.BuildChangesetsFromBlame).
+type blameLine struct {
+	Line     int32
+	Author   string
+	Date     time.Time
+	Revision string
+}
+
+// loadExtractedSCM reads getProjectSCMData and returns per-component blame runs
+// (sorted by line) for the given branch. The migrate side previously ignored
+// this data and shipped synthetic changesets; loading it lets the report carry
+// real per-line author/date/revision for the SonarCloud Code view.
+func loadExtractedSCM(e *Executor, serverURL, serverKey, branch string) map[string][]blameLine {
+	items, err := readExtractItems(e, "getProjectSCMData")
+	if err != nil {
+		return nil
+	}
+	result := make(map[string][]blameLine)
+	for _, item := range items {
+		if item.ServerURL != serverURL {
+			continue
+		}
+		if extractField(item.Data, "projectKey") != serverKey {
+			continue
+		}
+		if extractField(item.Data, "branch") != branch {
+			continue
+		}
+		key := extractField(item.Data, "key")
+		if key == "" {
+			continue
+		}
+		if lines := parseBlameLines(item.Data); len(lines) > 0 {
+			result[key] = lines
+		}
+	}
+	return result
+}
+
+// parseBlameLines parses the "scm":[[line,author,datetime,revision],...] array
+// from a getProjectSCMData record into blameLines sorted by line.
+func parseBlameLines(data json.RawMessage) []blameLine {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil
+	}
+	raw, ok := obj["scm"]
+	if !ok {
+		return nil
+	}
+	var rows [][]json.RawMessage
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil
+	}
+	out := make([]blameLine, 0, len(rows))
+	for _, r := range rows {
+		if len(r) < 3 {
+			continue
+		}
+		var line int32
+		json.Unmarshal(r[0], &line) //nolint:errcheck
+		var author, dateStr, rev string
+		json.Unmarshal(r[1], &author)  //nolint:errcheck
+		json.Unmarshal(r[2], &dateStr) //nolint:errcheck
+		if len(r) >= 4 {
+			json.Unmarshal(r[3], &rev) //nolint:errcheck
+		}
+		out = append(out, blameLine{
+			Line:     line,
+			Author:   author,
+			Date:     parseISODate(dateStr),
+			Revision: rev,
+		})
+	}
+	slices.SortFunc(out, func(a, b blameLine) int {
+		switch {
+		case a.Line < b.Line:
+			return -1
+		case a.Line > b.Line:
+			return 1
+		default:
+			return 0
+		}
+	})
+	return out
+}
+
+// blameRunsFor converts extracted blame lines into BlameRuns, but only when the
+// blame is meaningful — at least one line must carry a real author or revision.
+// Projects analyzed without git history return blame with empty author AND
+// revision for every line (only a date); for those we return nil so the caller
+// falls back to a synthetic changeset rather than shipping empty blame.
+func blameRunsFor(lines []blameLine) []scanreport.BlameRun {
+	if len(lines) == 0 {
+		return nil
+	}
+	meaningful := false
+	runs := make([]scanreport.BlameRun, 0, len(lines))
+	for _, l := range lines {
+		if l.Line <= 0 {
+			continue
+		}
+		if l.Author != "" || l.Revision != "" {
+			meaningful = true
+		}
+		runs = append(runs, scanreport.BlameRun{
+			StartLine: l.Line,
+			Author:    l.Author,
+			Date:      l.Date,
+			Revision:  l.Revision,
+		})
+	}
+	if !meaningful {
+		return nil
+	}
+	return runs
+}
+
 // sonarCloudRuleRepos lists rule repositories known to exist in SonarCloud.
 // Rules from external/third-party repos are excluded from the report to
 // prevent CE processing errors.
@@ -1137,7 +1332,7 @@ func dropIssuesWithInactiveRules(issues []scanreport.IssueInput, activeRules []s
 	return kept, dropped
 }
 
-func buildChangesetMap(cr *scanreport.ComponentRef, components []scanreport.ComponentInput, pbSources map[int32]string, date time.Time) map[int32]*pb.Changesets {
+func buildChangesetMap(cr *scanreport.ComponentRef, components []scanreport.ComponentInput, pbSources map[int32]string, scmByComp map[string][]blameLine, date time.Time) map[int32]*pb.Changesets {
 	changesets := make(map[int32]*pb.Changesets)
 	for _, comp := range components {
 		ref, ok := cr.Refs()[comp.Key]
@@ -1151,9 +1346,20 @@ func buildChangesetMap(cr *scanreport.ComponentRef, components []scanreport.Comp
 		if lineCount == 0 {
 			lineCount = int(comp.Lines)
 		}
-		if lineCount > 0 {
-			changesets[ref] = scanreport.BuildDefaultChangesets(ref, lineCount, date)
+		if lineCount <= 0 {
+			continue
 		}
+		// Prefer real per-line SCM blame so the SonarCloud Code view shows who
+		// changed each line and when (matching SonarQube Server). Fall back to
+		// a synthetic changeset when the source has no usable blame for the file
+		// (e.g. a project analyzed without git history — every line empty).
+		if runs := blameRunsFor(scmByComp[comp.Key]); len(runs) > 0 {
+			if cs := scanreport.BuildChangesetsFromBlame(ref, runs, lineCount, date); cs != nil {
+				changesets[ref] = cs
+				continue
+			}
+		}
+		changesets[ref] = scanreport.BuildDefaultChangesets(ref, lineCount, date)
 	}
 	return changesets
 }
