@@ -297,10 +297,22 @@ func fetchSourceCode(ctx context.Context, e *Executor, item json.RawMessage, w *
 	if fileKey == "" {
 		return nil
 	}
+	if branch == "" {
+		e.Logger.Warn("getProjectSourceCode skipped: component has no branch field", "file", fileKey)
+		return nil
+	}
 	params := fileParams(fileKey, branch)
 	raw, err := e.Raw.GetRaw(ctx, "api/sources/raw", params)
 	if err != nil {
-		return handleNonFatal(e, "getProjectSourceCode", fileKey, err)
+		if isNonFatalHTTPErr(err) {
+			e.Logger.Warn("getProjectSourceCode skipped", "file", fileKey, "branch", branch, "err", err)
+			// Write an empty source record so the branch×file is tracked even when source
+			// is absent (purged or restricted). Without this, zero records in a branch make
+			// totalSourceLen indistinguishable from "source never attempted".
+			raw = []byte{}
+		} else {
+			return err
+		}
 	}
 	record := map[string]any{
 		"key":        fileKey,
@@ -330,6 +342,10 @@ func fetchSCMData(ctx context.Context, e *Executor, item json.RawMessage, w *Chu
 	fileKey := extractField(item, "key")
 	branch := extractField(item, "branch")
 	if fileKey == "" {
+		return nil
+	}
+	if branch == "" {
+		e.Logger.Warn("getProjectSCMData skipped: component has no branch field", "file", fileKey)
 		return nil
 	}
 	raw, err := e.Raw.Get(ctx, "api/sources/scm", fileParams(fileKey, branch))
@@ -469,7 +485,9 @@ func buildBranchMap(branches []json.RawMessage) map[string][]string {
 	return result
 }
 
-// fileParams builds url.Values for a file key with optional branch.
+// fileParams builds url.Values for a file key and its branch.
+// Both fetchSourceCode and fetchSCMData guard against empty branch before
+// calling this, so branch is always non-empty here.
 func fileParams(fileKey, branch string) url.Values {
 	params := url.Values{"key": {fileKey}}
 	if branch != "" {
