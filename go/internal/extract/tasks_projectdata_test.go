@@ -663,6 +663,56 @@ func TestProjectSourceCodeTaskNonFatal(t *testing.T) {
 	}
 }
 
+func TestProjectSourceCodeTaskLinesFallback(t *testing.T) {
+	// api/sources/raw returns empty (housekeeping purged raw_source_data).
+	// api/sources/lines should be called as a fallback and its HTML-highlighted
+	// source stripped to plain text.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/sources/raw":
+			// 200 OK but empty body — source purged from raw_source_data column
+			w.WriteHeader(200)
+		case "/api/sources/lines":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"sources":[{"line":1,"code":"<span class=\"k\">public</span> class Foo {}"},{"line":2,"code":"  int x = 1 &amp; 2;"}]}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	e := newTestExecutor(t)
+	e.ServerURL = "http://test/"
+	e.Raw = NewRawClient(srv.Client(), srv.URL+"/")
+
+	w, _ := e.Store.Writer("getProjectComponentTree")
+	b, _ := json.Marshal(map[string]any{
+		"key":        "p1:src/Foo.java",
+		"branch":     "main",
+		"projectKey": "p1",
+	})
+	w.WriteOne(b)
+
+	fn := projectSourceCodeTask()
+	if err := fn(ctx(t), e); err != nil {
+		t.Fatalf("projectSourceCodeTask: %v", err)
+	}
+
+	items, _ := e.Store.ReadAll("getProjectSourceCode")
+	if len(items) != 1 {
+		t.Fatalf("expected 1 source record, got %d", len(items))
+	}
+	got := extractField(items[0], "source")
+	// HTML tags stripped, &amp; unescaped, lines joined with \n
+	want := "public class Foo {}\n  int x = 1 & 2;"
+	if got != want {
+		t.Errorf("unexpected source from fallback:\n got:  %q\n want: %q", got, want)
+	}
+	if extractField(items[0], "branch") != "main" {
+		t.Errorf("expected branch 'main' in source record")
+	}
+}
+
 func TestProjectSourceCodeTaskEmptyBranch(t *testing.T) {
 	e := newTestExecutor(t)
 	e.ServerURL = "http://test/"
