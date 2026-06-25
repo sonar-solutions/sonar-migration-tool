@@ -47,6 +47,10 @@ type configFileShape struct {
 	SkipProjectDataMigration *FlexibleBool `json:"skip_project_data_migration"`
 	Debug                    bool          `json:"debug"`
 	ExcludeBranches          []string      `json:"exclude_branches"`
+	// CESubmitSpacing is the minimum seconds between scanner-report submits
+	// to the SonarCloud CE (issue #417). 0/absent → default (5s); negative
+	// disables. Applies across every config shape.
+	CESubmitSpacing int `json:"ce_submit_spacing"`
 
 	// Shape 2 (command-sectioned).
 	Migrate *configFileShape `json:"migrate"`
@@ -145,7 +149,12 @@ func parseConfigFile(path string) (configFileShape, error) {
 	return shape, nil
 }
 
-func (s configFileShape) toMigrateConfig() MigrateConfig {
+func (s configFileShape) toMigrateConfig() (cfg MigrateConfig) {
+	// The top-level ce_submit_spacing applies to every shape (issue #417),
+	// mirroring how skip_issue_sync is handled. Set it on whatever cfg each
+	// branch returns; 0 (absent) is normalised to the 5s default later in
+	// applyDefaults, a negative value disables the throttle.
+	defer func() { cfg.CESubmitSpacingSeconds = s.CESubmitSpacing }()
 	switch {
 	case s.Source != nil || s.Target != nil:
 		// #266 unified shape. Migrate pulls from the "target"

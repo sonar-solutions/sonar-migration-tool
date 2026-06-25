@@ -64,6 +64,14 @@ type MigrateConfig struct {
 	// SonarQube Cloud project key from the source key, the org key, and
 	// the enterprise key. Defaults to DefaultProjectKeyPattern. Issue #138.
 	ProjectKeyPattern string
+
+	// CESubmitSpacingSeconds is the minimum number of seconds enforced
+	// between consecutive scanner-report submissions to the SonarCloud CE
+	// (issue #417). Submitting many analyses concurrently to the same org
+	// makes the CE drop source for some of them while still reporting task
+	// SUCCESS. applyDefaults sets this to 5 when unset (0); a negative value
+	// disables the throttle.
+	CESubmitSpacingSeconds int
 }
 
 // Executor is the runtime context passed to every migrate task function.
@@ -83,6 +91,12 @@ type Executor struct {
 	Sem             chan struct{}
 	Logger          *slog.Logger
 	ExcludeBranches []string
+
+	// SubmitGate spaces out consecutive scanner-report submissions to the
+	// SonarCloud CE so a full migrate does not flood it with concurrent
+	// analyses and lose source on some of them (issue #417). Nil disables
+	// throttling.
+	SubmitGate *submitGate
 
 	// ProjectKeyPattern is the resolved target-key template (issue #138),
 	// consumed by every task that derives a SonarQube Cloud project key
@@ -305,6 +319,7 @@ func RunMigrate(ctx context.Context, cfg MigrateConfig) (runIDOut string, retErr
 		Sem:               make(chan struct{}, cfg.Concurrency),
 		ExcludeBranches:   cfg.ExcludeBranches,
 		ProjectKeyPattern: cfg.ProjectKeyPattern,
+		SubmitGate:        newSubmitGate(time.Duration(cfg.CESubmitSpacingSeconds) * time.Second),
 		Logger:            logger,
 	}
 
@@ -377,6 +392,11 @@ func (cfg *MigrateConfig) applyDefaults() {
 	}
 	if strings.TrimSpace(cfg.ProjectKeyPattern) == "" {
 		cfg.ProjectKeyPattern = DefaultProjectKeyPattern
+	}
+	// Default the CE submit spacing to 5s (issue #417). 0 means "unset" →
+	// default; a negative value explicitly disables the throttle.
+	if cfg.CESubmitSpacingSeconds == 0 {
+		cfg.CESubmitSpacingSeconds = 5
 	}
 	// Ensure trailing slash.
 	if cfg.URL != "" && cfg.URL[len(cfg.URL)-1] != '/' {
