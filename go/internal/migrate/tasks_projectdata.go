@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -382,7 +383,7 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 	root, fileComps, cr := scanreport.BuildComponents(input.CloudKey, components)
 	pbSources := make(map[int32]string)
 	for _, s := range sources {
-		if ref, ok := cr.Refs()[s.Component]; ok {
+		if ref, ok := cr.Refs()[s.Component]; ok && s.Source != "" {
 			pbSources[ref] = s.Source
 		}
 	}
@@ -461,6 +462,16 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 	zipBytes, err := scanreport.PackageReport(reportData)
 	if err != nil {
 		return nil, nil, fmt.Errorf("packaging report: %w", err)
+	}
+
+	if dumpDir := os.Getenv("SMT_DUMP_REPORT_DIR"); dumpDir != "" {
+		safe := strings.NewReplacer("/", "_", ":", "_", ",", "_").Replace(input.CloudKey + "-" + input.Branch)
+		dumpPath := filepath.Join(dumpDir, safe+".zip")
+		if werr := os.WriteFile(dumpPath, zipBytes, 0o644); werr != nil {
+			e.Logger.Warn("failed to dump report zip", "path", dumpPath, "err", werr)
+		} else {
+			e.Logger.Info("dumped report zip", "path", dumpPath)
+		}
 	}
 
 	e.Logger.Info("report packaged",

@@ -8,11 +8,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 )
+
+var htmlTagRe = regexp.MustCompile(`<[^>]+>`)
 
 // issueStatusesRename is the SonarQube Server release where the issue
 // search swapped its statuses parameter to issueStatuses + the new
@@ -297,10 +301,32 @@ func fetchSourceCode(ctx context.Context, e *Executor, item json.RawMessage, w *
 	if fileKey == "" {
 		return nil
 	}
+	if branch == "" {
+		e.Logger.Warn("getProjectSourceCode skipped: component has no branch field", "file", fileKey)
+		return nil
+	}
 	params := fileParams(fileKey, branch)
 	raw, err := e.Raw.GetRaw(ctx, "api/sources/raw", params)
 	if err != nil {
-		return handleNonFatal(e, "getProjectSourceCode", fileKey, err)
+		if isNonFatalHTTPErr(err) {
+			e.Logger.Warn("getProjectSourceCode skipped", "file", fileKey, "branch", branch, "err", err)
+			// Write an empty source record so the branch×file is tracked even when source
+			// is absent (purged or restricted). Without this, zero records in a branch make
+			// totalSourceLen indistinguishable from "source never attempted".
+			raw = []byte{}
+		} else {
+			return err
+		}
+	}
+	if len(raw) == 0 {
+		// api/sources/raw returned empty — SonarQube housekeeping may have purged the
+		// raw_source_data column while the data column (used by the Code view UI) remains.
+		// Try api/sources/lines as a fallback to recover the source text.
+		if fallback, fErr := fetchSourceFromLines(ctx, e, fileKey, branch); fErr == nil && len(fallback) > 0 {
+			e.Logger.Info("getProjectSourceCode: recovered source via sources/lines fallback",
+				"file", fileKey, "branch", branch, "bytes", len(fallback))
+			raw = []byte(fallback)
+		}
 	}
 	record := map[string]any{
 		"key":        fileKey,
@@ -314,6 +340,31 @@ func fetchSourceCode(ctx context.Context, e *Executor, item json.RawMessage, w *
 		return err
 	}
 	return w.WriteOne(b)
+}
+
+// fetchSourceFromLines retrieves plain source text via api/sources/lines when
+// api/sources/raw returns empty. The lines endpoint reads the 'data' column
+// (used by the SonarQube Code view UI), which housekeeping leaves intact even
+// after purging raw_source_data. HTML tags are stripped and HTML entities are
+// unescaped from the code field to reconstruct plain source text.
+func fetchSourceFromLines(ctx context.Context, e *Executor, fileKey, branch string) (string, error) {
+	resp, err := e.Raw.Get(ctx, "api/sources/lines", fileParams(fileKey, branch))
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		Sources []struct {
+			Code string `json:"code"`
+		} `json:"sources"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return "", fmt.Errorf("parsing sources/lines response: %w", err)
+	}
+	lines := make([]string, 0, len(result.Sources))
+	for _, s := range result.Sources {
+		lines = append(lines, html.UnescapeString(htmlTagRe.ReplaceAllString(s.Code, "")))
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 // projectSCMDataTask extracts SCM blame data for each file component.
@@ -330,6 +381,10 @@ func fetchSCMData(ctx context.Context, e *Executor, item json.RawMessage, w *Chu
 	fileKey := extractField(item, "key")
 	branch := extractField(item, "branch")
 	if fileKey == "" {
+		return nil
+	}
+	if branch == "" {
+		e.Logger.Warn("getProjectSCMData skipped: component has no branch field", "file", fileKey)
 		return nil
 	}
 	raw, err := e.Raw.Get(ctx, "api/sources/scm", fileParams(fileKey, branch))
@@ -469,7 +524,9 @@ func buildBranchMap(branches []json.RawMessage) map[string][]string {
 	return result
 }
 
-// fileParams builds url.Values for a file key with optional branch.
+// fileParams builds url.Values for a file key and its branch.
+// Both fetchSourceCode and fetchSCMData guard against empty branch before
+// calling this, so branch is always non-empty here.
 func fileParams(fileKey, branch string) url.Values {
 	params := url.Values{"key": {fileKey}}
 	if branch != "" {
