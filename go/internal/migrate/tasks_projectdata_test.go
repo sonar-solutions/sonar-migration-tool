@@ -12,11 +12,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sonar-solutions/sonar-migration-tool/internal/common"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/scanreport"
+	pb "github.com/sonar-solutions/sonar-migration-tool/internal/scanreport/proto"
 	"github.com/sonar-solutions/sonar-migration-tool/internal/structure"
 )
 
@@ -247,6 +249,53 @@ func TestBuildChangesetMap(t *testing.T) {
 	}
 	if _, ok := result[emptyRef]; ok {
 		t.Error("Lines=0 should not produce changeset")
+	}
+}
+
+// #425 — ensureFileSourcesPresent gives every source-less FILE component a
+// blank placeholder source (one empty line per declared line) so the CE
+// accepts the report, while leaving files that already have real source
+// untouched. A zero/negative line count is clamped up to a single empty
+// line and the component's declared line count is bumped to match.
+func TestEnsureFileSourcesPresent(t *testing.T) {
+	fileComps := []*pb.Component{
+		{Ref: 1, Type: pb.Component_FILE, Lines: 10}, // purged -> 10 blank lines
+		{Ref: 2, Type: pb.Component_FILE, Lines: 1},  // purged -> 1 blank line
+		{Ref: 3, Type: pb.Component_FILE, Lines: 0},  // purged, no measure -> clamp to 1
+		{Ref: 4, Type: pb.Component_FILE, Lines: 2},  // already has real source -> untouched
+	}
+	sources := map[int32]string{4: "real\nsource"}
+
+	ensureFileSourcesPresent(fileComps, sources)
+
+	if len(sources) != 4 {
+		t.Fatalf("want a source entry per file (4), got %d", len(sources))
+	}
+	check := func(ref int32, wantLines int, wantBlank bool) {
+		src, ok := sources[ref]
+		if !ok {
+			t.Errorf("ref %d: missing source", ref)
+			return
+		}
+		if gotLines := strings.Count(src, "\n") + 1; gotLines != wantLines {
+			t.Errorf("ref %d: want %d lines, got %d", ref, wantLines, gotLines)
+		}
+		if wantBlank && strings.TrimRight(src, "\n") != "" {
+			t.Errorf("ref %d: placeholder source must be blank, got %q", ref, src)
+		}
+	}
+	check(1, 10, true)
+	check(2, 1, true)
+	check(3, 1, true)
+	if fileComps[2].Lines != 1 {
+		t.Errorf("zero-line file must be clamped to Lines=1, got %d", fileComps[2].Lines)
+	}
+	// File that already had real source is left exactly as-is.
+	if sources[4] != "real\nsource" {
+		t.Errorf("file with real source must be untouched, got %q", sources[4])
+	}
+	if fileComps[3].Lines != 2 {
+		t.Errorf("file with real source must keep its line count, got %d", fileComps[3].Lines)
 	}
 }
 

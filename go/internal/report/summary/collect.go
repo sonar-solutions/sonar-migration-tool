@@ -44,6 +44,7 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 	ncdFallbackMap := collectNCDFallback(store)
 	ncdBranchOverrideSet := collectNCDBranchOverrides(store)
 	syncStatsMap := collectSyncStats(store)
+	branchSourcePurgedMap := collectBranchSourcePurged(store)
 	extractMapping, _ := structure.GetUniqueExtracts(exportDir)
 	// #353 — per-object dropped-user-permission counts: SonarQube Cloud
 	// has no API to grant permissions to individual users, so any user
@@ -81,6 +82,13 @@ func CollectSummary(runDir, exportDir string) (*MigrationSummary, error) {
 			attachSyncStats(section.Succeeded, syncStatsMap)
 			attachSyncStats(section.NearPerfect, syncStatsMap)
 			attachSyncStats(section.Partial, syncStatsMap)
+			// #425 — note branches migrated without their source (purged
+			// on the source server) in each affected project's Details
+			// column. Applied to all routed buckets; the outcome itself
+			// is unchanged (the branch still imports measures + issues).
+			attachBranchSourcePurged(section.Succeeded, branchSourcePurgedMap)
+			attachBranchSourcePurged(section.NearPerfect, branchSourcePurgedMap)
+			attachBranchSourcePurged(section.Partial, branchSourcePurgedMap)
 		}
 		// #353 — attach the dropped-user-permission count marker to
 		// every entity in every routed bucket so the per-row Details
@@ -1206,6 +1214,61 @@ func encodeSyncStats(c projectSyncCounts) string {
 		parts = append(parts, fmt.Sprintf("ack=%d", c.HotspotAckDemoted))
 	}
 	return strings.Join(parts, ",")
+}
+
+// collectBranchSourcePurged reads importProjectData JSONL and returns,
+// per cloud project key, the ordered list of branch names whose source
+// text was purged on the source server and were therefore migrated
+// without it (issue #425). Branches are de-duplicated and kept in
+// first-seen order so the report lists each affected branch once.
+func collectBranchSourcePurged(store *common.DataStore) map[string][]string {
+	items, err := store.ReadAll("importProjectData")
+	if err != nil || len(items) == 0 {
+		return nil
+	}
+	result := make(map[string][]string)
+	seen := make(map[string]bool)
+	for _, item := range items {
+		if !jsonBool(item, "source_purged") {
+			continue
+		}
+		key := jsonStr(item, "cloud_project_key")
+		branch := jsonStr(item, "branch")
+		if key == "" || branch == "" {
+			continue
+		}
+		dedupKey := key + "\x00" + branch
+		if seen[dedupKey] {
+			continue
+		}
+		seen[dedupKey] = true
+		result[key] = append(result[key], branch)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// attachBranchSourcePurged appends a "|srcPurged:branchA,branchB" marker
+// to each affected project's Detail field. The renderer turns it into a
+// one-line "Source code of branch(es) X, Y is missing (likely purged in
+// SQS). Migration is executed without the sources." note in the Details
+// column, shown in both the actual and predictive reports (#425). The
+// project's outcome is unchanged — the branches still migrate their
+// measures and issues.
+func attachBranchSourcePurged(projects []EntityItem, purgedMap map[string][]string) {
+	if len(purgedMap) == 0 || len(projects) == 0 {
+		return
+	}
+	for i := range projects {
+		key := projectCloudKey(projects[i].Detail)
+		branches, ok := purgedMap[key]
+		if !ok || len(branches) == 0 {
+			continue
+		}
+		projects[i].Detail = projects[i].Detail + "|srcPurged:" + strings.Join(branches, ",")
+	}
 }
 
 // collectNCDFallback reads the setNewCodePeriods JSONL and returns a

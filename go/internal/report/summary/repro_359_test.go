@@ -26,8 +26,11 @@ func TestCollectSummary_ProjectDataAndSyncStats(t *testing.T) {
 		{"cloud_project_key": "org1_projok", "branch": "main", "status": "success"},
 		{"cloud_project_key": "org1_proj_mm", "branch": "main", "status": "success"},
 		{"cloud_project_key": "org1_skipped", "branch": "main", "status": "skipped"},
-		{"cloud_project_key": "org1_purged", "branch": "main", "status": "skipped",
-			"error": "source code not retrievable for this branch (line measures may remain, but source text is gone — likely purged by SonarQube housekeeping)"},
+		// #425 — a branch whose source was purged now migrates WITHOUT its
+		// source (status success, source_purged=true) rather than being
+		// skipped. The project outcome stays Succeeded.
+		{"cloud_project_key": "org1_purged", "branch": "main", "status": "success"},
+		{"cloud_project_key": "org1_purged", "branch": "release-1.0", "status": "success", "source_purged": true},
 		{"cloud_project_key": "org1_failed", "branch": "main", "status": "failed", "error": "CE task failed: 500"},
 	})
 	writeTaskJSONL(t, dir, "syncIssueMetadata", []map[string]any{
@@ -35,7 +38,8 @@ func TestCollectSummary_ProjectDataAndSyncStats(t *testing.T) {
 		{"cloud_project_key": "org1_proj_mm", "synced": float64(36), "line_mismatch": float64(2), "not_found": float64(43), "actionable": float64(81)},
 		// Skipped-import projects: defensive — sync records may exist (older fashion) or not. Either way they must not surface a sync line.
 		{"cloud_project_key": "org1_skipped", "synced": float64(0), "line_mismatch": float64(0), "not_found": float64(0), "actionable": float64(0)},
-		{"cloud_project_key": "org1_purged", "synced": float64(0), "line_mismatch": float64(0), "not_found": float64(4), "actionable": float64(4)},
+		// Purged-source project: import succeeded, issues fully synced — stays Succeeded.
+		{"cloud_project_key": "org1_purged", "synced": float64(4), "line_mismatch": float64(0), "not_found": float64(0), "actionable": float64(4)},
 	})
 
 	summary, err := CollectSummary(dir, "")
@@ -104,14 +108,18 @@ func TestCollectSummary_ProjectDataAndSyncStats(t *testing.T) {
 			},
 		},
 		"ProjPurged": {
-			bucket: "Partial",
+			bucket: "Succeeded",
 			mustContain: []string{
-				"Project data migration skipped: source code not retrievable for this branch",
+				// #425 — branch migrated without its purged source; the
+				// project stays Succeeded and names the affected branch.
+				"Source code of branch",
+				"release-1.0",
+				"is missing (likely purged in SQS). Migration is executed without the sources.",
 			},
 			mustNot: []string{
+				"Project data migration skipped",
 				"Project data migration was skipped",
-				"synced",
-				"Issue sync had unresolved",
+				"Source code of branches", // singular form for one branch
 			},
 		},
 		"ProjFailed": {
