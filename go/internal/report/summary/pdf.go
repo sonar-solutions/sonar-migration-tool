@@ -77,11 +77,13 @@ var skipReasonOrder = []struct {
 	{SkipReasonDefaultValue, "Left at default value on SonarQube Server"},
 }
 
-// Outcome labels used in the unified per-section table.
+// Outcome labels used in the unified per-section table. The migration-
+// outcome wording deliberately avoids "Perfect"/"Near Perfect" (issue #426,
+// legal): the green/yellow/orange colours are unchanged, only the text.
 const (
-	outcomeSuccess     = "Perfect"
-	outcomeNearPerfect = "Near Perfect"
-	outcomePartial     = "Partial"
+	outcomeSuccess     = "Full Migration"
+	outcomeNearPerfect = "Near Full Migration"
+	outcomePartial     = "Partial Migration"
 	outcomeFailed      = "Failed"
 	outcomeSkipped     = "Skipped"
 )
@@ -372,24 +374,26 @@ func renderTitlePage(pdf *fpdf.Fpdf, summary *MigrationSummary) {
 }
 
 // renderExecutiveSummary renders the six-column summary table at the top of
-// the report: Objects | Perfect | Near Perfect | Partial | Failed | Skipped.
-// The five status buckets follow the green/yellow/orange/red/grey taxonomy
-// defined in issues #224 and #227; colours are conveyed by the count cells.
-// Sections present in `omit` are skipped entirely (predictive reports
-// omit "Global Settings", #235).
+// the report: Objects | Full Migration | Near Full Migration | Partial
+// Migration | Failed | Skipped. The five status buckets follow the
+// green/yellow/orange/red/grey taxonomy defined in issues #224 and #227;
+// colours are conveyed by the count cells. Sections present in `omit` are
+// skipped entirely (predictive reports omit "Global Settings", #235).
 func renderExecutiveSummary(pdf *fpdf.Fpdf, sections []Section, omit map[string]bool) {
-	headers := []string{"Objects", "Perfect", "Near Perfect", "Partial", "Failed", "Skipped"}
+	headers := []string{"Objects", outcomeSuccess, outcomeNearPerfect, outcomePartial, outcomeFailed, outcomeSkipped}
 	const (
 		objectsWidth = 45.0
 		countWidth   = 30.0
 	)
 	widths := []float64{objectsWidth, countWidth, countWidth, countWidth, countWidth, countWidth}
 
-	// Header row — Poppins Bold on the Sonar primary background (#167).
+	// Header row — Poppins Bold on the Sonar primary background (#167). Font
+	// size 8 so the longest label ("Near Full Migration", ~27mm at 8pt) fits
+	// the 30mm count columns (#426).
 	pdf.SetDrawColor(colorSonarGrey[0], colorSonarGrey[1], colorSonarGrey[2])
 	setFillColor(pdf, colorSonarBlue)
 	pdf.SetTextColor(255, 255, 255)
-	pdf.SetFont(pdfFontFamilyHeading, "B", 10)
+	pdf.SetFont(pdfFontFamilyHeading, "B", 8)
 	for i, h := range headers {
 		align := "C"
 		if i == 0 {
@@ -535,18 +539,18 @@ func renderUnifiedTable(pdf *fpdf.Fpdf, section Section, predictive bool) {
 	switch {
 	case isGlobalSettings && hideOrg:
 		// Predictive Global Settings: narrower Setting Key, wider Details.
-		widths = []float64{72, 25, 99}
+		widths = []float64{72, 30, 94}
 	case isGlobalSettings:
-		widths = []float64{55, 35, 25, 81}
+		widths = []float64{55, 35, 30, 76}
 	case predictive:
 		// Predict always drops the Organization column.
-		widths = []float64{60, 25, 111}
+		widths = []float64{60, 30, 106}
 	case hideOrg:
 		// Real-migrate Portfolios — narrower Name, wider Details.
-		widths = []float64{63, 25, 108}
+		widths = []float64{63, 30, 103}
 	default:
 		// Real-migrate standard 4-column layout.
-		widths = []float64{55, 35, 25, 81}
+		widths = []float64{55, 35, 30, 76}
 	}
 	if hideOrg {
 		headers = []string{nameHeader, "Outcome", "Details"}
@@ -1409,10 +1413,10 @@ func sectionCountSummary(section Section) string {
 		fmt.Sprintf("%d succeeded", len(section.Succeeded)),
 	}
 	if len(section.NearPerfect) > 0 {
-		parts = append(parts, fmt.Sprintf("%d near perfect", len(section.NearPerfect)))
+		parts = append(parts, fmt.Sprintf("%d near full migration", len(section.NearPerfect)))
 	}
 	if len(section.Partial) > 0 {
-		parts = append(parts, fmt.Sprintf("%d partial", len(section.Partial)))
+		parts = append(parts, fmt.Sprintf("%d partial migration", len(section.Partial)))
 	}
 	parts = append(parts, fmt.Sprintf("%d failed", len(section.Failed)))
 
