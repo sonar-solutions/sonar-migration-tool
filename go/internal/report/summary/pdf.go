@@ -1160,7 +1160,7 @@ const (
 // bold markers so the PDF renderer can stress it. Other sections keep
 // the bare cloud key as-is.
 func successDetails(item EntityItem, predictive, hideCloudKey, labelProjectKey bool) string {
-	cloudKey, scan, ncdFallback, syncStats, userPerms := parseProjectDetailMarkers(item.Detail)
+	cloudKey, scan, ncdFallback, syncStats, userPerms, srcPurged := parseProjectDetailMarkers(item.Detail)
 	if hideCloudKey || (predictive && strings.HasPrefix(cloudKey, "predict:")) {
 		cloudKey = ""
 	}
@@ -1207,7 +1207,40 @@ func successDetails(item EntityItem, predictive, hideCloudKey, labelProjectKey b
 	if line := renderDroppedUserPermsLine(userPerms, predictive); line != "" {
 		parts = append(parts, line)
 	}
+	// #425 — branches whose source was purged on the source server are
+	// migrated without their source (measures + issues only). Surface the
+	// affected branches once per project, in both actual and predictive
+	// reports.
+	if line := renderBranchSourcePurgedLine(srcPurged); line != "" {
+		parts = append(parts, line)
+	}
 	return strings.Join(parts, "\n")
+}
+
+// renderBranchSourcePurgedLine turns a |srcPurged:branchA,branchB marker
+// payload into the operator-facing line for issue #425. Branch names are
+// stressed with inline bold; the noun is singular for one branch. Empty
+// payload yields "" so callers can skip appending.
+func renderBranchSourcePurgedLine(payload string) string {
+	if payload == "" {
+		return ""
+	}
+	var branches []string
+	for _, b := range strings.Split(payload, ",") {
+		if b = strings.TrimSpace(b); b != "" {
+			branches = append(branches, inlineBoldStart+b+inlineBoldEnd)
+		}
+	}
+	if len(branches) == 0 {
+		return ""
+	}
+	noun := "branches"
+	if len(branches) == 1 {
+		noun = "branch"
+	}
+	return fmt.Sprintf(
+		"Source code of %s %s is missing (likely purged in SQS). Migration is executed without the sources.",
+		noun, strings.Join(branches, ", "))
 }
 
 // renderDroppedUserPermsLine turns a |userPerms:N marker payload into
@@ -1443,12 +1476,18 @@ func parseProjectData(detail string) (string, string) {
 // #353 dropped-user-permissions count payload (or empty). Markers
 // are stripped in reverse-attachment order so trailing payloads
 // don't get absorbed into earlier ones' suffix matching.
-func parseProjectDetailMarkers(detail string) (cloudKey, scan, ncdFallback, syncStats, userPerms string) {
+func parseProjectDetailMarkers(detail string) (cloudKey, scan, ncdFallback, syncStats, userPerms, srcPurged string) {
 	cloudKey = detail
 	// userPerms marker (always last when present — attachDroppedUserPerms
-	// runs after attachSyncStats / attachProjectData / etc.).
+	// runs after attachSyncStats / attachBranchSourcePurged / etc.).
 	if idx := strings.Index(cloudKey, "|userPerms:"); idx >= 0 {
 		userPerms = cloudKey[idx+len("|userPerms:"):]
+		cloudKey = cloudKey[:idx]
+	}
+	// srcPurged marker (#425 — branches migrated without their purged
+	// source; attached after syncStats, before userPerms).
+	if idx := strings.Index(cloudKey, "|srcPurged:"); idx >= 0 {
+		srcPurged = cloudKey[idx+len("|srcPurged:"):]
 		cloudKey = cloudKey[:idx]
 	}
 	// syncStats marker.
@@ -1466,7 +1505,7 @@ func parseProjectDetailMarkers(detail string) (cloudKey, scan, ncdFallback, sync
 		ncdFallback = cloudKey[idx+len("|ncdFallback:"):]
 		cloudKey = cloudKey[:idx]
 	}
-	return cloudKey, scan, ncdFallback, syncStats, userPerms
+	return cloudKey, scan, ncdFallback, syncStats, userPerms, srcPurged
 }
 
 func checkPageBreak(pdf *fpdf.Fpdf, h float64) {

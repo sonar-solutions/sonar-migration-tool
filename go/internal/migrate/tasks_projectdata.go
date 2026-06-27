@@ -241,6 +241,7 @@ func recordBranchResult(w *common.ChunkWriter, cloudKey, branchName string, resu
 		"status":            result.Status,
 		"task_id":           result.TaskID,
 		"error":             result.Error,
+		"source_purged":     result.SourcePurged,
 	})
 	w.WriteOne(record) //nolint:errcheck
 }
@@ -260,6 +261,12 @@ type importResult struct {
 	Status string
 	TaskID string
 	Error  string
+	// SourcePurged is true when the branch was migrated without its source
+	// text because SonarQube housekeeping purged it (issue #425). The branch
+	// still imports its measures and issues (status stays "success"); this
+	// flag drives the per-project "source code of branch X is missing" note
+	// in the migration report.
+	SourcePurged bool
 }
 
 func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*importResult, error) {
@@ -296,13 +303,17 @@ func importBranch(ctx context.Context, e *Executor, input importBranchInput) (*i
 		return nil, fmt.Errorf("CE task failed: %w", err)
 	}
 
-	return &importResult{Status: "success", TaskID: result.TaskID}, nil
+	return &importResult{Status: "success", TaskID: result.TaskID, SourcePurged: report.SourcePurged}, nil
 }
 
 // branchReport is a packaged scanner report for one branch, ready to submit.
 type branchReport struct {
 	ZIP            []byte
 	ProjectVersion string
+	// SourcePurged is true when this branch's source text was unavailable
+	// (purged by housekeeping) so the report carries measures + issues but no
+	// source. Propagated to the importResult for #425 reporting.
+	SourcePurged bool
 }
 
 // buildBranchReport loads the extracted data for one branch, applies the
@@ -334,16 +345,26 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 	// The source server returns no source TEXT for this branch even though line
 	// measures may still exist (SonarQube housekeeping purges source/SCM data
 	// for old or inactive branches while keeping aggregate measures and issues;
-	// /api/sources/{raw,lines} then return empty). Without source, issues cannot
-	// be anchored to real lines: the report would declare N-line files with
-	// empty source, and the SonarCloud CE rejects that inconsistency. Skip
-	// rather than submit a doomed report. (The main branch is actively analyzed
-	// and always carries source, so it is unaffected.)
-	if (len(issues)+len(hotspotIssues)+len(extIssues)) > 0 && totalSourceLen(sources) == 0 {
-		e.Logger.Warn("skipping branch: source code not retrievable (line measures may remain, but source text is gone — likely purged by housekeeping for an inactive branch; re-analyze the branch to restore it)",
+	// /api/sources/{raw,lines} then return empty). Rather than skip the branch
+	// (which dropped it from the target and downgraded the whole project to
+	// "Partial"), migrate it without real source: the measures and issues
+	// still land, matching the source server's own post-purge state (issue
+	// #425). The SonarCloud CE rejects any report containing a FILE component
+	// with no source text — whether or not the file carries issues — so
+	// ensureFileSourcesPresent (below, after the components are built) attaches
+	// blank placeholder source for every source-less file. The purge is
+	// surfaced per-project in the report via the SourcePurged flag. (The main
+	// branch is actively analyzed and always carries source, so it is
+	// unaffected.)
+	//
+	// len(sources)>0 means source extraction ran for this branch (it writes one
+	// record per file, empty when purged); totalSourceLen==0 means every record
+	// came back empty — the whole branch's source is gone.
+	sourcePurged := len(sources) > 0 && totalSourceLen(sources) == 0
+	if sourcePurged {
+		e.Logger.Warn("migrating branch without source: source code not retrievable (line measures may remain, but source text is gone — likely purged by housekeeping for an inactive branch; re-analyze the branch on the source server to restore it)",
 			"project", input.CloudKey, "branch", input.Branch,
 			"findings", len(issues)+len(hotspotIssues)+len(extIssues))
-		return nil, &importResult{Status: "skipped", Error: "source code not retrievable for this branch (line measures may remain, but source text is gone — likely purged by SonarQube housekeeping); re-analyze the branch on the source server to migrate it"}, nil
 	}
 
 	// Fix component line counts (see fixComponentLineCounts).
@@ -390,6 +411,15 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 			pbSources[ref] = s.Source
 		}
 	}
+	// #425 — the SonarCloud CE rejects any report containing a FILE component
+	// with no source text (it fails with "There was an issue whilst processing
+	// the report"), regardless of whether the file carries issues — every
+	// successful report has source for all of its files. When source was purged
+	// the loop above leaves some (or all) files without a source entry, so fill
+	// them with blank placeholder source. The branch then lands with its
+	// measures and issues, matching the source server's own post-purge state;
+	// the purged files simply render as empty.
+	ensureFileSourcesPresent(fileComps, pbSources)
 
 	changesets := buildChangesetMap(cr, components, pbSources, scmByComponent, now)
 
@@ -490,7 +520,28 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 		"activeRules", len(activeRules),
 	)
 
-	return &branchReport{ZIP: zipBytes, ProjectVersion: projectVersion}, nil, nil
+	return &branchReport{ZIP: zipBytes, ProjectVersion: projectVersion, SourcePurged: sourcePurged}, nil, nil
+}
+
+// ensureFileSourcesPresent guarantees every FILE component has a source
+// entry, supplying blank placeholder source — one empty line per declared
+// line — for any file missing real source. Used for #425 purged-source
+// branches: the SonarCloud CE rejects a report containing a file with no
+// source text, so each source-less file is given just enough (empty) lines
+// for the report to be accepted and any issue anchors to fall in range.
+// Files that already have real source are left untouched; the declared line
+// count of a filled file is clamped to at least 1 so the placeholder source
+// and the component agree. No-op for branches whose files all carry source.
+func ensureFileSourcesPresent(fileComps []*pb.Component, sources map[int32]string) {
+	for _, fc := range fileComps {
+		if _, has := sources[fc.GetRef()]; has {
+			continue
+		}
+		if fc.Lines < 1 {
+			fc.Lines = 1
+		}
+		sources[fc.GetRef()] = strings.Repeat("\n", int(fc.Lines)-1)
+	}
 }
 
 // fixComponentLineCounts sets each component's line count to the best available
