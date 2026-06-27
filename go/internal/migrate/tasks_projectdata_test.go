@@ -412,14 +412,18 @@ func TestCollectBranchInfo(t *testing.T) {
 
 func TestResolveMainTargetName(t *testing.T) {
 	master := branchInfo{Name: "master", IsMain: true}
+	main := branchInfo{Name: "main", IsMain: true}
 	cases := []struct {
 		name         string
 		scMainBranch string
 		mainBranch   *branchInfo
 		want         string
 	}{
-		{"prefers SC main branch name", "main", &master, "main"},
-		{"falls back to SQ main when SC unknown", "", &master, "master"},
+		// #428: the source main branch name wins — the SC main branch is
+		// renamed to match it, so non-main branches must reference it.
+		{"prefers source main over SC name", "master", &main, "main"},
+		{"uses source main when SC unknown", "", &master, "master"},
+		{"falls back to SC main when source unknown", "develop", nil, "develop"},
 		{"empty when no main known", "", nil, ""},
 	}
 	for _, tc := range cases {

@@ -110,6 +110,30 @@ func fetchSCMainBranch(ctx context.Context, e *Executor, cloudKey string) string
 	return ""
 }
 
+// renameSCMainBranchToSource renames the project's SonarCloud main branch to
+// the source project's main branch name (#428). SonarCloud always creates the
+// first/main branch under its own default name (typically "master"), so unless
+// the source main branch already carries that name its name would be lost.
+// No-op when the Cloud client is unavailable, the source name is empty, the
+// current main name can't be determined, or it already matches. A rename
+// failure is logged but not fatal — the branch content has already migrated.
+func renameSCMainBranchToSource(ctx context.Context, e *Executor, cloudKey, sourceMainName string) {
+	if e.Cloud == nil || e.Cloud.Branches == nil || sourceMainName == "" {
+		return
+	}
+	current := fetchSCMainBranch(ctx, e, cloudKey)
+	if current == "" || current == sourceMainName {
+		return
+	}
+	if err := e.Cloud.Branches.Rename(ctx, cloudKey, sourceMainName); err != nil {
+		logAPIWarn(e.Logger, "failed to rename SonarCloud main branch to match source", err,
+			"project", cloudKey, "from", current, "to", sourceMainName)
+		return
+	}
+	e.Logger.Info("renamed SonarCloud main branch to match source",
+		"project", cloudKey, "from", current, "to", sourceMainName)
+}
+
 // importProjectBranches imports project data for every branch of one project.
 // Main branch is imported first; if it fails, remaining branches are skipped.
 func importProjectBranches(ctx context.Context, e *Executor, proj json.RawMessage,
@@ -162,6 +186,14 @@ func importProjectBranches(ctx context.Context, e *Executor, proj json.RawMessag
 			}
 			return fmt.Errorf("main branch CE failed for %s: %w", cloudKey, err)
 		}
+		// #428 — SonarCloud creates the project's main branch under its own
+		// default name (typically "master"), discarding the source main branch
+		// name. Rename it to match the source now — BEFORE the non-main branches
+		// are imported, because they reference the main branch as their merge
+		// branch (bctx.MainTargetName == the source main name) and because the
+		// rename frees the old default name in case a non-main branch uses it
+		// (e.g. a source "master" branch when "develop" is the main branch).
+		renameSCMainBranchToSource(ctx, e, cloudKey, mainBranch.Name)
 	}
 
 	// Phase 2: import non-main branches sequentially.
@@ -173,16 +205,16 @@ func importProjectBranches(ctx context.Context, e *Executor, proj json.RawMessag
 
 // resolveMainTargetName returns the project's main branch name on the target,
 // used as the reference/merge branch for non-main branch imports. It prefers
-// the SonarCloud main branch name (which may have been renamed during project
-// creation) and falls back to the source main branch name.
+// the SOURCE main branch name: #428 renames the SonarCloud main branch to match
+// the source right after the main branch is migrated, so by the time non-main
+// branches are imported the main branch carries the source name. It falls back
+// to the SonarCloud main branch name only when the source main branch is
+// unknown (no branch data was extracted for the project).
 func resolveMainTargetName(scMainBranch string, mainBranch *branchInfo) string {
-	if scMainBranch != "" {
-		return scMainBranch
-	}
-	if mainBranch != nil {
+	if mainBranch != nil && mainBranch.Name != "" {
 		return mainBranch.Name
 	}
-	return ""
+	return scMainBranch
 }
 
 type branchImportContext struct {
@@ -192,7 +224,8 @@ type branchImportContext struct {
 	ServerKey    string
 	SCMainBranch string
 	// MainTargetName is the project's main branch name on the SonarCloud target
-	// (the SC main branch if known, else the SQ main branch name). Non-main
+	// (the source main branch name, which the SC main branch is renamed to per
+	// #428; the SC main branch name only when no source main is known). Non-main
 	// branches use it as their reference/merge branch on submit.
 	MainTargetName string
 	Completed      map[string]bool
