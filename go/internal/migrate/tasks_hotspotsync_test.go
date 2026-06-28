@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -273,13 +272,7 @@ func TestSyncOneHotspotAddsSourceLink(t *testing.T) {
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
-	cloudSrv := httptest.NewServer(mux)
-	defer cloudSrv.Close()
-	apiSrv := newMockAPIServer()
-	defer apiSrv.Close()
-
-	dir := t.TempDir()
-	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	e := newCustomCloudTest(t, mux)
 
 	// A REVIEWED/SAFE hotspot on a feature branch with NO source comments —
 	// the link must still be added and carry the branch.
@@ -339,14 +332,7 @@ func TestSyncOneHotspotAcknowledgedResetsToToReview(t *testing.T) {
 		mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
-	cloudSrv := httptest.NewServer(mux)
-	defer cloudSrv.Close()
-
-	apiSrv := newMockAPIServer()
-	defer apiSrv.Close()
-
-	dir := t.TempDir()
-	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	e := newCustomCloudTest(t, mux)
 
 	pair := hotspotPair{
 		source: matchableHotspot{Key: "src-1", Status: "REVIEWED", Resolution: "ACKNOWLEDGED",
@@ -417,14 +403,7 @@ func TestFindCloudHotspotCandidatesQueriesBothStatuses(t *testing.T) {
 			t.Errorf("unexpected status param: %q", status)
 		}
 	})
-	cloudSrv := httptest.NewServer(mux)
-	defer cloudSrv.Close()
-
-	apiSrv := newMockAPIServer()
-	defer apiSrv.Close()
-
-	dir := t.TempDir()
-	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	e := newCustomCloudTest(t, mux)
 
 	got, err := findCloudHotspotCandidates(context.Background(), e, "cloud-proj", "cloud-org", "src/app.go", "develop")
 	if err != nil {
@@ -468,14 +447,7 @@ func TestFindCloudHotspotCandidatesDedupsByKey(t *testing.T) {
 			"paging": map[string]any{"pageIndex": 1, "pageSize": 100, "total": 1},
 		})
 	})
-	cloudSrv := httptest.NewServer(mux)
-	defer cloudSrv.Close()
-
-	apiSrv := newMockAPIServer()
-	defer apiSrv.Close()
-
-	dir := t.TempDir()
-	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	e := newCustomCloudTest(t, mux)
 
 	got, err := findCloudHotspotCandidates(context.Background(), e, "cloud-proj", "cloud-org", "src/app.go", "")
 	if err != nil {
@@ -628,14 +600,7 @@ func TestSyncOneHotspotSafeCallsChangeStatus(t *testing.T) {
 	mux.HandleFunc("GET /api/hotspots/show", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"comment": []map[string]any{}})
 	})
-	cloudSrv := httptest.NewServer(mux)
-	defer cloudSrv.Close()
-
-	apiSrv := newMockAPIServer()
-	defer apiSrv.Close()
-
-	dir := t.TempDir()
-	e := newTestExecutor(cloudSrv, apiSrv, dir)
+	e := newCustomCloudTest(t, mux)
 
 	pair := hotspotPair{
 		source: matchableHotspot{Key: "src-1", Status: "REVIEWED", Resolution: "SAFE"},
