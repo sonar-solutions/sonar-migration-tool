@@ -107,14 +107,33 @@ type issuePair struct {
 // Matching helpers
 // ---------------------------------------------------------------------------
 
-// stripProjectKeyPrefix removes the leading "projectKey:" segment from a
-// SonarQube component path, returning the bare file path. SonarQube
-// formats components as "projectKey:src/main/java/Foo.java"; the
-// project key is environment-specific but the file path part is the
-// same on source and cloud.
+// stripProjectKeyPrefix removes all leading colon-separated key segments
+// from a SonarQube component path, returning the bare file path. SonarQube
+// formats components as either:
+//
+//   - "projectKey:src/main/java/Foo.java"              (single-module), or
+//   - "projectKey:moduleKey:src/main/java/Foo.java"    (multi-module / monorepo)
+//
+// SonarCloud has no module layer, so the cloud componentKeys search parameter
+// must use only the bare file path. Segments are stripped left-to-right as
+// long as the part before the ":" contains no "/" — a "/" means we have
+// already reached the file path, which always starts with a directory name.
+// This fixes matching failures for monorepo projects where the SQS extract
+// records the module key as part of the component identifier but SonarCloud
+// stores the issue at the plain file path.
 func stripProjectKeyPrefix(component string) string {
-	if idx := strings.Index(component, ":"); idx >= 0 {
-		return component[idx+1:]
+	for {
+		idx := strings.Index(component, ":")
+		if idx < 0 {
+			break
+		}
+		prefix := component[:idx]
+		if strings.Contains(prefix, "/") {
+			// Reached the file path — the prefix is a directory segment, stop.
+			break
+		}
+		// prefix looks like a project/module key (no path separators); strip it.
+		component = component[idx+1:]
 	}
 	return component
 }

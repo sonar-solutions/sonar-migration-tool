@@ -371,11 +371,11 @@ func syncProjectHotspots(ctx context.Context, e *Executor, input syncHotspotInpu
 // hotspot's file, then resolves by (ruleKey, line). Returns the case
 // a/b/c/lookup outcome.
 func resolveAndSyncHotspot(ctx context.Context, e *Executor, cloudKey, orgKey, baseURL, sourceKey string, src matchableHotspot, counter *TaskCounter) syncOutcome {
-	filePath := src.Component
-	prefix := sourceKey + ":"
-	if strings.HasPrefix(filePath, prefix) {
-		filePath = filePath[len(prefix):]
-	}
+	// Strip "projectKey:" and any trailing "moduleKey:" segments so the bare
+	// file path can be used in the cloud search. Multi-module (monorepo)
+	// projects add a module key after the project key; SonarCloud has no
+	// module layer so only the plain file path matches the cloud component.
+	filePath := stripProjectKeyPrefix(src.Component)
 	if filePath == "" || src.RuleKey == "" || src.Line <= 0 {
 		e.Logger.Debug("syncHotspotMetadata: source hotspot not matchable", "key", src.Key, "rule", src.RuleKey, "component", src.Component, "line", src.Line)
 		return syncOutcomeNotFound
