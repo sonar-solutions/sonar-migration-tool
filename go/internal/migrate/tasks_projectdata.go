@@ -441,7 +441,14 @@ func buildBranchReport(ctx context.Context, e *Executor, input importBranchInput
 	pbSources := make(map[int32]string)
 	for _, s := range sources {
 		if ref, ok := cr.Refs()[s.Component]; ok && s.Source != "" {
-			pbSources[ref] = s.Source
+			// Sanitize source text before embedding in the scanner report.
+			// Files like RCE-demo PHP scripts may contain null bytes (U+0000)
+			// used in null-byte injection exploits. The SonarCloud CE's Java
+			// component visitor and the underlying database both reject null
+			// bytes in text, producing "Visit of Component failed" / "Fail to
+			// process issues of component" CE task failures. Strip them here so
+			// the file still migrates with its issues and measures intact.
+			pbSources[ref] = stripNullBytes(s.Source)
 		}
 	}
 	// #425 — the SonarCloud CE rejects any report containing a FILE component
@@ -1675,6 +1682,20 @@ func filterProfilesByLanguage(profiles []scanreport.QProfileInfo, langs map[stri
 		}
 	}
 	return filtered
+}
+
+// stripNullBytes removes all NUL characters (U+0000) from a source text string.
+// PHP and other languages used in security-research projects (e.g. RCE / null-byte
+// injection demo files) may embed NUL bytes deliberately. The SonarCloud Compute
+// Engine cannot process source-<ref>.txt files that contain NULs: Java's string
+// operations and the underlying database both reject them, producing
+// "Visit of Component failed" CE task errors. Stripping NULs preserves the rest
+// of the file content so issues and measures still migrate correctly.
+func stripNullBytes(s string) string {
+	if !strings.ContainsRune(s, 0) {
+		return s // fast path — most files have no NUL bytes
+	}
+	return strings.ReplaceAll(s, "\x00", "")
 }
 
 // filterRulesByLanguage keeps only active rules whose language is in the project.

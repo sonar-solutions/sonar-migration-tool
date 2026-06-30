@@ -1452,3 +1452,30 @@ func TestImportSkipsCompletedBranches(t *testing.T) {
 		}
 	}
 }
+
+// TestStripNullBytes verifies that NUL characters are removed from source text
+// (PHP/other security-demo files may embed NUL bytes; the SonarCloud CE rejects
+// source files containing them with "Visit of Component failed").
+func TestStripNullBytes(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "no NULs — fast path unchanged", in: "normal source\nno issues", want: "normal source\nno issues"},
+		{name: "single NUL stripped", in: "before\x00after", want: "beforeafter"},
+		{name: "multiple NULs stripped", in: "\x00a\x00b\x00", want: "ab"},
+		{name: "PHP null-byte injection demo", in: "<?php\ninclude $_GET[\"f\"]\x00\".php\";\n?>", want: "<?php\ninclude $_GET[\"f\"]\".php\";\n?>"},
+		{name: "empty string unchanged", in: "", want: ""},
+		{name: "only NULs becomes empty", in: "\x00\x00\x00", want: ""},
+		{name: "newlines and tabs preserved", in: "line1\n\tindented\r\nline3", want: "line1\n\tindented\r\nline3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripNullBytes(tc.in)
+			if got != tc.want {
+				t.Errorf("stripNullBytes(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
