@@ -66,12 +66,12 @@
 | dart / Corp Way | latest-gl | Near Full Migration | Since SQC does not support parent profile rules disabled in child profiles, the following rules were enabled in the profile: dart:S1161 |
 | dart / Critical projects | latest-gl | Near Full Migration | Because rules custom severities are not supported in SQC, the following rules were reverted to their default severities: dart:S7103 |
 | java / Green IT | latest-unbound | Partial Migration | Because SQC does not support 3rd party plugins, the following 3rd party rules were removed from the quality profile: creedengo-java:GCI1, creedengo-java:GCI2, creedengo-java:GCI27, creedengo-java:GCI28, creedengo-java:GCI3, creedengo-java:GCI32, creedengo-java:GCI5, creedengo-java:GCI67, creedengo-java:GCI69, creedengo-java:GCI72, creedengo-java:GCI74, creedengo-java:GCI76, creedengo-java:GCI77, creedengo-java:GCI78, creedengo-java:GCI79, creedengo-java:GCI82, creedengo-java:GCI94 |
-| java / Security Max | bitbucket-server.your-company.com/bitbucket-server.your-company.com | Skipped | Organization skipped |
-| js / security-max | bitbucket-server.your-company.com/bitbucket-server.your-company.com | Skipped | Organization skipped |
-| php / All rules | bitbucket-server.your-company.com/bitbucket-server.your-company.com | Skipped | Organization skipped |
-| xml / Xpath instantiated | bitbucket-server.your-company.com/bitbucket-server.your-company.com | Skipped | Organization skipped |
-| dart / Critical projects | bitbucket-server.your-company.com/bitbucket-server.your-company.com | Skipped | Organization skipped |
-| dart / Corp Way | bitbucket-server.your-company.com/bitbucket-server.your-company.com | Skipped | Organization skipped |
+| java / Security Max | scm.example.com/scm.example.com | Skipped | Organization skipped |
+| js / security-max | scm.example.com/scm.example.com | Skipped | Organization skipped |
+| php / All rules | scm.example.com/scm.example.com | Skipped | Organization skipped |
+| xml / Xpath instantiated | scm.example.com/scm.example.com | Skipped | Organization skipped |
+| dart / Critical projects | scm.example.com/scm.example.com | Skipped | Organization skipped |
+| dart / Corp Way | scm.example.com/scm.example.com | Skipped | Organization skipped |
 | abap / Sonar way |  | Skipped | Built-in, not migrated |
 | ansible / Sonar way |  | Skipped | Built-in, not migrated |
 | apex / Sonar way |  | Skipped | Built-in, not migrated |
@@ -147,8 +147,8 @@
 | 0. Default template | latest-gh | Full Migration |  |
 | 0. Default template | latest-gl | Full Migration |  |
 | 0. Default Template for portfolio | latest-others | Full Migration |  |
-| 0. Default Template for portfolio | bitbucket-server.your-company.com/bitbucket-server.your-company.com | Skipped | Organization skipped |
-| 0. Default template | bitbucket-server.your-company.com/bitbucket-server.your-company.com | Skipped | Organization skipped |
+| 0. Default Template for portfolio | scm.example.com/scm.example.com | Skipped | Organization skipped |
+| 0. Default template | scm.example.com/scm.example.com | Skipped | Organization skipped |
 
 ## Groups
 32 succeeded, 0 failed, 10 skipped (9 organization skipped, 1 built-in)
@@ -822,8 +822,8 @@
 
 - Applications do not exist on SonarQube Cloud, 5 SQS applications were not migrated.
 - SonarQube Cloud does not support the reference_branch or specific_analysis new-code-definition types; 1 project(s) were migrated with the SonarQube Cloud organization default instead.
-- SonarQube Cloud does not support user permissions via API. The following 23 user(s) had global SonarQube Server permissions and were not migrated: Global-analyser-2026, TEMP-user-42746, TEMP-user-42846, TEMP-user-49113, TEMP-user-49644, TEMP-user-51113, TEMP-user-52404, TEMP-user-52445, TEMP-user-54234, TEMP-user-55689, TEMP-user-57961, TEMP-user-59264, TEMP-user-61203, TEMP-user-64044, admin, ado, bbTEMPaa, james, michal, olivier, olivier-k31581, olivier-korach22656, syncer.
-- SonarQube Cloud does not support user permissions via API. The following 4 user(s) had permissions on SonarQube Server permission templates and were not migrated: james, michal, olivier, olivier-k31581.
+- SonarQube Cloud does not support user permissions via API. The following 23 user(s) had global SonarQube Server permissions and were not migrated: global-analyser, temp-user-1, temp-user-2, temp-user-3, temp-user-4, temp-user-5, temp-user-6, temp-user-7, temp-user-8, temp-user-9, temp-user-10, temp-user-11, temp-user-12, temp-user-13, admin, ado, bb-sync-user, john-doe, jane-doe, alex-doe, alex-doe-k1, alex-doe-k2, syncer.
+- SonarQube Cloud does not support user permissions via API. The following 4 user(s) had permissions on SonarQube Server permission templates and were not migrated: john-doe, jane-doe, alex-doe, alex-doe-k1.
 - SonarQube Cloud has no per-branch new-code-definition concept; 3 branch-level new code definition(s) on SonarQube Server were not migrated.
 - sonar.qualitygate.ignoreSmallChanges is set on SonarQube Server but has no /api/settings/set equivalent on SonarQube Cloud. Configure "Ignore duplication and coverage on small changes (org-level)" manually after migration.
 
