@@ -822,7 +822,7 @@
 
 - Applications do not exist on SonarQube Cloud, 5 SQS applications were not migrated.
 - SonarQube Cloud does not support the reference_branch or specific_analysis new-code-definition types; 1 project(s) were migrated with the SonarQube Cloud organization default instead.
-- SonarQube Cloud does not support user permissions via API. The following 23 user(s) had global SonarQube Server permissions and were not migrated: global-analyser, temp-user-1, temp-user-2, temp-user-3, temp-user-4, temp-user-5, temp-user-6, temp-user-7, temp-user-8, temp-user-9, temp-user-10, temp-user-11, temp-user-12, temp-user-13, admin, ado, bb-sync-user, john-doe, jane-doe, alex-doe, alex-doe-k1, alex-doe-k2, syncer.
+- SonarQube Cloud does not support user permissions via API. The following 23 user(s) had global SonarQube Server permissions and were not migrated: global-analyser, temp-user-1, temp-user-2, temp-user-3, temp-user-4, temp-user-5, temp-user-6, temp-user-7, temp-user-8, temp-user-9, temp-user-10, temp-user-11, temp-user-12, temp-user-13, john-doe, jane-doe, alex-doe, alex-doe-k1, alex-doe-k2, chris-doe, chris-doe-k1, chris-doe-k2, ci-user.
 - SonarQube Cloud does not support user permissions via API. The following 4 user(s) had permissions on SonarQube Server permission templates and were not migrated: john-doe, jane-doe, alex-doe, alex-doe-k1.
 - SonarQube Cloud has no per-branch new-code-definition concept; 3 branch-level new code definition(s) on SonarQube Server were not migrated.
 - sonar.qualitygate.ignoreSmallChanges is set on SonarQube Server but has no /api/settings/set equivalent on SonarQube Cloud. Configure "Ignore duplication and coverage on small changes (org-level)" manually after migration.
